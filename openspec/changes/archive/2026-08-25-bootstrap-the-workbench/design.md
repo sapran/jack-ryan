@@ -71,6 +71,15 @@ it is the only abstraction M0 introduces; everything else is concrete.
   documents exist, deletion needs a confirmation gate — noted for M1 rather
   than half-built now.
 
+### Two requirements were narrowed at publication
+
+The spec rules forbid specifying a mechanism the repository does not have. Two
+drafted requirements asserted mechanisms belonging to later milestones — text
+and vectors sharing one store, and every document and tag belonging to a
+casefile — so at publication each was narrowed to what is true today, with the
+forward commitment moved to a `docs/design.md` reference. The commitments are
+unchanged; they are simply not yet normative.
+
 ## Migration Plan
 
 None. First change in the repository; there is nothing to migrate from.

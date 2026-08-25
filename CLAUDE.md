@@ -18,8 +18,9 @@ with resolvable citations. Depth (OCR, hard formats, retrieval quality,
 summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
-Current state: **M0 complete** — configuration, storage seam, casefile service,
-REST and CLI adapters, tests, CI, Docker. No documents, no search, no MCP yet.
+Current state: **M0 complete and archived** — configuration, storage seam,
+casefile service, REST and CLI adapters, tests, CI, Docker. Its four capabilities
+are published in `openspec/specs/`. No documents, no search, no MCP yet.
 
 ## Rules
 

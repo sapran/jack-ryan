@@ -14,14 +14,20 @@ directly.
 - **WHEN** the service layer is inspected
 - **THEN** it calls only port methods, and contains no SQL statements
 
-### Requirement: One store holds text and vectors together
+### Requirement: One file holds everything an instance persists
 
-Persistence SHALL be a single SQLite file. Keyword text and vectors SHALL live
-in that same file so they are written in one transaction and cannot drift out
-of sync, leaving no subset invariant to maintain between separate stores.
+Persistence SHALL be a single SQLite file under the configured data directory.
+Everything an instance persists SHALL live in that file, so backing an instance
+up is copying one file.
 
 `StorePort` exists as the seam for a later heavier engine, and SHALL remain the
 only abstraction introduced for that purpose.
+
+Keeping retrieval data in this same file — so that text and its vectors are
+written in one transaction and cannot drift apart — is the reason the seam is
+shaped this way, but no retrieval data exists yet. That commitment is recorded
+in `docs/design.md` § 5 and becomes normative when the capability that stores
+text and vectors is specified.
 
 #### Scenario: A single file backs the instance
 
