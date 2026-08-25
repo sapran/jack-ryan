@@ -3,8 +3,8 @@
 ## Purpose
 
 Defines where business logic lives and what an adapter may do. Every rule is
-written once in the service layer; REST and CLI translate and nothing more, so
-no surface can enforce a different version of the domain.
+written once in the service layer; REST, CLI, and the agent surface translate
+and nothing more, so no surface can enforce a different version of the domain.
 
 ## Requirements
 
@@ -14,16 +14,21 @@ All domain rules — validation, reference resolution, and the shape of what may
 be stored — SHALL live in `src/jackryan/services/`. An adapter SHALL NOT
 enforce, duplicate, or relax a rule.
 
-The rule is stricter than it looks. An agent-facing surface has no
-request-validation layer of its own, so any rule it needs enforced has to be
-enforced beneath it — which is only true if no surface is permitted its own
-copy. `docs/design.md` § 5 records that surface; this requirement is what makes
-adding it safe.
+The agent-facing surface is why this is strict rather than tidy. That adapter
+has no request-validation layer of its own and is driven by a model rather than
+by a caller who read the documentation, so every rule it needs enforced has to
+already be enforced beneath it — which is only true if no adapter is permitted
+its own copy.
 
 #### Scenario: Adapters carry no validation
 
-- **WHEN** the REST and CLI adapters are inspected
-- **THEN** neither validates input nor resolves references itself; both delegate to the service layer
+- **WHEN** the REST, CLI, and agent adapters are inspected
+- **THEN** none validates input or resolves references itself; all delegate to the service layer
+
+#### Scenario: Every adapter inherits the same rule
+
+- **WHEN** the same invalid input is submitted through each adapter
+- **THEN** each reports the same typed failure, because one rule produced it
 
 ### Requirement: The service layer raises typed errors that adapters translate
 
