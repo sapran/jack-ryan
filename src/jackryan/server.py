@@ -93,14 +93,40 @@ def serialize_hit(hit: SearchHit) -> dict[str, Any]:
 
 
 def create_app(context: Context | None = None) -> FastAPI:
+    # The context is built here rather than in the lifespan because the agent
+    # surface is mounted from it at construction time. Mounting later would
+    # mean an app that serves REST while silently offering no tools.
+    owned = context is None
+    ctx = context or build_context()
+
+    # Built here, not inside the lifespan, because the app is mounted from it
+    # at construction time.
+    from .interfaces.mcp import build_mcp_server
+
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    mcp_app = build_mcp_server(ctx).streamable_http_app(
+        streamable_http_path="/",
+        # Rebinding protection stays on; which names are acceptable is a
+        # deployment fact, so it comes from configuration.
+        transport_security=TransportSecuritySettings(
+            allowed_hosts=list(ctx.config.profile.mcp_allowed_hosts),
+            allowed_origins=list(ctx.config.profile.mcp_allowed_hosts),
+        ),
+    )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.context = context or build_context()
-        try:
-            yield
-        finally:
-            if context is None:
-                app.state.context.close()
+        app.state.context = ctx
+        # Starlette does not run a mounted sub-app's lifespan, and the MCP
+        # session manager is started by exactly that lifespan. Without this the
+        # mount accepts requests and fails every one of them.
+        async with mcp_app.router.lifespan_context(mcp_app):
+            try:
+                yield
+            finally:
+                if owned:
+                    ctx.close()
 
     app = FastAPI(
         title="Jack Ryan",
@@ -162,6 +188,10 @@ def create_app(context: Context | None = None) -> FastAPI:
     async def delete_casefile(request: Request, reference: str) -> dict[str, Any]:
         ctx: Context = request.app.state.context
         return {"deleted": serialize(ctx.casefiles.delete(reference))}
+
+    # The agent surface rides the same process as REST, so an analyst points one
+    # harness at one address and gets both.
+    app.mount("/mcp", mcp_app)
 
     @app.post("/api/casefiles/{reference}/ingest")
     async def ingest(request: Request, reference: str, payload: IngestRequest) -> dict[str, Any]:

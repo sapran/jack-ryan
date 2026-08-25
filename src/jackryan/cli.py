@@ -109,6 +109,14 @@ def build_parser() -> argparse.ArgumentParser:
     delete = casefile.add_parser("delete", help="delete a casefile")
     delete.add_argument("reference")
 
+    serve = sub.add_parser(
+        "serve-mcp", help="serve the agent tool surface over stdio"
+    )
+    serve.add_argument(
+        "--profile", default=None,
+        help="tool surface to advertise (default: the configured one)",
+    )
+
     ingest = sub.add_parser("ingest", help="ingest a file or folder into a casefile")
     ingest.add_argument("casefile")
     ingest.add_argument("path")
@@ -153,6 +161,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 },
                 args.json,
             )
+            return 0
+
+        if args.command == "serve-mcp":
+            from .interfaces.mcp import build_mcp_server
+
+            # Runs until the client disconnects; stdout belongs to the protocol
+            # from here on, so nothing else may print to it.
+            build_mcp_server(context, args.profile).run(transport="stdio")
             return 0
 
         if args.command == "ingest":

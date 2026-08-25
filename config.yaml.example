@@ -25,6 +25,9 @@ profiles:
     # "model" is the real embedder. "deterministic" produces vectors that
     # carry no meaning and exists for tests — never set it on real data.
     embedder: model
+    # Which agent-facing tool surface to advertise: readonly | analyst | admin.
+    # An unrecognised name narrows to readonly rather than widening.
+    mcp_profile: readonly
 
   remote:
     # Point at your own OpenAI-compatible endpoints. Comma-separated for

@@ -435,6 +435,51 @@ class SqliteStore:
             ).fetchall()
         return {row["id"]: _row_to_chunk(row) for row in rows}
 
+    def find_chunks_by_id_prefix(self, casefile_id: str, prefix: str) -> list[Chunk]:
+        pattern = _escape_like(prefix) + "%"
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM chunks WHERE casefile_id = ? AND id LIKE ? ESCAPE '\\'"
+                " ORDER BY document_id, ordinal",
+                (casefile_id, pattern),
+            ).fetchall()
+        return [_row_to_chunk(row) for row in rows]
+
+    def casefile_statistics(self, casefile_id: str) -> dict[str, object]:
+        """Counts and sizes computed in the database.
+
+        Loading every document's text to measure it costs the whole corpus in
+        memory for a handful of integers.
+        """
+        with self._lock:
+            totals = self._db.execute(
+                "SELECT COUNT(*) AS documents, COALESCE(SUM(LENGTH(extracted_text)), 0) AS characters"
+                " FROM documents WHERE casefile_id = ?",
+                (casefile_id,),
+            ).fetchone()
+            by_type = self._db.execute(
+                "SELECT media_type, COUNT(*) AS count FROM documents WHERE casefile_id = ?"
+                " GROUP BY media_type ORDER BY media_type",
+                (casefile_id,),
+            ).fetchall()
+        return {
+            "documents": totals["documents"],
+            "characters": totals["characters"],
+            "by_type": {(r["media_type"] or "unknown"): r["count"] for r in by_type},
+        }
+
+    def get_document_chunks_around(
+        self, document_id: str, ordinal: int, radius: int
+    ) -> list[Chunk]:
+        """A chunk's neighbours within a document, so a passage can be read in context."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM chunks WHERE document_id = ? AND ordinal BETWEEN ? AND ?"
+                " ORDER BY ordinal",
+                (document_id, ordinal - int(radius), ordinal + int(radius)),
+            ).fetchall()
+        return [_row_to_chunk(row) for row in rows]
+
     # -- retrieval ---------------------------------------------------------
 
     def search_keyword(self, casefile_id: str, query: str, limit: int) -> list[str]:
