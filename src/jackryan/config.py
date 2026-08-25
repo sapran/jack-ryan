@@ -25,10 +25,13 @@ from .errors import ConfigError
 
 _ENV_PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
+# Every value here is consumed by chunking or by embedding. Nothing decorative
+# belongs in the contract: the fingerprint must cover exactly what determines
+# corpus identity, so that a change to it is always a real incompatibility.
 DEFAULT_CONTRACT: dict[str, Any] = {
-    "chunk_size": 1024,
-    "chunk_overlap": 0,
-    "embed_model_family": "bge-m3",
+    "chunk_max_chars": 2000,
+    "chunk_overlap_chars": 200,
+    "embed_model": "intfloat/multilingual-e5-large",
     "embed_dimensions": 1024,
 }
 
@@ -37,9 +40,9 @@ DEFAULT_CONTRACT: dict[str, Any] = {
 class Contract:
     """Corpus-coupled settings. Changing any of these forces a reingest."""
 
-    chunk_size: int = DEFAULT_CONTRACT["chunk_size"]
-    chunk_overlap: int = DEFAULT_CONTRACT["chunk_overlap"]
-    embed_model_family: str = DEFAULT_CONTRACT["embed_model_family"]
+    chunk_max_chars: int = DEFAULT_CONTRACT["chunk_max_chars"]
+    chunk_overlap_chars: int = DEFAULT_CONTRACT["chunk_overlap_chars"]
+    embed_model: str = DEFAULT_CONTRACT["embed_model"]
     embed_dimensions: int = DEFAULT_CONTRACT["embed_dimensions"]
 
     def fingerprint(self) -> str:
@@ -49,9 +52,9 @@ class Contract:
         on disk was built under different rules and must not be appended to.
         """
         parts = (
-            f"chunk_size={self.chunk_size}",
-            f"chunk_overlap={self.chunk_overlap}",
-            f"embed_model_family={self.embed_model_family}",
+            f"chunk_max_chars={self.chunk_max_chars}",
+            f"chunk_overlap_chars={self.chunk_overlap_chars}",
+            f"embed_model={self.embed_model}",
             f"embed_dimensions={self.embed_dimensions}",
         )
         return "|".join(parts)
@@ -65,6 +68,12 @@ class Profile:
     llm_url: str = ""
     embed_url: str = ""
     api_key: str = ""
+    embedder: str = "model"
+    """Which embedder to construct: ``model`` (the real one) or ``deterministic``.
+
+    ``deterministic`` exists for tests and produces vectors that carry no
+    meaning, so it is never selected implicitly.
+    """
 
 
 @dataclass(frozen=True)
@@ -151,7 +160,17 @@ def _select_profile(document: dict[str, Any]) -> Profile:
         llm_url=str(_interpolate(settings.get("llm_url", "")) or ""),
         embed_url=str(_interpolate(settings.get("embed_url", "")) or ""),
         api_key=str(_interpolate(settings.get("api_key", "")) or ""),
+        embedder=_validated_embedder(settings.get("embedder", "model"), name),
     )
+
+
+def _validated_embedder(value: Any, profile: str) -> str:
+    choice = str(value or "model").strip().lower()
+    if choice not in ("model", "deterministic"):
+        raise ConfigError(
+            f"profile {profile!r} sets embedder={choice!r}; expected 'model' or 'deterministic'"
+        )
+    return choice
 
 
 def _build_contract(document: dict[str, Any]) -> Contract:
@@ -168,12 +187,20 @@ def _build_contract(document: dict[str, Any]) -> Contract:
 
     values = {**DEFAULT_CONTRACT, **declared}
     try:
-        return Contract(
-            chunk_size=int(values["chunk_size"]),
-            chunk_overlap=int(values["chunk_overlap"]),
-            embed_model_family=str(values["embed_model_family"]),
+        contract = Contract(
+            chunk_max_chars=int(values["chunk_max_chars"]),
+            chunk_overlap_chars=int(values["chunk_overlap_chars"]),
+            embed_model=str(values["embed_model"]),
             embed_dimensions=int(values["embed_dimensions"]),
         )
+        if contract.chunk_overlap_chars >= contract.chunk_max_chars:
+            raise ConfigError(
+                "contract chunk_overlap_chars must be smaller than chunk_max_chars, "
+                "otherwise chunking cannot advance through the text"
+            )
+        if contract.chunk_max_chars < 1 or contract.embed_dimensions < 1:
+            raise ConfigError("contract chunk_max_chars and embed_dimensions must be positive")
+        return contract
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"contract value is not of the expected type: {exc}") from exc
 

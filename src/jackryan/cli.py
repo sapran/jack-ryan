@@ -15,7 +15,7 @@ from typing import Any, Sequence
 from . import __version__
 from .app import build_context
 from .errors import JackRyanError
-from .storage.port import Casefile
+from .storage.port import Casefile, Document, SearchHit
 
 
 def _render(casefile: Casefile) -> dict[str, Any]:
@@ -30,16 +30,49 @@ def _render(casefile: Casefile) -> dict[str, Any]:
     }
 
 
-def _print(payload: Any, as_json: bool) -> None:
+def _render_document(document: Document) -> dict[str, Any]:
+    return {
+        "id": document.id,
+        "short_id": document.short_id,
+        "filename": document.filename,
+        "media_type": document.media_type,
+        "byte_size": document.byte_size,
+        "extractor": document.extractor,
+        "characters": len(document.extracted_text),
+        "created_at": document.created_at.isoformat(),
+    }
+
+
+def _render_hit(hit: SearchHit) -> dict[str, Any]:
+    return {
+        "chunk_id": hit.chunk.id,
+        "document_id": hit.document.id,
+        "document": hit.document.filename,
+        "score": round(hit.score, 6),
+        "keyword_rank": hit.keyword_rank,
+        "vector_rank": hit.vector_rank,
+        "heading_path": hit.chunk.heading_path,
+        "char_start": hit.chunk.char_start,
+        "char_end": hit.chunk.char_end,
+        "text": hit.chunk.text,
+    }
+
+
+def _print(payload: Any, as_json: bool, empty_message: str = "Nothing to show.") -> None:
     if as_json:
         print(json.dumps(payload, indent=2))
         return
     if isinstance(payload, list):
         if not payload:
-            print("No casefiles yet. Create one with: jackryan casefile create <title>")
+            print(empty_message)
             return
         for item in payload:
-            print(f"{item['short_id']}  {item['slug']:<28}  {item['title']}")
+            if "slug" in item:
+                print(f"{item['short_id']}  {item['slug']:<28}  {item['title']}")
+            elif "filename" in item:
+                print(f"{item['short_id']}  {item['filename']:<38}  {item['characters']:>8} chars")
+            else:
+                print(item)
         return
     for key, value in payload.items():
         print(f"{key:<12} {value}")
@@ -76,12 +109,37 @@ def build_parser() -> argparse.ArgumentParser:
     delete = casefile.add_parser("delete", help="delete a casefile")
     delete.add_argument("reference")
 
+    ingest = sub.add_parser("ingest", help="ingest a file or folder into a casefile")
+    ingest.add_argument("casefile")
+    ingest.add_argument("path")
+
+    search = sub.add_parser("search", help="search a casefile")
+    search.add_argument("casefile")
+    search.add_argument("query")
+    search.add_argument("--limit", type=int, default=10)
+
+    document = sub.add_parser("document", help="inspect ingested documents").add_subparsers(
+        dest="document_command", required=True
+    )
+    doc_list = document.add_parser("list", help="list a casefile's documents")
+    doc_list.add_argument("casefile")
+    doc_show = document.add_parser("show", help="show one document")
+    doc_show.add_argument("casefile")
+    doc_show.add_argument("reference")
+
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    context = build_context()
+    try:
+        # Composition itself can fail — a bad profile, or a store built under a
+        # different contract — and those are exactly the errors an operator
+        # needs stated plainly rather than as a traceback.
+        context = build_context()
+    except JackRyanError as exc:
+        print(f"{exc.code}: {exc}", file=sys.stderr)
+        return 1
     try:
         if args.command == "status":
             _print(
@@ -97,11 +155,68 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
 
+        if args.command == "ingest":
+            report = context.ingestion.ingest(args.casefile, args.path)
+            if args.json:
+                _print(
+                    {
+                        "ingested": report.ingested,
+                        "failed": report.failed,
+                        "outcomes": [
+                            {
+                                "path": o.path,
+                                "status": o.status,
+                                "document_id": o.document_id,
+                                "chunks": o.chunks,
+                                "detail": o.detail,
+                            }
+                            for o in report.outcomes
+                        ],
+                    },
+                    True,
+                )
+            else:
+                for outcome in report.outcomes:
+                    suffix = f" — {outcome.detail}" if outcome.detail else ""
+                    name = outcome.path.rsplit("/", 1)[-1]
+                    print(f"{outcome.status:<10} {name} ({outcome.chunks} chunks){suffix}")
+                print(f"\n{report.ingested} ingested, {report.failed} failed")
+            return 1 if report.failed and not report.ingested else 0
+
+        if args.command == "search":
+            hits = context.search.search(args.casefile, args.query, args.limit)
+            if args.json:
+                _print([_render_hit(h) for h in hits], True, "")
+            elif not hits:
+                print("No matches.")
+            else:
+                for i, hit in enumerate(hits, 1):
+                    where = f" · {hit.chunk.heading_path}" if hit.chunk.heading_path else ""
+                    print(f"{i}. {hit.document.filename}{where}  [{hit.chunk.short_id}]")
+                    body = " ".join(hit.chunk.text.split())
+                    print(f"   {body[:180]}{'…' if len(body) > 180 else ''}\n")
+            return 0
+
+        if args.command == "document":
+            if args.document_command == "list":
+                _print(
+                    [_render_document(d) for d in context.ingestion.list_documents(args.casefile)],
+                    args.json,
+                    "No documents yet. Add some with: jackryan ingest <casefile> <path>",
+                )
+            else:
+                _print(_render_document(context.ingestion.resolve_document(args.casefile, args.reference)), args.json)
+            return 0
+
         service = context.casefiles
         if args.casefile_command == "create":
             _print(_render(service.create(args.title, args.description, args.slug)), args.json)
         elif args.casefile_command == "list":
-            _print([_render(c) for c in service.list()], args.json)
+            _print(
+                [_render(c) for c in service.list()],
+                args.json,
+                "No casefiles yet. Create one with: jackryan casefile create <title>",
+            )
         elif args.casefile_command == "show":
             _print(_render(service.resolve(args.reference)), args.json)
         elif args.casefile_command == "update":

@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -23,7 +24,7 @@ from .errors import (
     NotFoundError,
     ValidationError,
 )
-from .storage.port import Casefile
+from .storage.port import Casefile, Document, SearchHit
 
 _STATUS_FOR_ERROR = {
     ValidationError: 400,
@@ -54,6 +55,40 @@ def serialize(casefile: Casefile) -> dict[str, Any]:
         "description": casefile.description,
         "created_at": casefile.created_at.isoformat(),
         "updated_at": casefile.updated_at.isoformat(),
+    }
+
+
+class IngestRequest(BaseModel):
+    path: str = Field(..., description="File or folder on the instance to ingest")
+
+
+def serialize_document(document: Document) -> dict[str, Any]:
+    return {
+        "id": document.id,
+        "short_id": document.short_id,
+        "casefile_id": document.casefile_id,
+        "filename": document.filename,
+        "media_type": document.media_type,
+        "byte_size": document.byte_size,
+        "extractor": document.extractor,
+        "characters": len(document.extracted_text),
+        "created_at": document.created_at.isoformat(),
+        "updated_at": document.updated_at.isoformat(),
+    }
+
+
+def serialize_hit(hit: SearchHit) -> dict[str, Any]:
+    return {
+        "chunk_id": hit.chunk.id,
+        "document_id": hit.document.id,
+        "document": hit.document.filename,
+        "score": hit.score,
+        "keyword_rank": hit.keyword_rank,
+        "vector_rank": hit.vector_rank,
+        "heading_path": hit.chunk.heading_path,
+        "char_start": hit.chunk.char_start,
+        "char_end": hit.chunk.char_end,
+        "text": hit.chunk.text,
     }
 
 
@@ -127,5 +162,49 @@ def create_app(context: Context | None = None) -> FastAPI:
     async def delete_casefile(request: Request, reference: str) -> dict[str, Any]:
         ctx: Context = request.app.state.context
         return {"deleted": serialize(ctx.casefiles.delete(reference))}
+
+    @app.post("/api/casefiles/{reference}/ingest")
+    async def ingest(request: Request, reference: str, payload: IngestRequest) -> dict[str, Any]:
+        ctx: Context = request.app.state.context
+        # Ingestion is long and synchronous; running it on the event loop would
+        # freeze every other request for its duration.
+        report = await run_in_threadpool(ctx.ingestion.ingest, reference, payload.path)
+        return {
+            "casefile_id": report.casefile_id,
+            "ingested": report.ingested,
+            "failed": report.failed,
+            "outcomes": [
+                {
+                    "path": o.path,
+                    "status": o.status,
+                    "document_id": o.document_id,
+                    "chunks": o.chunks,
+                    "detail": o.detail,
+                }
+                for o in report.outcomes
+            ],
+        }
+
+    @app.get("/api/casefiles/{reference}/documents")
+    async def list_documents(request: Request, reference: str) -> dict[str, Any]:
+        ctx: Context = request.app.state.context
+        documents = ctx.ingestion.list_documents(reference)
+        return {"total": len(documents), "documents": [serialize_document(d) for d in documents]}
+
+    @app.get("/api/casefiles/{reference}/documents/{document_reference}")
+    async def get_document(
+        request: Request, reference: str, document_reference: str
+    ) -> dict[str, Any]:
+        ctx: Context = request.app.state.context
+        return serialize_document(ctx.ingestion.resolve_document(reference, document_reference))
+
+    @app.get("/api/casefiles/{reference}/search")
+    async def search(
+        request: Request, reference: str, q: str, limit: int = 10
+    ) -> dict[str, Any]:
+        ctx: Context = request.app.state.context
+        # Embedding a query and two index scans are blocking work too.
+        hits = await run_in_threadpool(ctx.search.search, reference, q, limit)
+        return {"query": q, "total": len(hits), "results": [serialize_hit(h) for h in hits]}
 
     return app

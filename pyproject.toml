@@ -12,6 +12,13 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
     "pyyaml>=6.0",
+    # Extraction engine. Heavy by design: its weight is the OCR and VLM
+    # machinery that later milestones depend on.
+    "docling>=2.0",
+    # ONNX embeddings, so no torch runtime is needed to search.
+    "fastembed>=0.4",
+    # Vector search inside the same SQLite file that holds the text.
+    "sqlite-vec>=0.1.6",
 ]
 
 [project.optional-dependencies]

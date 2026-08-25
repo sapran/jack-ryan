@@ -61,3 +61,55 @@ def test_delete_removes_it(capsys):
     assert code == 0
     _, out, _ = run(["--json", "casefile", "list"], capsys)
     assert json.loads(out) == []
+
+
+# -- M1: ingest, search, documents ---------------------------------------
+
+
+def test_ingest_then_search(capsys, corpus):
+    run(["--json", "casefile", "create", "Harbour Inquiry"], capsys)
+
+    code, out, _ = run(["--json", "ingest", "harbour-inquiry", str(corpus)], capsys)
+    assert code == 0
+    assert json.loads(out)["ingested"] == 3
+
+    code, out, _ = run(["--json", "search", "harbour-inquiry", "harbour lease Northgate"], capsys)
+    assert code == 0
+    results = json.loads(out)
+    assert results and results[0]["document"] == "lease.md"
+
+
+def test_ingest_prints_a_line_per_document(capsys, corpus):
+    run(["--json", "casefile", "create", "Harbour Inquiry"], capsys)
+    code, out, _ = run(["ingest", "harbour-inquiry", str(corpus)], capsys)
+    assert code == 0
+    assert "3 ingested, 0 failed" in out
+
+
+def test_search_says_so_when_nothing_matches(capsys, corpus):
+    run(["--json", "casefile", "create", "Empty Case"], capsys)
+    code, out, _ = run(["search", "empty-case", "anything at all"], capsys)
+    assert code == 0
+    assert "No matches" in out
+
+
+def test_document_list_and_show(capsys, corpus):
+    run(["--json", "casefile", "create", "Harbour Inquiry"], capsys)
+    run(["--json", "ingest", "harbour-inquiry", str(corpus)], capsys)
+
+    code, out, _ = run(["--json", "document", "list", "harbour-inquiry"], capsys)
+    assert code == 0
+    documents = json.loads(out)
+    assert len(documents) == 3
+
+    code, out, _ = run(
+        ["--json", "document", "show", "harbour-inquiry", documents[0]["short_id"]], capsys
+    )
+    assert code == 0
+    assert json.loads(out)["id"] == documents[0]["id"]
+
+
+def test_ingesting_into_an_unknown_casefile_exits_nonzero(capsys, corpus):
+    code, _, err = run(["ingest", "no-such-case", str(corpus)], capsys)
+    assert code == 1
+    assert "not_found" in err

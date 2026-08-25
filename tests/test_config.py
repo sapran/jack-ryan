@@ -77,4 +77,4 @@ def test_unset_secret_placeholder_is_fatal(tmp_path, monkeypatch):
 
 
 def test_contract_fingerprint_changes_with_any_value():
-    assert Contract().fingerprint() != Contract(chunk_size=512).fingerprint()
+    assert Contract().fingerprint() != Contract(chunk_max_chars=512).fingerprint()
