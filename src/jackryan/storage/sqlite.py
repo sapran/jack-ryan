@@ -8,15 +8,19 @@ to drift apart, so there is no reconciliation problem to solve between them.
 
 from __future__ import annotations
 
+import json
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..errors import ConfigError, ConflictError
-from .port import Casefile
+import sqlite_vec
 
-SCHEMA_VERSION = 1
+from ..errors import ConfigError, ConflictError
+from .port import Casefile, Chunk, Document
+
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS store_meta (
@@ -34,6 +38,42 @@ CREATE TABLE IF NOT EXISTS casefiles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_casefiles_slug ON casefiles(slug);
+
+CREATE TABLE IF NOT EXISTS documents (
+    id             TEXT PRIMARY KEY,
+    casefile_id    TEXT NOT NULL REFERENCES casefiles(id) ON DELETE CASCADE,
+    content_hash   TEXT NOT NULL,
+    filename       TEXT NOT NULL,
+    media_type     TEXT NOT NULL DEFAULT '',
+    byte_size      INTEGER NOT NULL DEFAULT 0,
+    extracted_text TEXT NOT NULL DEFAULT '',
+    extractor      TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    UNIQUE(casefile_id, content_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_documents_casefile ON documents(casefile_id);
+
+-- The implicit integer rowid is the key that ties a chunk to its full-text
+-- entry and to its vector, so all three are addressed identically.
+CREATE TABLE IF NOT EXISTS chunks (
+    id           TEXT NOT NULL UNIQUE,
+    document_id  TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    casefile_id  TEXT NOT NULL REFERENCES casefiles(id) ON DELETE CASCADE,
+    ordinal      INTEGER NOT NULL,
+    heading_path TEXT NOT NULL DEFAULT '',
+    text         TEXT NOT NULL,
+    char_start   INTEGER NOT NULL,
+    char_end     INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_casefile ON chunks(casefile_id);
+
+-- External-content FTS: the text lives once, in `chunks`.
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
+    USING fts5(text, content='chunks', content_rowid='rowid');
 """
 
 
@@ -56,6 +96,41 @@ def _row_to_casefile(row: sqlite3.Row) -> Casefile:
     )
 
 
+_FTS_TOKEN = re.compile(r"[\w\u0400-\u04FF]+", re.UNICODE)
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _row_to_document(row: sqlite3.Row) -> Document:
+    return Document(
+        id=row["id"],
+        casefile_id=row["casefile_id"],
+        content_hash=row["content_hash"],
+        filename=row["filename"],
+        media_type=row["media_type"],
+        byte_size=row["byte_size"],
+        extracted_text=row["extracted_text"],
+        extractor=row["extractor"],
+        created_at=_from_iso(row["created_at"]),
+        updated_at=_from_iso(row["updated_at"]),
+    )
+
+
+def _row_to_chunk(row: sqlite3.Row) -> Chunk:
+    return Chunk(
+        id=row["id"],
+        document_id=row["document_id"],
+        casefile_id=row["casefile_id"],
+        ordinal=row["ordinal"],
+        heading_path=row["heading_path"],
+        text=row["text"],
+        char_start=row["char_start"],
+        char_end=row["char_end"],
+    )
+
+
 class SqliteStore:
     """A single-file store guarded by one lock.
 
@@ -68,18 +143,29 @@ class SqliteStore:
         self._path = path
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
+        self._dimensions = 0
 
     # -- lifecycle ---------------------------------------------------------
 
-    def initialize(self, contract_fingerprint: str) -> None:
+    def initialize(self, contract_fingerprint: str, embed_dimensions: int) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self._path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(_SCHEMA)
+        # The vector index is sized from the contract, so its width is part of
+        # corpus identity and cannot drift from the embeddings it holds.
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors "
+            f"USING vec0(embedding float[{int(embed_dimensions)}])"
+        )
         conn.commit()
         self._conn = conn
+        self._dimensions = int(embed_dimensions)
 
         self._verify_meta("schema_version", str(SCHEMA_VERSION))
         self._verify_meta("contract_fingerprint", contract_fingerprint)
@@ -159,7 +245,7 @@ class SqliteStore:
     def find_casefiles_by_id_prefix(self, prefix: str) -> list[Casefile]:
         # LIKE with an escaped prefix: ids are hex, but the escape keeps a
         # caller-supplied wildcard from turning a lookup into a scan match.
-        pattern = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        pattern = _escape_like(prefix) + "%"
         with self._lock:
             rows = self._db.execute(
                 "SELECT * FROM casefiles WHERE id LIKE ? ESCAPE '\\' ORDER BY created_at",
@@ -198,3 +284,184 @@ class SqliteStore:
             cursor = self._db.execute("DELETE FROM casefiles WHERE id = ?", (casefile_id,))
             self._db.commit()
             return cursor.rowcount > 0
+
+    # -- documents ---------------------------------------------------------
+
+    def upsert_document(self, document: Document) -> Document:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO documents (id, casefile_id, content_hash, filename, media_type,"
+                " byte_size, extracted_text, extractor, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(casefile_id, content_hash) DO UPDATE SET"
+                "   filename = excluded.filename,"
+                "   media_type = excluded.media_type,"
+                "   byte_size = excluded.byte_size,"
+                "   extracted_text = excluded.extracted_text,"
+                "   extractor = excluded.extractor,"
+                "   updated_at = excluded.updated_at",
+                (
+                    document.id,
+                    document.casefile_id,
+                    document.content_hash,
+                    document.filename,
+                    document.media_type,
+                    document.byte_size,
+                    document.extracted_text,
+                    document.extractor,
+                    _to_iso(document.created_at),
+                    _to_iso(document.updated_at),
+                ),
+            )
+            self._db.commit()
+        stored = self.find_document_by_hash(document.casefile_id, document.content_hash)
+        assert stored is not None
+        return stored
+
+    def get_document(self, document_id: str) -> Document | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM documents WHERE id = ?", (document_id,)
+            ).fetchone()
+        return _row_to_document(row) if row else None
+
+    def find_document_by_hash(self, casefile_id: str, content_hash: str) -> Document | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM documents WHERE casefile_id = ? AND content_hash = ?",
+                (casefile_id, content_hash),
+            ).fetchone()
+        return _row_to_document(row) if row else None
+
+    def find_documents_by_id_prefix(self, casefile_id: str, prefix: str) -> list[Document]:
+        pattern = _escape_like(prefix) + "%"
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM documents WHERE casefile_id = ? AND id LIKE ? ESCAPE '\\'"
+                " ORDER BY created_at",
+                (casefile_id, pattern),
+            ).fetchall()
+        return [_row_to_document(r) for r in rows]
+
+    def list_documents(self, casefile_id: str) -> list[Document]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM documents WHERE casefile_id = ? ORDER BY created_at DESC",
+                (casefile_id,),
+            ).fetchall()
+        return [_row_to_document(r) for r in rows]
+
+    # -- chunks ------------------------------------------------------------
+
+    def replace_chunks(
+        self, document_id: str, chunks: list[Chunk], embeddings: list[list[float]]
+    ) -> None:
+        """Replace a document's chunks, full-text entries, and vectors atomically.
+
+        One transaction covers all three, so a chunk whose text is stored
+        without its vector is not a state the store can be left in.
+        """
+        if len(chunks) != len(embeddings):
+            raise ValueError("each chunk must have exactly one embedding")
+        for embedding in embeddings:
+            if len(embedding) != self._dimensions:
+                raise ConfigError(
+                    f"embedding has width {len(embedding)} but the contract declares "
+                    f"{self._dimensions}; refusing to store it"
+                )
+
+        with self._lock:
+            db = self._db
+            try:
+                db.execute("BEGIN")
+                # Drop old rows from all three places before writing new ones.
+                old = db.execute(
+                    "SELECT rowid, text FROM chunks WHERE document_id = ?", (document_id,)
+                ).fetchall()
+                for row in old:
+                    db.execute(
+                        "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
+                        (row["rowid"], row["text"]),
+                    )
+                    db.execute("DELETE FROM chunk_vectors WHERE rowid = ?", (row["rowid"],))
+                db.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
+
+                for chunk, embedding in zip(chunks, embeddings):
+                    cursor = db.execute(
+                        "INSERT INTO chunks (id, document_id, casefile_id, ordinal,"
+                        " heading_path, text, char_start, char_end)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            chunk.id,
+                            chunk.document_id,
+                            chunk.casefile_id,
+                            chunk.ordinal,
+                            chunk.heading_path,
+                            chunk.text,
+                            chunk.char_start,
+                            chunk.char_end,
+                        ),
+                    )
+                    rowid = cursor.lastrowid
+                    db.execute(
+                        "INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)", (rowid, chunk.text)
+                    )
+                    db.execute(
+                        "INSERT INTO chunk_vectors(rowid, embedding) VALUES (?, ?)",
+                        (rowid, json.dumps(list(embedding))),
+                    )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
+    def get_chunks(self, chunk_ids: list[str]) -> dict[str, Chunk]:
+        if not chunk_ids:
+            return {}
+        placeholders = ",".join("?" for _ in chunk_ids)
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT * FROM chunks WHERE id IN ({placeholders})", tuple(chunk_ids)
+            ).fetchall()
+        return {row["id"]: _row_to_chunk(row) for row in rows}
+
+    # -- retrieval ---------------------------------------------------------
+
+    def search_keyword(self, casefile_id: str, query: str, limit: int) -> list[str]:
+        """Rank chunks by full-text relevance, returning chunk ids in order.
+
+        Every term is quoted so that user text is matched as words rather than
+        interpreted as FTS5 operators.
+        """
+        terms = [t for t in _FTS_TOKEN.findall(query) if t]
+        if not terms:
+            return []
+        match = " OR ".join(f'"{t}"' for t in terms)
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT c.id AS id FROM chunks_fts f"
+                " JOIN chunks c ON c.rowid = f.rowid"
+                " WHERE chunks_fts MATCH ? AND c.casefile_id = ?"
+                " ORDER BY bm25(chunks_fts) LIMIT ?",
+                (match, casefile_id, int(limit)),
+            ).fetchall()
+        return [row["id"] for row in rows]
+
+    def search_vector(self, casefile_id: str, embedding: list[float], limit: int) -> list[str]:
+        """Rank chunks by vector distance, returning chunk ids nearest first."""
+        if len(embedding) != self._dimensions:
+            raise ConfigError(
+                f"query embedding has width {len(embedding)} but the contract declares "
+                f"{self._dimensions}"
+            )
+        with self._lock:
+            # Over-fetch, then scope: vec0 KNN cannot join to the casefile.
+            rows = self._db.execute(
+                "SELECT c.id AS id FROM ("
+                "  SELECT rowid, distance FROM chunk_vectors"
+                "  WHERE embedding MATCH ? ORDER BY distance LIMIT ?"
+                ") v JOIN chunks c ON c.rowid = v.rowid"
+                " WHERE c.casefile_id = ? ORDER BY v.distance LIMIT ?",
+                (json.dumps(list(embedding)), int(limit) * 8, casefile_id, int(limit)),
+            ).fetchall()
+        return [row["id"] for row in rows]

@@ -8,19 +8,23 @@
 # Precedence: real environment variable > this file > built-in default.
 
 contract:
-  # Frozen at M0 as declarations; the pipeline that consumes them lands in M1.
-  chunk_size: 1024
-  chunk_overlap: 0
-  embed_model_family: bge-m3
+  # Every value here is read by chunking or by embedding. Changing any of them
+  # changes corpus identity, and an existing store will refuse to open.
+  chunk_max_chars: 2000
+  chunk_overlap_chars: 200
+  embed_model: intfloat/multilingual-e5-large
   embed_dimensions: 1024
 
 default_profile: local
 
 profiles:
   local:
-    # Fully offline. No endpoint required; the read stack runs in-process.
+    # Fully offline. No endpoint required; embedding runs in-process.
     llm_url: ""
     embed_url: ""
+    # "model" is the real embedder. "deterministic" produces vectors that
+    # carry no meaning and exists for tests — never set it on real data.
+    embedder: model
 
   remote:
     # Point at your own OpenAI-compatible endpoints. Comma-separated for

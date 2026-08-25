@@ -13,13 +13,13 @@ the machine unless you point it at an endpoint yourself.
 
 ## Status
 
-**M0 complete.** The workbench runs, but holds no documents yet: this milestone
-delivers the foundations — layered configuration, the storage seam, the
-casefile service, REST and CLI adapters, a test suite, and CI.
+**M1 built.** The workbench now holds a corpus: point it at a folder and its
+documents are extracted, chunked, embedded, and searchable by keyword and
+meaning together.
 
 Delivery is prototype-first. The prototype is M0–M2 and proves one loop: ingest
 documents, then have the assistant work the corpus over MCP and answer with
-resolvable citations. Next up is **M1** — ingest and search.
+resolvable citations. Next up is **M2** — the MCP surface and the analyst.
 
 The design document and full staged plan: [`docs/design.md`](docs/design.md).
 
@@ -33,8 +33,12 @@ curl localhost:8500/health
 # Or locally
 uv venv --python 3.12 && uv pip install -e ".[dev]"
 jackryan casefile create "Harbour Leases 2021"
-jackryan casefile list
+jackryan ingest harbour-leases-2021 ~/dumps/harbour
+jackryan search harbour-leases-2021 "who signed the lease"
 ```
+
+Supported formats today: PDF, DOCX, PPTX, HTML, Markdown, and plain text.
+Scanned documents, email archives, and spreadsheets come with M3.
 
 Configuration is layered — a corpus-coupled `contract` plus swappable
 infrastructure `profiles`. Copy `config.yaml.example` to `config.yaml` and

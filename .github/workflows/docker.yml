@@ -12,8 +12,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Free runner disk
+        # The extraction engine alone is several gigabytes; the runner's stock
+        # toolchains are not needed to build this image.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
       - name: Build image
-        run: docker build -t jackryan:ci .
+        # Without the model pre-fetch: the gate proves the image builds, and
+        # weights would add gigabytes it never exercises.
+        run: docker build --build-arg PREFETCH_MODELS=false -t jackryan:ci .
 
       - name: Verify the CLI runs inside the image
         run: docker run --rm jackryan:ci jackryan --version

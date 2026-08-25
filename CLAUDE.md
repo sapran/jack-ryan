@@ -18,9 +18,10 @@ with resolvable citations. Depth (OCR, hard formats, retrieval quality,
 summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
-Current state: **M0 complete and archived** — configuration, storage seam,
-casefile service, REST and CLI adapters, tests, CI, Docker. Its four capabilities
-are published in `openspec/specs/`. No documents, no search, no MCP yet.
+Current state: **M1 built** — documents are ingested, chunked, embedded, and
+searchable. M0's foundations (config, storage seam, casefile service, REST and
+CLI) are archived and published in `openspec/specs/`. No MCP surface yet: that
+is M2, and it completes the prototype.
 
 ## Rules
 
@@ -86,6 +87,13 @@ silently corrupted corpus.
   There is no linter or formatter gate — a green PR means those three passed.
 - **The CLI calls services directly, not HTTP.** That is deliberate, so it
   works against a stopped instance.
+- **Never let the deterministic embedder become a fallback.** It produces
+  vectors with no meaning. It is selected only by `embedder: deterministic`, and
+  a real embedder that fails to load must stop ingestion rather than degrade to
+  it — silently storing meaningless vectors is unrecoverable without a reingest.
+- **Docling PDF extraction needs models on first use.** Markdown, HTML, DOCX and
+  PPTX parse offline. Build the image with `--build-arg PREFETCH_MODELS=true`
+  for a container that is offline from its first run.
 
 ## Commands
 
@@ -104,6 +112,9 @@ jackryan status
 jackryan casefile create "Some Investigation" --description "..."
 jackryan casefile list
 jackryan casefile show <id|short-id|slug>
+jackryan ingest <casefile> <file-or-folder>
+jackryan search <casefile> "a question"
+jackryan document list <casefile>
 
 # Docker
 docker compose up -d --build
@@ -116,6 +127,8 @@ docker compose run --rm cli casefile list
 - `src/jackryan/app.py` — composition root; the only place wiring happens
 - `src/jackryan/storage/port.py` — `StorePort`, the one deliberate abstraction
 - `src/jackryan/storage/sqlite.py` — the single-file store and its contract guard
+- `src/jackryan/ingestion/` — format router, extractors, chunker
+- `src/jackryan/embedding/` — embedder port, the real model, and the test double
 - `src/jackryan/services/` — all business logic
 - `src/jackryan/server.py`, `cli.py` — thin adapters
 - `src/jackryan/interfaces/` — reserved for the MCP surface (M2)
