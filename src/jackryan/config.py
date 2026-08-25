@@ -68,6 +68,19 @@ class Profile:
     llm_url: str = ""
     embed_url: str = ""
     api_key: str = ""
+    mcp_allowed_hosts: tuple[str, ...] = (
+        "localhost",
+        "127.0.0.1",
+        "localhost:8500",
+        "127.0.0.1:8500",
+    )
+    """Host headers the agent surface will answer over HTTP.
+
+    The MCP transport rejects unknown hosts to blunt DNS rebinding, which
+    matters for a service listening locally. A deployment reached under another
+    name has to say so here rather than have the protection turned off for it.
+    """
+
     mcp_profile: str = "readonly"
     """Which agent-facing tool surface to advertise.
 
@@ -169,7 +182,26 @@ def _select_profile(document: dict[str, Any]) -> Profile:
         api_key=str(_interpolate(settings.get("api_key", "")) or ""),
         embedder=_validated_embedder(settings.get("embedder", "model"), name),
         mcp_profile=str(settings.get("mcp_profile", "readonly") or "readonly").strip().lower(),
+        mcp_allowed_hosts=_validated_hosts(settings.get("mcp_allowed_hosts"), name),
     )
+
+
+def _validated_hosts(value: Any, profile: str) -> tuple[str, ...]:
+    if value is None:
+        return Profile.__dataclass_fields__["mcp_allowed_hosts"].default
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)) or not all(isinstance(v, str) for v in value):
+        raise ConfigError(
+            f"profile {profile!r} sets mcp_allowed_hosts to something other than a list of names"
+        )
+    cleaned = tuple(str(_interpolate(v)).strip() for v in value if str(v).strip())
+    if not cleaned:
+        raise ConfigError(
+            f"profile {profile!r} sets an empty mcp_allowed_hosts; the agent surface would "
+            "answer nothing over HTTP"
+        )
+    return cleaned
 
 
 def _validated_embedder(value: Any, profile: str) -> str:

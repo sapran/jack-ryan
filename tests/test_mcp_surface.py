@@ -84,9 +84,14 @@ async def test_search_separates_index_from_bodies(server):
     body = await call(server, "case_search", {"casefile": "harbour-inquiry", "query": "harbour lease"})
     assert body["formatted"]
     assert body["results"]
+    nonce = body["fence_nonce"]
     for result in body["results"]:
-        # The body appears once, under `text`, and the index carries no prose.
-        assert result["text"] not in body["formatted"]
+        # Compare the *unfenced* body: comparing the fenced string would pass
+        # trivially, since the fence wrapper never appears in the index.
+        inner = result["text"]
+        inner = inner[len(f"<<<UNTRUSTED {nonce}") : -len(f"{nonce} UNTRUSTED>>>")].strip()
+        assert inner
+        assert inner not in body["formatted"]
         assert result["chunk_id"] and result["document_id"]
 
 

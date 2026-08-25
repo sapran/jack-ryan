@@ -99,14 +99,34 @@ def create_app(context: Context | None = None) -> FastAPI:
     owned = context is None
     ctx = context or build_context()
 
+    # Built here, not inside the lifespan, because the app is mounted from it
+    # at construction time.
+    from .interfaces.mcp import build_mcp_server
+
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    mcp_app = build_mcp_server(ctx).streamable_http_app(
+        streamable_http_path="/",
+        # Rebinding protection stays on; which names are acceptable is a
+        # deployment fact, so it comes from configuration.
+        transport_security=TransportSecuritySettings(
+            allowed_hosts=list(ctx.config.profile.mcp_allowed_hosts),
+            allowed_origins=list(ctx.config.profile.mcp_allowed_hosts),
+        ),
+    )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.context = ctx
-        try:
-            yield
-        finally:
-            if owned:
-                ctx.close()
+        # Starlette does not run a mounted sub-app's lifespan, and the MCP
+        # session manager is started by exactly that lifespan. Without this the
+        # mount accepts requests and fails every one of them.
+        async with mcp_app.router.lifespan_context(mcp_app):
+            try:
+                yield
+            finally:
+                if owned:
+                    ctx.close()
 
     app = FastAPI(
         title="Jack Ryan",
@@ -170,15 +190,8 @@ def create_app(context: Context | None = None) -> FastAPI:
         return {"deleted": serialize(ctx.casefiles.delete(reference))}
 
     # The agent surface rides the same process as REST, so an analyst points one
-    # harness at one address and gets both. A failure to build it is fatal
-    # rather than swallowed: an instance that serves REST while silently
-    # advertising no tools is the worst of both outcomes.
-    from .interfaces.mcp import build_mcp_server
-
-    app.mount(
-        "/mcp",
-        build_mcp_server(ctx).streamable_http_app(streamable_http_path="/"),
-    )
+    # harness at one address and gets both.
+    app.mount("/mcp", mcp_app)
 
     @app.post("/api/casefiles/{reference}/ingest")
     async def ingest(request: Request, reference: str, payload: IngestRequest) -> dict[str, Any]:

@@ -22,7 +22,7 @@ from .annotations import stamp_for
 from .errors import error_payload, from_exception
 from .fencing import NOTICE, fence, new_nonce, provenance
 from .profiles import resolve_profile_name, tools_for_profile
-from .shapes import listing_payload, search_payload
+from .shapes import listing_payload, one_line, search_payload
 
 MAX_DOCUMENT_CHARS = 20_000
 MAX_SEARCH_RESULTS = 50
@@ -127,7 +127,10 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             return from_exception(exc)
         rows = [_render_casefile(c) for c in casefiles]
         formatted = (
-            "\n".join(f"{r['short_id']}  {r['slug']:<28}  {r['title']}" for r in rows)
+            "\n".join(
+                f"{r['short_id']}  {one_line(r['slug'], 40):<28}  {one_line(r['title'], 80)}"
+                for r in rows
+            )
             or "No casefiles on this instance."
         )
         return listing_payload(rows, formatted=formatted)
@@ -143,26 +146,25 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
     async def case_casefile_overview(casefile: str) -> dict[str, Any]:
         try:
             resolved = await off_loop(context.casefiles.resolve, casefile)
-            documents = await off_loop(context.ingestion.list_documents, casefile)
+            stats = await off_loop(context.store.casefile_statistics, resolved.id)
         except JackRyanError as exc:
             return from_exception(exc)
 
-        by_type: dict[str, int] = {}
-        for document in documents:
-            by_type[document.media_type or "unknown"] = (
-                by_type.get(document.media_type or "unknown", 0) + 1
-            )
-        characters = sum(len(d.extracted_text) for d in documents)
+        by_type = stats["by_type"]
         formatted = (
-            f"{resolved.title} ({resolved.slug})\n"
-            f"{len(documents)} documents, {characters:,} characters of extracted text\n"
-            + ("\n".join(f"  {count:>4}  {kind}" for kind, count in sorted(by_type.items()))
-               or "  (empty)")
+            f"{one_line(resolved.title, 80)} ({one_line(resolved.slug, 40)})\n"
+            f"{stats['documents']} documents, {stats['characters']:,} characters of extracted text\n"
+            + (
+                "\n".join(
+                    f"  {count:>4}  {one_line(kind, 60)}" for kind, count in sorted(by_type.items())
+                )
+                or "  (empty)"
+            )
         )
         return {
             "casefile": _render_casefile(resolved),
-            "document_count": len(documents),
-            "total_characters": characters,
+            "document_count": stats["documents"],
+            "total_characters": stats["characters"],
             "documents_by_type": by_type,
             "formatted": formatted,
         }
@@ -180,7 +182,8 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         rows = [_render_document(d) for d in documents]
         formatted = (
             "\n".join(
-                f"{r['short_id']}  {r['filename']:<40}  {r['characters']:>8,} chars" for r in rows
+                f"{r['short_id']}  {one_line(r['filename'], 60):<40}  {r['characters']:>8,} chars"
+                for r in rows
             )
             or "No documents in this casefile."
         )
@@ -199,7 +202,9 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
     async def case_search(casefile: str, query: str, limit: int = 10) -> dict[str, Any]:
         # Clamped rather than refused: there is no validation layer above this
         # surface, and an over-large limit is a harmless mistake.
-        bounded = max(1, min(int(limit or 10), MAX_SEARCH_RESULTS))
+        # Clamp the value itself: `limit or 10` would treat an explicit 0 as
+        # unset and hand back the maximum, clamping in the wrong direction.
+        bounded = max(1, min(int(limit), MAX_SEARCH_RESULTS))
         try:
             resolved = await off_loop(context.casefiles.resolve, casefile)
             hits = await anyio.to_thread.run_sync(
@@ -220,17 +225,11 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
     async def case_get_passage(casefile: str, chunk_id: str) -> dict[str, Any]:
         try:
             resolved = await off_loop(context.casefiles.resolve, casefile)
-            found = await off_loop(context.store.get_chunks, [chunk_id])
+            chunk, document = await anyio.to_thread.run_sync(
+                context.search.resolve_passage, casefile, chunk_id
+            )
         except JackRyanError as exc:
             return from_exception(exc)
-
-        chunk = found.get(chunk_id)
-        if chunk is None or chunk.casefile_id != resolved.id:
-            return error_payload("not_found", f"no passage {chunk_id!r} in this casefile")
-
-        document = await off_loop(context.store.get_document, chunk.document_id)
-        if document is None:
-            return error_payload("not_found", "the passage's document is missing")
 
         neighbours = await off_loop(
             context.store.get_document_chunks_around,
@@ -287,8 +286,8 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             return from_exception(exc)
 
         text = found.extracted_text
-        start = max(0, int(offset or 0))
-        span = max(1, min(int(limit or MAX_DOCUMENT_CHARS), MAX_DOCUMENT_CHARS))
+        start = max(0, int(offset))
+        span = max(1, min(int(limit), MAX_DOCUMENT_CHARS))
         window = text[start : start + span]
         end = start + len(window)
         truncated = end < len(text)
@@ -327,23 +326,18 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
     async def case_cite(casefile: str, chunk_id: str) -> dict[str, Any]:
         try:
             resolved = await off_loop(context.casefiles.resolve, casefile)
-            found = await off_loop(context.store.get_chunks, [chunk_id])
+            chunk, document = await anyio.to_thread.run_sync(
+                context.search.resolve_passage, casefile, chunk_id
+            )
         except JackRyanError as exc:
             return from_exception(exc)
 
-        chunk = found.get(chunk_id)
-        if chunk is None or chunk.casefile_id != resolved.id:
-            return error_payload("not_found", f"no passage {chunk_id!r} in this casefile")
-
-        document = await off_loop(context.store.get_document, chunk.document_id)
-        if document is None:
-            return error_payload("not_found", "the passage's document is missing")
-
-        where = f", {chunk.heading_path}" if chunk.heading_path else ""
+        heading = one_line(chunk.heading_path, 60)
+        where = f", {heading}" if heading else ""
         nonce = new_nonce()
         return {
             "citation": (
-                f"{document.filename}{where} "
+                f"{one_line(document.filename, 80)}{where} "
                 f"(chars {chunk.char_start}–{chunk.char_end}, {resolved.slug}/{document.short_id})"
             ),
             "chunk_id": chunk.id,

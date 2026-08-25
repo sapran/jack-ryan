@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from ..embedding.port import EmbedderPort
-from ..errors import ValidationError
-from ..storage.port import SearchHit, StorePort
+from ..errors import AmbiguousReferenceError, NotFoundError, ValidationError
+from ..storage.port import Chunk, Document, SearchHit, StorePort
 from .casefiles import CasefileService
 
 MAX_LIMIT = 100
@@ -24,6 +24,45 @@ class SearchService:
         self._store = store
         self._casefiles = casefiles
         self._embedder = embedder
+
+    def resolve_passage(
+        self, casefile_reference: str, reference: str
+    ) -> tuple[Chunk, Document]:
+        """Resolve a passage by full id or 8-character prefix, within a casefile.
+
+        Chunk lookup lives here rather than in an adapter for the same reason
+        every other rule does: the casefile boundary and the ambiguity refusal
+        must hold identically on every surface, and an agent-facing adapter has
+        no validation layer of its own to fall back on.
+        """
+        casefile = self._casefiles.resolve(casefile_reference)
+        candidate = (reference or "").strip()
+        if not candidate:
+            raise ValidationError("a passage reference is required")
+
+        chunk = self._store.get_chunks([candidate]).get(candidate)
+        if chunk is None:
+            matches = self._store.find_chunks_by_id_prefix(casefile.id, candidate)
+            if len(matches) > 1:
+                shown = ", ".join(m.short_id for m in matches[:5])
+                raise AmbiguousReferenceError(
+                    f"{reference!r} matches {len(matches)} passages ({shown}); use the full id"
+                )
+            if not matches:
+                raise NotFoundError(f"no passage matches {reference!r}")
+            chunk = matches[0]
+
+        if chunk.casefile_id != casefile.id:
+            # Said distinctly from "no such passage", so an agent is never told
+            # something false about the compartment boundary.
+            raise NotFoundError(
+                f"passage {reference!r} belongs to a different casefile"
+            )
+
+        document = self._store.get_document(chunk.document_id)
+        if document is None:
+            raise NotFoundError("the passage's document is missing from the store")
+        return chunk, document
 
     def search(
         self, casefile_reference: str, query: str, limit: int = DEFAULT_LIMIT

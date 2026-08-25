@@ -80,6 +80,40 @@ exercised — rather than by an agent choosing to call it. Whether the tool
 descriptions actually elicit the right calls from a model is the one thing only
 a live agent can settle, and it is left as an unchecked task.
 
+## What adversarial review caught
+
+Six defects survived refutation. Three are worth recording, because each is a
+gap between what was tested and what was claimed.
+
+**The surface answered nothing over HTTP.** Starlette does not run a mounted
+sub-app's lifespan, and the MCP session manager is started by exactly that
+lifespan — so every HTTP request returned 500 while all sixteen surface tests
+passed, because every one of them called `call_tool` in process. The mount was
+verified to exist and never verified to work. The parent lifespan now drives the
+sub-app's, and a test performs a real HTTP initialize.
+
+**The index the agent is told to read first was the one field that trusted its
+input.** It interpolated filenames raw into a newline-joined block, so a
+filename containing a newline forged extra rows indistinguishable from real
+ones — and it appended raw passage prose outside the fence that every other
+text-bearing path applied. Both in the same six lines. Document-derived values
+now pass through a whitespace collapse, and the index carries metadata only.
+
+**Chunk lookup was the one reference type with no service.** Because the
+adapter reached into the store directly, it also implemented the casefile check
+itself, which the boundary forbids — and it accepted only full identifiers,
+while the index printed 8-character ones, so an agent following the shipped
+method got `not_found` blamed on the casefile boundary. Resolution moved into
+the service layer, where prefix handling and the ambiguity refusal already
+existed for documents.
+
+The remaining two: an explicit `limit=0` clamped upward to the maximum rather
+than down, and the overview loaded every document body to print two integers.
+
+One test was found to be vacuous rather than wrong — it compared the fenced
+string against the index, which by construction could never match. It now
+compares the unfenced body.
+
 ## Migration Plan
 
 None. The surface is additive; nothing that exists changes shape.

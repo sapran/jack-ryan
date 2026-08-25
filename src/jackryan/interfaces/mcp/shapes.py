@@ -14,8 +14,14 @@ from ...storage.port import SearchHit
 from .fencing import NOTICE, fence, new_nonce, provenance
 
 
-def _one_line(text: str, limit: int = 160) -> str:
-    collapsed = " ".join(text.split())
+def one_line(text: str, limit: int = 160) -> str:
+    """Collapse a value to a single line.
+
+    Applied to every document-derived value that reaches a line-oriented block.
+    Filenames and headings come from the corpus, so a newline in one would
+    otherwise forge extra rows in an index the agent is told to read first.
+    """
+    collapsed = " ".join((text or "").split())
     return collapsed if len(collapsed) <= limit else collapsed[: limit - 1] + "…"
 
 
@@ -26,10 +32,13 @@ def search_payload(hits: list[SearchHit], query: str, casefile_id: str) -> dict[
     results: list[dict[str, Any]] = []
 
     for index, hit in enumerate(hits, start=1):
-        where = f" · {hit.chunk.heading_path}" if hit.chunk.heading_path else ""
+        heading = one_line(hit.chunk.heading_path, 60)
+        where = f" · {heading}" if heading else ""
+        # The index carries no passage prose. Everything the agent reads here is
+        # metadata; the body lives under `results`, fenced, and appears once.
         lines.append(
-            f"{index}. [{hit.chunk.short_id}] {hit.document.filename}{where} — "
-            f"{_one_line(hit.chunk.text, 110)}"
+            f"{index}. [{hit.chunk.short_id}] {one_line(hit.document.filename, 80)}{where} "
+            f"({len(hit.chunk.text)} chars, score {round(hit.score, 4)})"
         )
         results.append(
             {
@@ -49,7 +58,7 @@ def search_payload(hits: list[SearchHit], query: str, casefile_id: str) -> dict[
                     char_end=hit.chunk.char_end,
                     heading_path=hit.chunk.heading_path,
                 ),
-                # The body appears here and nowhere else in the payload.
+                # The only place a passage body appears, and it is fenced.
                 "text": fence(hit.chunk.text, nonce),
             }
         )

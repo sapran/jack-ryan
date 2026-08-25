@@ -60,3 +60,12 @@
 - [x] 8.5 Profile pruning verified, including the unrecognised-name case.
 - [x] 8.6 Fence integrity verified against document text that tries to forge a marker.
 - [ ] 8.7 Driven by a live agent against two model vendors — needs model access, blocked here.
+
+## 9. Adversarial review
+
+- [x] 9.1 Review across tool correctness, casefile isolation, fencing and shape, spec conformance, and integration.
+- [x] 9.2 Refutation-test every finding; keep only what reproduces.
+- [x] 9.3 Fix all six confirmed defects.
+- [x] 9.4 Add a regression test per defect, each failing against the original code.
+- [x] 9.5 Cover the HTTP transport, which no test previously exercised.
+- [x] 9.6 Replace the assertion found to be vacuous.
