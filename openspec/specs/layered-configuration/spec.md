@@ -16,6 +16,11 @@ Configuration SHALL be split into two layers with different lifetimes. The
 corpus. The `profiles` layer is infrastructure and SHALL be safe to change at
 any time.
 
+The contract SHALL declare the values the pipeline actually consumes: the chunk
+size and overlap used to divide text, and the model and dimensionality used to
+embed it. Every declared value SHALL be one the pipeline reads, so that the
+fingerprint covers exactly what determines corpus identity and nothing else.
+
 Precedence SHALL be: a real environment variable, then `config.yaml`, then the
 built-in default. `config.yaml` SHALL be read only when `JACKRYAN_CONFIG` is
 set, so a bare checkout runs on built-in defaults with no file present.
@@ -35,6 +40,10 @@ set, so a bare checkout runs on built-in defaults with no file present.
 - **WHEN** `JACKRYAN_PROFILE` is empty or whitespace
 - **THEN** `default_profile` from the file is used
 
+#### Scenario: Every contract value is consumed
+
+- **WHEN** the contract is inspected against the pipeline
+- **THEN** each declared value is read by chunking or by embedding
 ### Requirement: Configuration fails loudly rather than substituting a default
 
 An unknown profile name, an unknown `contract` key, or an unresolvable `${VAR}`
