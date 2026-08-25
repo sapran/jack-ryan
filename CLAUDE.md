@@ -18,9 +18,9 @@ with resolvable citations. Depth (OCR, hard formats, retrieval quality,
 summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
-Current state: **M2 built — the prototype is complete.** An agent reaches the
-corpus over MCP and answers with citations that resolve. M0's foundations and
-M1's ingest-and-search are archived; seven capabilities are published in
+Current state: **M2 archived — the prototype is complete.** An agent reaches
+the corpus over MCP and answers with citations that resolve. All three
+prototype changes are archived and eleven capabilities are published in
 `openspec/specs/`. Depth is M3; the assistant writing back is M4.
 
 ## Rules
