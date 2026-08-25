@@ -43,4 +43,6 @@ instance runs on built-in defaults, fully offline.
 
 ## License
 
-Not yet chosen — see the open decision in `docs/design.md`.
+[AGPL-3.0-or-later](LICENSE). Running a modified Jack Ryan as a network
+service obliges you to publish your changes — the tool and anything built on
+it stay auditable, which matters for something handling sensitive material.
