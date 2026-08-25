@@ -141,6 +141,7 @@ That is the whole prototype: three milestones, no writes, no mentions, no OCR, n
 
 **Resolved in review** (kept for the record): naming (`case_*` tools, `jackryan` binary); NER (classical uk+ru+en models + regex identifier extractors as the offline baseline, optional LLM pass behind a plugin seam); single-store sqlite-vec; reports as DB rows + renderers; public repo; roster of orchestrator + four legs, shipped single in M2 and split at M4, as editable markdown; a curated maintainer-authored skill set (no autonomous authoring), with evidence-chain traceability as the enforced invariant; the operating-picture schema (one polymorphic table, four types, provisional/confirmed, flag-stale-never-delete); web UI deferred out of v1.
 
-**Still open** (each has a decide-by milestone; neither blocks review):
+**Still open** (each has a decide-by milestone; none blocks review):
+- **License** (before any external contribution): the sibling projects split between MIT and AGPL-3.0. A self-hosted investigative tool has a real argument either way, so this is a deliberate choice rather than a default. Until it is made the repository asserts no license.
 - **PST extraction library** (by M3): a dedicated parsing library vs a subprocess tool — licensing and robustness check.
 - **Extraction spike specifics** (M1): docling OCR engine choice/config for eng+ukr+rus, where the VLM pipeline earns its cost, and what the offline-fallback floor guarantees.

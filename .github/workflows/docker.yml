@@ -1,0 +1,19 @@
+name: docker
+
+# A green test run does not prove the image builds, so build it explicitly.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t jackryan:ci .
+
+      - name: Verify the CLI runs inside the image
+        run: docker run --rm jackryan:ci jackryan --version

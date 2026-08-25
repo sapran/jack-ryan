@@ -1,0 +1,29 @@
+# Local configuration and secrets — never tracked
+.env
+.env.*
+!.env.example
+config.yaml
+!config.yaml.example
+
+# Corpus and instance data — never tracked
+data/
+casefiles/
+*.db
+*.db-wal
+*.db-shm
+
+# Agent/editor local state
+/.claude/
+/CLAUDE.local.md
+/.mcp.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/

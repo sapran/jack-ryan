@@ -11,6 +11,36 @@ The evidence stays immutable, every claim the assistant makes traces back to a
 source document, and the whole thing runs local-first — the corpus never leaves
 the machine unless you point it at an endpoint yourself.
 
-**Status: design phase.** The design document and implementation plan live in
-[`docs/design.md`](docs/design.md). No code yet; milestone M0 (bootstrap) is
-next.
+## Status
+
+**M0 complete.** The workbench runs, but holds no documents yet: this milestone
+delivers the foundations — layered configuration, the storage seam, the
+casefile service, REST and CLI adapters, a test suite, and CI.
+
+Delivery is prototype-first. The prototype is M0–M2 and proves one loop: ingest
+documents, then have the assistant work the corpus over MCP and answer with
+resolvable citations. Next up is **M1** — ingest and search.
+
+The design document and full staged plan: [`docs/design.md`](docs/design.md).
+
+## Quick start
+
+```bash
+# With Docker
+docker compose up -d --build
+curl localhost:8500/health
+
+# Or locally
+uv venv --python 3.12 && uv pip install -e ".[dev]"
+jackryan casefile create "Harbour Leases 2021"
+jackryan casefile list
+```
+
+Configuration is layered — a corpus-coupled `contract` plus swappable
+infrastructure `profiles`. Copy `config.yaml.example` to `config.yaml` and
+`.env.example` to `.env`; both are gitignored. With neither present the
+instance runs on built-in defaults, fully offline.
+
+## License
+
+Not yet chosen — see the open decision in `docs/design.md`.
