@@ -54,13 +54,13 @@ Named for Tom Clancy's CIA analyst — the desk officer who wins by actually rea
 
 ## 5. Architecture
 
-**One service, four adapters** (the lib.ai shape): a Python/FastAPI core owning all business logic in a service layer; REST, MCP (mounted in-process), CLI, and a separate thin web UI (talks HTTP only, ships as its own image, never imports core code) are adapters. Bounds/containment checks live in the service layer so every adapter inherits them.
+**One service, thin adapters** (the lib.ai shape): a Python/FastAPI core owning all business logic in a service layer; **v1 adapters are REST, MCP (mounted in-process), and CLI**. A separate thin web UI (talks HTTP only, its own image, never imports core code) is a post-v1 adapter — the service boundary is built so it, and later server mode, bolt on without reworking the core. Bounds/containment checks live in the service layer so every adapter inherits them.
 
 **Stores.** **One store: SQLite with FTS5 (keyword) and sqlite-vec (vectors)** — resolved from the earlier open question. One file, one backup, transactional writes across text and vectors, and the two-store subset invariant collapses into ordinary transactionality. The `StorePort` seam remains the one deliberate abstraction (for a later Postgres+ES swap). Embed-contract fingerprint checked at boot; `doctor` reconciles what remains reconcilable (store ↔ originals on disk).
 
 **Ingestion.** Per-casefile inbox (watched directory + upload API) → threaded workers → four-step pipeline:
 1. *Extract* — the **format router**: a plugin registry of Extractor implementations, each declaring `sniff()` (magic/MIME/extension) and `extract()` returning a normalized **DocumentGraph** (text blocks + structure + child documents + native metadata). Container extractors (ZIP, mailboxes, PST) recurse with depth/size/zip-bomb guards, emitting children through the same pipeline with `parent_id`. **Docling is the default extraction engine** (in-process, with optional docling-serve offload for throughput) — extraction quality is the product, so it is not an optional add-on. A quality gate escalates: standard docling pipeline → conventional OCR *within docling*, explicitly configured for eng+ukr+rus (EasyOCR default; engine pluggable — docling's Cyrillic support requires explicit language config, and Granite-Docling VLM has no Cyrillic coverage yet) → **VLM pipeline** where it wins (complex layouts, Latin-script scans). `unstructured` survives only as an emergency offline fallback, never the normal path. An **extraction-quality spike on representative UK/RU scans runs in M1**, before the corpus contract freezes.
-2. *Enrich* — per-chunk contextual summaries; per-document summary cascade; NER + pattern extraction → mentions; metadata cascade (LLM-first, deterministic fallbacks, per-field provenance).
+2. *Enrich* — per-chunk contextual summaries (LLM, default-on per lib.ai; a config switch can disable them for cheap/fast bulk ingest, since this is the dominant ingest cost — a large dump is millions of LLM calls, and M1 measures the real timing before the policy is fixed); per-document summary cascade; NER + pattern extraction → mentions; metadata cascade (LLM-first, deterministic fallbacks, per-field provenance).
 3. *Persist* — one lock hold; dedup by content hash; UUID reuse on reingest.
 4. *Finalize* — originals archived content-addressed within the casefile; failure/retry ledger, crash recovery on boot, per-document time budget — all per lib.ai.
 
@@ -93,7 +93,7 @@ Everything the agent writes is attributed to its agent Actor and revertable in b
 
 ## 8. Non-goals (v1)
 
-No dataset publishing; no OCCRP-scale ambitions; no mapping DSL; no cross-instance federation; no embedded agent runtime; no entity graph UI. Jack Ryan does not replace lib.ai — the personal library and the investigation workbench stay separate tools.
+No dataset publishing; no OCCRP-scale ambitions; no mapping DSL; no cross-instance federation; no embedded agent runtime; no entity graph UI; **no web UI (v1 is CLI + MCP)**; no multi-user/auth. Jack Ryan does not replace lib.ai — the personal library and the investigation workbench stay separate tools.
 
 ## 9. Security & data-handling posture
 
@@ -101,16 +101,14 @@ Local-first: corpus content leaves the machine only toward explicitly configured
 
 ## 10. Implementation plan
 
-v1 = M0–M5. Each milestone is one or more OpenSpec changes with its own spec/design/tasks; acceptance criteria sketched here get formalized there.
+**v1 = M0–M4 (CLI + MCP; no web UI).** Each milestone is one or more OpenSpec changes with its own spec/design/tasks; acceptance criteria sketched here get formalized there. The web UI is deliberately cut from v1 — it mainly serves the collaboration story, which is already post-v1 — so v1 ships the interface the solo-analyst-via-AI persona actually uses.
 
 - **M0 — Bootstrap.** Repo, OpenSpec scaffolding, CI gates (pytest + type ratchet + gitleaks, the lib.ai trio), Docker Compose skeleton, layered config (contract vs profiles), service-layer + StorePort skeleton with SQLite implementation, casefile CRUD. *Accept: compose up yields a healthy empty instance; CI green.*
 - **M1 — Core pipeline & search.** Baseline formats (PDF/DOCX/PPTX/text/MD/HTML) through the format router with docling as the default engine; the **extraction-quality spike on UK/RU scans** (settles OCR engine config before the contract freezes); dedup + stable UUIDs; chunking + contextual summaries + document summaries; hybrid search + rerank + reasoning units; minimal CLI + REST. *Accept: drop a mixed folder of baseline docs into a casefile, search it well, offline.*
 - **M2 — MCP read surface + spine skills.** `readonly` profile end-to-end: search/read/cite tools with fencing, bounds, chaining ids; citations resolve. Ships the first native analyst pack: the spine tradecraft skills + a single-agent method/loop skill (the roster's legs come in M4). *Accept: an MCP-connected agent (verified with at least two different model vendors) can survey, pivot, and produce accurately cited, gap-named answers over a casefile.*
 - **M3 — Dumps, OCR, mentions.** Archives/folder trees; email (EML/MBOX/MSG, then PST); spreadsheets; hierarchy model surfaced in search/facets; OCR eng+ukr+rus behind the quality gate; NER + pattern mentions as facets and pivots. *Accept: a realistic ZIP-of-mailboxes-and-scans dump ingests with hierarchy intact; mention facets work in all three languages.*
 - **M4 — Attributed writes, operating picture, roster & reports.** `analyst` profile: agent tags/notes/flags with attribution and bulk revert; the **Operating Picture** object (single polymorphic entry table, four types, provisional/confirmed, flag-stale-never-delete) + its read/write tools and the end-neutral analyst loop over it; the **orchestrator + four investigative legs** split out from the M2 single-agent version; report artifacts as DB rows with resolvable citations, draft→reviewed lifecycle, MD/DOCX/PDF export. *Accept: the agent runs a loop that updates a calibrated, gap-named operating picture and drafts a brief whose every claim clicks through to a passage; "undo everything the agent did" works.*
-- **M5 — Web UI.** Separate **Vue SPA** (talks HTTP only): casefile browser, search + facets, document reader with mention/citation highlights, tag/note panels, an **operating-picture review view**, report review. *Accept: an analyst can run a small investigation without the CLI.*
-
-**Post-v1 phases:** P6 entities (FtM store, mention→entity promotion, judgments) · P7 xref-lite (cross-casefile matching on mention fingerprints) + batch search · P8 server mode (auth, ACLs, recommend) · P9 embedded assistant (optional).
+**Post-v1 phases:** P5 web UI (Vue SPA — casefile browser, reader with mention/citation highlights, operating-picture review, report review; talks HTTP only) · P6 entities (FtM store, mention→entity promotion, judgments) · P7 xref-lite (cross-casefile matching on mention fingerprints) + batch search · P8 server mode (auth, ACLs, recommend) · P9 embedded assistant (optional). The service/storage seam means the SPA and server mode add on without reworking the M0–M4 core.
 
 ## 11. Open questions for review
 
@@ -120,7 +118,7 @@ v1 = M0–M5. Each milestone is one or more OpenSpec changes with its own spec/d
 3. Vector store: **sqlite-vec** (single store, transactional; `StorePort` seam covers a later swap).
 5. Reports: **DB rows + on-demand renderers** (queryable, citation-integrity enforceable).
 6. Repo visibility: **public** (lib.ai hygiene rules apply; gitleaks CI lands in M0).
-7. Web UI: **Vue SPA** (richer reader UX now, easier real-time collaboration later; own toolchain accepted).
+7. Web UI: **deferred out of v1** to post-v1 phase P5 (Vue SPA when built) — v1 is CLI + MCP only, matching the solo-analyst-via-AI persona.
 8. Roster: **orchestrator + four legs** (corpus/coverage, entity/network, timeline/context, document-forensics), but **shipped as a single orchestrator in M2** and split at M4; roster is editable markdown.
 9. Competency-grid method: **not adopted** — curated maintainer-authored skills (AI-assisted, never AI-autonomous) remove the invention risk; evidence-chain traceability (claims → documents via Citations) is the enforced must. See §6.
 10. Operating Picture: **one polymorphic entry table**, four types (judgement/gap/hypothesis/fact), `provisional|confirmed` status, perishable facts **flagged stale, never auto-deleted**.
