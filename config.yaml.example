@@ -1,0 +1,30 @@
+# Jack Ryan — layered configuration template. Copy to config.yaml (gitignored).
+#
+# Two layers with different lifetimes:
+#   contract — corpus-coupled. Changing any value invalidates an existing
+#              corpus and forces a reingest. Frozen once documents exist.
+#   profiles — swappable infrastructure. Safe to change at any time.
+#
+# Precedence: real environment variable > this file > built-in default.
+
+contract:
+  # Frozen at M0 as declarations; the pipeline that consumes them lands in M1.
+  chunk_size: 1024
+  chunk_overlap: 0
+  embed_model_family: bge-m3
+  embed_dimensions: 1024
+
+default_profile: local
+
+profiles:
+  local:
+    # Fully offline. No endpoint required; the read stack runs in-process.
+    llm_url: ""
+    embed_url: ""
+
+  remote:
+    # Point at your own OpenAI-compatible endpoints. Comma-separated for
+    # round-robin. Secrets come from the environment, never from this file.
+    llm_url: "http://localhost:8000/v1"
+    embed_url: "http://localhost:8001/v1"
+    api_key: ${JACKRYAN_REMOTE_API_KEY}
