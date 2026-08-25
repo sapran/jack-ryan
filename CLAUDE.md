@@ -18,10 +18,10 @@ with resolvable citations. Depth (OCR, hard formats, retrieval quality,
 summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
-Current state: **M1 built** — documents are ingested, chunked, embedded, and
-searchable. M0's foundations (config, storage seam, casefile service, REST and
-CLI) are archived and published in `openspec/specs/`. No MCP surface yet: that
-is M2, and it completes the prototype.
+Current state: **M1 complete and archived** — documents are ingested, chunked,
+embedded, and searchable, on top of M0's foundations. Seven capabilities are
+published in `openspec/specs/`. No MCP surface yet: that is M2, and it
+completes the prototype.
 
 ## Rules
 
