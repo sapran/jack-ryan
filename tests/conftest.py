@@ -64,3 +64,9 @@ def corpus(tmp_path):
         encoding="utf-8",
     )
     return folder
+
+
+@pytest.fixture
+def anyio_backend():
+    """Async tests run on asyncio only; trio is not a target."""
+    return "asyncio"

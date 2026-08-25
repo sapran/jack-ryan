@@ -435,6 +435,18 @@ class SqliteStore:
             ).fetchall()
         return {row["id"]: _row_to_chunk(row) for row in rows}
 
+    def get_document_chunks_around(
+        self, document_id: str, ordinal: int, radius: int
+    ) -> list[Chunk]:
+        """A chunk's neighbours within a document, so a passage can be read in context."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM chunks WHERE document_id = ? AND ordinal BETWEEN ? AND ?"
+                " ORDER BY ordinal",
+                (document_id, ordinal - int(radius), ordinal + int(radius)),
+            ).fetchall()
+        return [_row_to_chunk(row) for row in rows]
+
     # -- retrieval ---------------------------------------------------------
 
     def search_keyword(self, casefile_id: str, query: str, limit: int) -> list[str]:

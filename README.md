@@ -13,13 +13,13 @@ the machine unless you point it at an endpoint yourself.
 
 ## Status
 
-**M1 built.** The workbench now holds a corpus: point it at a folder and its
-documents are extracted, chunked, embedded, and searchable by keyword and
-meaning together.
+**The prototype is complete.** Documents go in; an AI analyst works them
+through an MCP surface and answers with citations that resolve to a real
+passage. That was the loop the whole build was staged around.
 
-Delivery is prototype-first. The prototype is M0–M2 and proves one loop: ingest
-documents, then have the assistant work the corpus over MCP and answer with
-resolvable citations. Next up is **M2** — the MCP surface and the analyst.
+Next is **M3** — depth: scanned documents, email archives, spreadsheets, better
+retrieval, and names extracted from the text. Then **M4**, where the assistant
+writes back: tags, a running picture of the investigation, and cited reports.
 
 The design document and full staged plan: [`docs/design.md`](docs/design.md).
 
@@ -39,6 +39,14 @@ jackryan search harbour-leases-2021 "who signed the lease"
 
 Supported formats today: PDF, DOCX, PPTX, HTML, Markdown, and plain text.
 Scanned documents, email archives, and spreadsheets come with M3.
+
+## Working it with an AI
+
+The instance serves an MCP surface — in-process at `/mcp`, or over stdio with
+`jackryan serve-mcp`. Point any MCP-capable harness at it and initialise the
+agent with [`analyst/role.md`](analyst/role.md), which carries the method and
+the analytic spine. Corpus text reaching the agent is fenced and marked as
+evidence rather than instruction.
 
 Configuration is layered — a corpus-coupled `contract` plus swappable
 infrastructure `profiles`. Copy `config.yaml.example` to `config.yaml` and

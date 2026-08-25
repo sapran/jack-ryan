@@ -68,6 +68,13 @@ class Profile:
     llm_url: str = ""
     embed_url: str = ""
     api_key: str = ""
+    mcp_profile: str = "readonly"
+    """Which agent-facing tool surface to advertise.
+
+    Unrecognised names narrow to the smallest surface rather than widening, so
+    a typo costs tools instead of granting them.
+    """
+
     embedder: str = "model"
     """Which embedder to construct: ``model`` (the real one) or ``deterministic``.
 
@@ -161,6 +168,7 @@ def _select_profile(document: dict[str, Any]) -> Profile:
         embed_url=str(_interpolate(settings.get("embed_url", "")) or ""),
         api_key=str(_interpolate(settings.get("api_key", "")) or ""),
         embedder=_validated_embedder(settings.get("embedder", "model"), name),
+        mcp_profile=str(settings.get("mcp_profile", "readonly") or "readonly").strip().lower(),
     )
 
 

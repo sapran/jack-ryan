@@ -18,10 +18,10 @@ with resolvable citations. Depth (OCR, hard formats, retrieval quality,
 summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
-Current state: **M1 complete and archived** — documents are ingested, chunked,
-embedded, and searchable, on top of M0's foundations. Seven capabilities are
-published in `openspec/specs/`. No MCP surface yet: that is M2, and it
-completes the prototype.
+Current state: **M2 built — the prototype is complete.** An agent reaches the
+corpus over MCP and answers with citations that resolve. M0's foundations and
+M1's ingest-and-search are archived; seven capabilities are published in
+`openspec/specs/`. Depth is M3; the assistant writing back is M4.
 
 ## Rules
 
@@ -91,6 +91,13 @@ silently corrupted corpus.
   vectors with no meaning. It is selected only by `embedder: deterministic`, and
   a real embedder that fails to load must stop ingestion rather than degrade to
   it — silently storing meaningless vectors is unrecoverable without a reingest.
+- **Fencing is a convention, not a sandbox.** Corpus text returned to an agent
+  is nonce-fenced and marked untrusted, and a model that ignores it is not
+  prevented from anything. The controls that do not depend on the model are the
+  read-only profile and the service layer's authority. Never describe the fence
+  as enforcement.
+- **Tool names are a contract.** Saved prompts and the shipped analyst pack name
+  the `case_*` tools; renaming one breaks them.
 - **Docling PDF extraction needs models on first use.** Markdown, HTML, DOCX and
   PPTX parse offline. Build the image with `--build-arg PREFETCH_MODELS=true`
   for a container that is offline from its first run.
@@ -115,6 +122,7 @@ jackryan casefile show <id|short-id|slug>
 jackryan ingest <casefile> <file-or-folder>
 jackryan search <casefile> "a question"
 jackryan document list <casefile>
+jackryan serve-mcp                      # the agent surface over stdio
 
 # Docker
 docker compose up -d --build
@@ -131,4 +139,6 @@ docker compose run --rm cli casefile list
 - `src/jackryan/embedding/` — embedder port, the real model, and the test double
 - `src/jackryan/services/` — all business logic
 - `src/jackryan/server.py`, `cli.py` — thin adapters
-- `src/jackryan/interfaces/` — reserved for the MCP surface (M2)
+- `src/jackryan/interfaces/mcp/` — the agent surface: tools, shapes, fencing,
+  profiles, the annotations table
+- `analyst/` — the harness-neutral analyst role and the analytic spine

@@ -128,6 +128,10 @@ class StorePort(Protocol):
         """Replace a document's chunks and their vectors in one transaction."""
         ...
 
+    def get_document_chunks_around(
+        self, document_id: str, ordinal: int, radius: int
+    ) -> list[Chunk]: ...
+
     def search_keyword(self, casefile_id: str, query: str, limit: int) -> list[str]: ...
 
     def search_vector(

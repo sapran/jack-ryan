@@ -93,14 +93,20 @@ def serialize_hit(hit: SearchHit) -> dict[str, Any]:
 
 
 def create_app(context: Context | None = None) -> FastAPI:
+    # The context is built here rather than in the lifespan because the agent
+    # surface is mounted from it at construction time. Mounting later would
+    # mean an app that serves REST while silently offering no tools.
+    owned = context is None
+    ctx = context or build_context()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.context = context or build_context()
+        app.state.context = ctx
         try:
             yield
         finally:
-            if context is None:
-                app.state.context.close()
+            if owned:
+                ctx.close()
 
     app = FastAPI(
         title="Jack Ryan",
@@ -162,6 +168,17 @@ def create_app(context: Context | None = None) -> FastAPI:
     async def delete_casefile(request: Request, reference: str) -> dict[str, Any]:
         ctx: Context = request.app.state.context
         return {"deleted": serialize(ctx.casefiles.delete(reference))}
+
+    # The agent surface rides the same process as REST, so an analyst points one
+    # harness at one address and gets both. A failure to build it is fatal
+    # rather than swallowed: an instance that serves REST while silently
+    # advertising no tools is the worst of both outcomes.
+    from .interfaces.mcp import build_mcp_server
+
+    app.mount(
+        "/mcp",
+        build_mcp_server(ctx).streamable_http_app(streamable_http_path="/"),
+    )
 
     @app.post("/api/casefiles/{reference}/ingest")
     async def ingest(request: Request, reference: str, payload: IngestRequest) -> dict[str, Any]:

@@ -19,6 +19,8 @@ dependencies = [
     "fastembed>=0.4",
     # Vector search inside the same SQLite file that holds the text.
     "sqlite-vec>=0.1.6",
+    # The agent-facing surface.
+    "mcp>=2.0",
 ]
 
 [project.optional-dependencies]
