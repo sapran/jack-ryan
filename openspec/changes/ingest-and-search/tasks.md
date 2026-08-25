@@ -72,3 +72,11 @@
 - [x] 9.4 Dedup verified: reingesting the same bytes keeps the identifier.
 - [ ] 9.5 PDF extraction exercised on a machine with model access — blocked in the build environment.
 - [ ] 9.6 The real embedder exercised on a machine with model access — blocked in the build environment.
+
+## 10. Adversarial review
+
+- [x] 10.1 Review the implementation across correctness, storage integrity, security, spec conformance, and adapter behaviour.
+- [x] 10.2 Refutation-test every finding; keep only what reproduces.
+- [x] 10.3 Fix all twelve confirmed defects.
+- [x] 10.4 Add a regression test per defect, each failing against the original code.
+- [x] 10.5 Re-verify the whole suite and the end-to-end path.

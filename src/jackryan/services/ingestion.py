@@ -95,6 +95,10 @@ class IngestionService:
 
     def ingest(self, casefile_reference: str, target: str | Path) -> IngestReport:
         casefile = self._casefiles.resolve(casefile_reference)
+        # An empty value would become Path("."), quietly ingesting the working
+        # directory. Refuse it the way every other reference is refused.
+        if not str(target).strip():
+            raise ValidationError("an ingest path is required")
         path = Path(target).expanduser()
         if not path.exists():
             raise ValidationError(f"{path} does not exist")
@@ -102,15 +106,19 @@ class IngestionService:
         if path.is_dir():
             root = path
             candidates = sorted(p for p in path.rglob("*") if p.is_file())
+            named_directly = False
         else:
             root = path.parent
             candidates = [path]
+            named_directly = True
 
         outcomes: list[IngestOutcome] = []
         for candidate in candidates:
-            if self._router.extractor_for(candidate) is None:
-                # A folder of mixed content is normal; skip quietly rather than
-                # failing the whole run on a file nobody asked to ingest.
+            if self._router.extractor_for(candidate) is None and not named_directly:
+                # A folder of mixed content is normal, so an unhandled file
+                # found by walking is skipped quietly. A file the caller named
+                # is different: silence there would report success for a
+                # document that was never stored.
                 continue
             outcomes.append(self._ingest_one(casefile.id, candidate, root))
         return IngestReport(casefile_id=casefile.id, outcomes=outcomes)

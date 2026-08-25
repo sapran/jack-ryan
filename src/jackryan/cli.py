@@ -58,13 +58,13 @@ def _render_hit(hit: SearchHit) -> dict[str, Any]:
     }
 
 
-def _print(payload: Any, as_json: bool) -> None:
+def _print(payload: Any, as_json: bool, empty_message: str = "Nothing to show.") -> None:
     if as_json:
         print(json.dumps(payload, indent=2))
         return
     if isinstance(payload, list):
         if not payload:
-            print("No casefiles yet. Create one with: jackryan casefile create <title>")
+            print(empty_message)
             return
         for item in payload:
             if "slug" in item:
@@ -132,7 +132,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    context = build_context()
+    try:
+        # Composition itself can fail — a bad profile, or a store built under a
+        # different contract — and those are exactly the errors an operator
+        # needs stated plainly rather than as a traceback.
+        context = build_context()
+    except JackRyanError as exc:
+        print(f"{exc.code}: {exc}", file=sys.stderr)
+        return 1
     try:
         if args.command == "status":
             _print(
@@ -179,7 +186,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "search":
             hits = context.search.search(args.casefile, args.query, args.limit)
             if args.json:
-                _print([_render_hit(h) for h in hits], True)
+                _print([_render_hit(h) for h in hits], True, "")
             elif not hits:
                 print("No matches.")
             else:
@@ -192,7 +199,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "document":
             if args.document_command == "list":
-                _print([_render_document(d) for d in context.ingestion.list_documents(args.casefile)], args.json)
+                _print(
+                    [_render_document(d) for d in context.ingestion.list_documents(args.casefile)],
+                    args.json,
+                    "No documents yet. Add some with: jackryan ingest <casefile> <path>",
+                )
             else:
                 _print(_render_document(context.ingestion.resolve_document(args.casefile, args.reference)), args.json)
             return 0
@@ -201,7 +212,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.casefile_command == "create":
             _print(_render(service.create(args.title, args.description, args.slug)), args.json)
         elif args.casefile_command == "list":
-            _print([_render(c) for c in service.list()], args.json)
+            _print(
+                [_render(c) for c in service.list()],
+                args.json,
+                "No casefiles yet. Create one with: jackryan casefile create <title>",
+            )
         elif args.casefile_command == "show":
             _print(_render(service.resolve(args.reference)), args.json)
         elif args.casefile_command == "update":

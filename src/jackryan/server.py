@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -165,7 +166,9 @@ def create_app(context: Context | None = None) -> FastAPI:
     @app.post("/api/casefiles/{reference}/ingest")
     async def ingest(request: Request, reference: str, payload: IngestRequest) -> dict[str, Any]:
         ctx: Context = request.app.state.context
-        report = ctx.ingestion.ingest(reference, payload.path)
+        # Ingestion is long and synchronous; running it on the event loop would
+        # freeze every other request for its duration.
+        report = await run_in_threadpool(ctx.ingestion.ingest, reference, payload.path)
         return {
             "casefile_id": report.casefile_id,
             "ingested": report.ingested,
@@ -200,7 +203,8 @@ def create_app(context: Context | None = None) -> FastAPI:
         request: Request, reference: str, q: str, limit: int = 10
     ) -> dict[str, Any]:
         ctx: Context = request.app.state.context
-        hits = ctx.search.search(reference, q, limit)
+        # Embedding a query and two index scans are blocking work too.
+        hits = await run_in_threadpool(ctx.search.search, reference, q, limit)
         return {"query": q, "total": len(hits), "results": [serialize_hit(h) for h in hits]}
 
     return app

@@ -83,6 +83,38 @@ Both are recorded as unchecked tasks rather than claimed. The image build
 pre-fetches both sets of weights, which is also what makes a container offline
 from its first run; that build runs where the network allows it.
 
+## What adversarial review caught
+
+Five independent review lenses over this code, each finding refutation-tested,
+confirmed twelve defects. Three are worth recording because the design invited
+them:
+
+**Virtual tables do not participate in foreign keys.** `chunks_fts` and
+`chunk_vectors` are keyed by a chunk's rowid, and `ON DELETE CASCADE` never
+reaches them. Deleting a casefile therefore orphaned its postings and vectors;
+SQLite reused the freed rowids, and the next ingest *anywhere in the instance*
+collided and failed permanently. The single-key design that makes a half-stored
+chunk unreachable is exactly what made this reachable. An `AFTER DELETE` trigger
+on `chunks` now covers every deletion path rather than only the one that was
+remembered.
+
+**Scoping after ranking is not scoping.** `search_vector` took a global
+nearest-neighbour set and then filtered it to the casefile, so a small casefile
+beside a large one silently lost its vector hits — hybrid search degrading to
+keyword-only with no error. The constraint now sits inside the KNN.
+
+**A guard that bounds input does not bound what is derived from it.** The
+byte-size limit bounded the file; heading text extracted from it was unbounded
+and copied into every chunk beneath it, so 2.4 MiB of input produced 572 MiB of
+stored headings. Heading length is capped where it is produced.
+
+The remaining nine were a quadratic heading rescan, a chunker that could advance
+one character at a time, a conflict path that left a write transaction open, a
+named unsupported file reported as a successful no-op, an empty ingest path that
+resolved to the working directory, blocking work on the event loop, and two
+adapter messages. Each has a regression test that fails against the original
+code.
+
 ## Migration Plan
 
 Delete the data directory. The contract changed, so an M0 store will refuse to

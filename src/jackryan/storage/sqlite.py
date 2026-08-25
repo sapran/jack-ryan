@@ -20,7 +20,7 @@ import sqlite_vec
 from ..errors import ConfigError, ConflictError
 from .port import Casefile, Chunk, Document
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS store_meta (
@@ -147,6 +147,17 @@ class SqliteStore:
 
     # -- lifecycle ---------------------------------------------------------
 
+    # Virtual tables never see ON DELETE CASCADE, so a casefile or document
+    # deletion would leave full-text postings and vectors behind. SQLite then
+    # reuses the freed rowids and the next insert collides. A trigger on the
+    # one table every path deletes from is what makes that unreachable.
+    _SIDECAR_TRIGGER = """
+    CREATE TRIGGER IF NOT EXISTS chunks_after_delete AFTER DELETE ON chunks BEGIN
+        INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', old.rowid, old.text);
+        DELETE FROM chunk_vectors WHERE rowid = old.rowid;
+    END;
+    """
+
     def initialize(self, contract_fingerprint: str, embed_dimensions: int) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self._path, check_same_thread=False)
@@ -163,6 +174,7 @@ class SqliteStore:
             "CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors "
             f"USING vec0(embedding float[{int(embed_dimensions)}])"
         )
+        conn.executescript(self._SIDECAR_TRIGGER)
         conn.commit()
         self._conn = conn
         self._dimensions = int(embed_dimensions)
@@ -225,6 +237,9 @@ class SqliteStore:
                 )
                 self._db.commit()
             except sqlite3.IntegrityError as exc:
+                # Without this the failed statement keeps the WAL write lock,
+                # and every other process is locked out of the database.
+                self._db.rollback()
                 raise ConflictError(f"a casefile with slug {casefile.slug!r} already exists") from exc
         return casefile
 
@@ -276,6 +291,9 @@ class SqliteStore:
                 )
                 self._db.commit()
             except sqlite3.IntegrityError as exc:
+                # Without this the failed statement keeps the WAL write lock,
+                # and every other process is locked out of the database.
+                self._db.rollback()
                 raise ConflictError(f"a casefile with slug {casefile.slug!r} already exists") from exc
         return casefile
 
@@ -374,16 +392,8 @@ class SqliteStore:
             db = self._db
             try:
                 db.execute("BEGIN")
-                # Drop old rows from all three places before writing new ones.
-                old = db.execute(
-                    "SELECT rowid, text FROM chunks WHERE document_id = ?", (document_id,)
-                ).fetchall()
-                for row in old:
-                    db.execute(
-                        "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
-                        (row["rowid"], row["text"]),
-                    )
-                    db.execute("DELETE FROM chunk_vectors WHERE rowid = ?", (row["rowid"],))
+                # The AFTER DELETE trigger clears the full-text and vector rows,
+                # so this one statement retires all three.
                 db.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
 
                 for chunk, embedding in zip(chunks, embeddings):
@@ -455,13 +465,17 @@ class SqliteStore:
                 f"{self._dimensions}"
             )
         with self._lock:
-            # Over-fetch, then scope: vec0 KNN cannot join to the casefile.
+            # The casefile constraint goes inside the MATCH, so the nearest
+            # neighbours are the nearest *in this casefile*. Filtering after a
+            # global KNN would silently lose hits whenever another casefile
+            # owned the top of the list.
             rows = self._db.execute(
                 "SELECT c.id AS id FROM ("
                 "  SELECT rowid, distance FROM chunk_vectors"
-                "  WHERE embedding MATCH ? ORDER BY distance LIMIT ?"
-                ") v JOIN chunks c ON c.rowid = v.rowid"
-                " WHERE c.casefile_id = ? ORDER BY v.distance LIMIT ?",
-                (json.dumps(list(embedding)), int(limit) * 8, casefile_id, int(limit)),
+                "  WHERE embedding MATCH ?"
+                "    AND rowid IN (SELECT rowid FROM chunks WHERE casefile_id = ?)"
+                "  ORDER BY distance LIMIT ?"
+                ") v JOIN chunks c ON c.rowid = v.rowid ORDER BY v.distance",
+                (json.dumps(list(embedding)), casefile_id, int(limit)),
             ).fetchall()
         return [row["id"] for row in rows]
