@@ -196,9 +196,14 @@ PST stays last, as `docs/design.md` § 10 has it.
   VLM, and statistical NER remain unexercised**, because no code for them
   exists yet.
 - **No LLM endpoint.** Nothing that calls one has ever been run.
-- **No Docker.** `docker compose up` has never been executed. CI builds the
-  image, so it compiles — but no one has watched a container start, and
-  `--build-arg PREFETCH_MODELS=true` has never been used.
+- **No Docker beyond the CI gate.** CI builds the image *and* runs the CLI
+  inside a container — `docker run --rm jackryan:ci jackryan --version`, on
+  every push and pull request — so the image and the CLI entrypoint work; the
+  archived M0 task 7.3 records exactly that. What is unexercised is everything
+  the compose file adds: `docker compose up` has never been run, so the server
+  `CMD`, the `HEALTHCHECK`, the `/data` volume and the scaled-to-zero `cli`
+  service are all unproven. That is what M0's still-unticked 7.4 says.
+  `--build-arg PREFETCH_MODELS=true` has never been used either.
 - **No live agent.** The MCP surface is driven by tests through `call_tool`, by
   one real HTTP `initialize`, and now by `verify_model_paths.py` in process
   against real vectors. **No model has ever chosen to call it** — that is still
@@ -246,8 +251,9 @@ one assertion turned out to be vacuous by construction.
 - **The repository is public.** No secrets, no real hostnames or paths, no real
   corpus contents — in code, docs, commit messages, or sample output. Grep
   before committing; `CLAUDE.md` lists the patterns.
-- **Work on a branch, open a PR.** CI is three gates: pytest, gitleaks, and a
-  Docker build. Nothing else runs — no linter, no formatter.
+- **Work on a branch, open a PR.** CI is three gates: pytest, gitleaks, and
+  Docker — the last builds the image and then runs the CLI inside it. Nothing
+  else runs — no linter, no formatter.
 - **Say what is unverified.** Every PR in this repository states what it did not
   check. That habit is the reason this document can be trusted, and it is worth
   more than a clean-looking history.
