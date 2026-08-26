@@ -8,12 +8,12 @@
 
 ## 2. The quality gate
 
-- [ ] 2.1 Create `ingestion/quality_gate.py` with a `Reading` result carrying text and the rung that produced it, and a `QualityGate` that takes the profile's extraction settings; verify it is importable without constructing any model
-- [ ] 2.2 Implement rung one — convert with recognition disabled — and the floor test `chars/pages < min_chars_per_page`; verify a test with a stand-in reader asserts a text-layer document stops at rung one and that no further rung is attempted
-- [ ] 2.3 Implement rung two — convert with recognition enabled, engine and language from the profile; verify a test asserts a document below the floor escalates exactly once and reports the recognition rung
-- [ ] 2.4 Implement rung three — `VlmPipeline` with the configured model spec — attempted only when rung two is below the floor and a model is configured; verify a test asserts it is not attempted when unconfigured, and is attempted when configured
-- [ ] 2.5 Return the richest attempt when no rung clears the floor; verify a test asserts the longest of several below-floor readings is what comes back
-- [ ] 2.6 Determine page count for the floor from the converted document, defaulting to one where a format reports none; verify a test asserts a multi-page document and a single-page image are both scored per page
+- [x] 2.1 Create `ingestion/quality_gate.py` with a `Reading` result carrying text and the rung that produced it, and a `QualityGate` that takes the profile's extraction settings; verify it is importable without constructing any model
+- [x] 2.2 Implement rung one — convert with recognition disabled — and the floor test `chars/pages < min_chars_per_page`; verify a test with a stand-in reader asserts a text-layer document stops at rung one and that no further rung is attempted
+- [x] 2.3 Implement rung two — convert with recognition enabled, engine and language from the profile; verify a test asserts a document below the floor escalates exactly once and reports the recognition rung
+- [x] 2.4 Implement rung three — `VlmPipeline` with the configured model spec — attempted only when rung two is below the floor and a model is configured; verify a test asserts it is not attempted when unconfigured, and is attempted when configured
+- [x] 2.5 Return the richest attempt when no rung clears the floor; verify a test asserts the longest of several below-floor readings is what comes back
+- [x] 2.6 Determine page count for the floor from the converted document, defaulting to one where a format reports none; verify a test asserts a multi-page document and a single-page image are both scored per page
 
 ## 3. The extractors
 
