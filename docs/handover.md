@@ -87,10 +87,11 @@ actually covers:
   shares the words *awarded* and *lease* with the stored text, so FTS would have
   matched it too. What this proves is that the vector leg **ran and returned**,
   not that retrieval succeeded where keywords would have failed. **Retrieval
-  quality is still unmeasured**, and nothing here is evidence about it. (The
-  script's own comment claims the query "shares no content word with the text"
-  and names a different query than the code sends; the comment is wrong, the
-  check is merely weaker than it advertises.)
+  quality is still unmeasured**, and nothing here is evidence about it. (The script's comment
+  used to claim the query "shares no content word with the text" and named a
+  different query than the code sends. Both were wrong and are now corrected in
+  place; the check itself is unchanged and still weaker than that comment
+  advertised.)
 - **The MCP surface answers with a citation that resolves**, driven in process
   against a corpus built with real vectors.
 

@@ -178,8 +178,11 @@ def check_end_to_end(workspace: Path) -> None:
             record("End-to-end with real embeddings", FAIL, f"ingest failures: {detail}")
             return
 
-        # Semantic, not lexical: "who signed" shares no content word with the
-        # text, so a hit here is the embedding working rather than FTS.
+        # This query shares content words with the corpus ("was", "awarded",
+        # "lease"), so keyword retrieval alone could satisfy it. What the check
+        # below establishes is that the vector leg ran and returned something —
+        # `vector_rank` is set — not that semantic retrieval beat keywords.
+        # Retrieval quality is a separate question and is not measured here.
         hits = context.search.search(casefile.short_id, "who was awarded the lease", limit=3)
         if not hits:
             record(

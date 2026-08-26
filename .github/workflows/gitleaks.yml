@@ -6,6 +6,10 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # Manual trigger. A run that fails to start cannot be retried through the
+  # API — GitHub answers 403 "cannot be retried" — so without this the only
+  # way to clear one is a fresh commit, which means inventing a change to push.
+  workflow_dispatch:
 
 jobs:
   scan:
