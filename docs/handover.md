@@ -101,12 +101,53 @@ Re-run it after any change to the contract, the embedder, or the extractor. A
 failure there is a real finding, not a flaky environment — these are the only
 paths nothing else covers.
 
-**Then the one thing the script cannot do:** point a live agent at the surface
-and confirm the tool descriptions elicit the right calls — from **two different
-model vendors**, which is the acceptance criterion M2 was signed off with and
-the last task in its archived `tasks.md` that never got ticked. The script
-proves the surface *answers*. It cannot prove a model *chooses* correctly, and
-that is the part the design actually bets on.
+## The two-vendor agent test: done 2026-08-26 — M2 task 8.7 is closed
+
+The thing the script could not do: point a live agent at the surface and confirm
+the tool descriptions elicit the right calls, from **two different model
+vendors**. This was M2's acceptance criterion and the prototype's headline
+claim. It passed on both, over stdio (`jackryan serve-mcp`).
+
+**Vendor A — OpenAI, via Codex CLI** on a ChatGPT subscription sign-in (no API
+key involved; Codex holds its own OAuth tokens). Call order: `case_list_casefiles`
+→ `case_casefile_overview` → five `case_search` phrasings → three
+`case_get_passage` → three `case_cite`.
+
+**Vendor B — Anthropic, via a fresh `claude -p` process** with no prior context,
+initialised only from `analyst/role.md`. Call order: `case_list_casefiles` →
+`case_casefile_overview` → `case_list_documents` → `case_search` → four
+`case_cite`.
+
+Both called `case_casefile_overview` **before** searching, cited every factual
+claim through `case_cite`, and reported coverage in terms of what was actually
+searched. Both found a conflict of interest that required chaining three
+documents — a board member who directs the company holding 60% of the winning
+bidder — which no single document states.
+
+More telling than the pass: both **declined to overclaim**. The minutes name who
+was present and record a 3–1 vote but never say how each member voted, and both
+agents flagged "Vlasenko voted" as their own inference rather than a corpus
+fact. The Anthropic run added the point that the minutes record no declaration
+of interest *by anyone*, "so their silence is a gap, not evidence that no
+declaration was made". That is the epistemic behaviour `analyst/role.md` asks
+for, produced from the role and the tool descriptions alone.
+
+**How the Anthropic run was made honest.** The first attempt ran with the corpus
+files sitting in the process's working directory, so a correct answer proved
+nothing — it could have come from reading the files. It was re-run from an
+**empty directory** with `Read,Write,Edit,Glob,Grep,Bash,WebFetch,WebSearch,Task`
+denied, leaving the MCP surface as the only possible source. The tool-call order
+above is from that run.
+
+**Read this narrowly in one respect.** The instance used the **deterministic
+embedder**, selected explicitly in a test profile, because the model download
+stalled. So search hits came from FTS5 and the vectors carried no meaning. That
+does not weaken the criterion — it is about whether a model *chooses* the right
+tools and cites correctly, not about retrieval quality — but it does mean this
+run is not evidence about retrieval, and a rerun on the real embedder would be
+worth having when convenient.
+
+To repeat it:
 
 ```bash
 jackryan serve-mcp     # stdio; or reach the mounted surface at /mcp
@@ -115,7 +156,9 @@ jackryan serve-mcp     # stdio; or reach the mounted surface at /mcp
 Initialise the agent with `analyst/role.md` and give it a question it must
 search for. What you are watching for: does it call `case_casefile_overview`
 before searching, does it cite through `case_cite` rather than asserting, does
-it report coverage honestly.
+it report coverage honestly. The `/mcp` HTTP mount is still undriven by a live
+agent — and that is the transport whose lifespan bug made every in-process test
+pass while real requests returned 500.
 
 ---
 
@@ -228,7 +271,11 @@ PST stays last, as `docs/design.md` § 10 has it.
   Still unused: `--build-arg PREFETCH_MODELS=true`, so no offline-from-first-run
   image has ever been built — see the note in `docs/implementation-notes.md`
   about `check_real_embedder`, which would fail spuriously in exactly that image.
-- **No live agent.** The MCP surface is driven by tests through `call_tool`, by
+- **~~No live agent.~~ Settled 2026-08-26 for stdio — see above.** Two vendors
+  drove the surface and chose correctly. **The `/mcp` HTTP mount is still
+  undriven by a live agent**, which is the transport that once returned 500 on
+  every real request while all sixteen in-process tests passed. Old text, kept
+  for the record: the MCP surface is driven by tests through `call_tool`, by
   one real HTTP `initialize`, and now by `verify_model_paths.py` in process
   against real vectors. **No model has ever chosen to call it** — that is still
   the open acceptance criterion, and the script cannot close it.

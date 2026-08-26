@@ -59,7 +59,7 @@
 - [x] 8.4 Chaining verified: identifiers returned by one tool accepted by the next.
 - [x] 8.5 Profile pruning verified, including the unrecognised-name case.
 - [x] 8.6 Fence integrity verified against document text that tries to forge a marker.
-- [ ] 8.7 Driven by a live agent against two model vendors — needs model access, blocked here.
+- [x] 8.7 Driven by a live agent against two model vendors — done 2026-08-26: OpenAI via Codex on a ChatGPT sign-in, Anthropic via a fresh `claude -p`, both over stdio. Evidence, call orders and the deterministic-embedder caveat in `docs/handover.md`.
 
 ## 9. Adversarial review
 
