@@ -26,12 +26,16 @@ summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
 Current state: **M3 slice 1 shipped, and the prototype's verification debt is
-cleared.** Four changes are archived — the M0–M2 prototype,
-`hard-formats-and-containers`, and `contract-covers-embedding-library` — and
-thirteen capabilities are published in `openspec/specs/`. No change is in
-flight, and no archived task is left unticked: compose wiring and the
-two-vendor agent test both ran, and the contract fingerprint now covers the
-embedding library and verifies it against the module actually imported.
+cleared.** Five changes are archived — M0, M1 and M2, then
+`hard-formats-and-containers` and `contract-covers-embedding-library` — and
+thirteen capabilities are published in `openspec/specs/`. No archived task is
+left unticked: compose wiring and the two-vendor agent test both ran, and the
+contract fingerprint now covers the embedding library and verifies it against
+the module actually imported.
+
+In flight: `corpus-identity-covers-the-embedder`, which widens corpus identity
+to include which embedder produced the vectors. Archive it before starting
+anything else, and update this paragraph when you do.
 
 What remains unverified is recorded in `docs/handover.md`, and what is known
 but deliberately unfixed is in `docs/implementation-notes.md` — read both before
