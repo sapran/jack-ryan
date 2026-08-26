@@ -6,6 +6,11 @@ Human-facing design and the staged plan: `docs/design.md`. Read it before
 proposing anything — it carries the nine design principles, the ten locked
 decisions, and which milestone each capability belongs to.
 
+**`docs/handover.md` records what is verified and what is not.** Read it before
+trusting that anything here has been run: every test uses a stand-in embedder
+and none opens a PDF. It also carries an unfixed defect in the contract
+fingerprint that is cheap to fix now and expensive later.
+
 ## What this is
 
 A self-hosted investigation workbench. An analyst drops document dumps into
