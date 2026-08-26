@@ -14,7 +14,7 @@ instance rather than being silently replaced by a default.
 Configuration SHALL be split into two layers with different lifetimes. The
 `contract` layer is corpus-coupled: changing any value invalidates an existing
 corpus. The `profiles` layer is infrastructure and SHALL be safe to change at
-any time.
+any time, with one exception named below.
 
 The contract SHALL declare the values the pipeline actually consumes: the chunk
 size and overlap used to divide text, the model and dimensionality used to embed
@@ -27,6 +27,13 @@ versions of the same library can produce vectors that are not comparable — a
 change of pooling strategy being the case that has already occurred. Such
 vectors are the declared width and are otherwise well-formed, so no later check
 can detect them.
+
+The profile's choice of embedder is the exception to the profile layer being
+safe to change. It selects which implementation produces the vectors, so
+changing it invalidates every vector already stored, exactly as a contract value
+would. It remains in the profile layer because it is a deployment choice, and
+corpus identity accounts for it separately rather than by duplicating it into
+the contract, where two copies could disagree.
 
 Precedence SHALL be: a real environment variable, then `config.yaml`, then the
 built-in default. `config.yaml` SHALL be read only when `JACKRYAN_CONFIG` is
@@ -98,6 +105,17 @@ The contract SHALL produce a stable fingerprint string covering every
 corpus-coupled value, the embedding library version among them. Changing any one
 of them SHALL change the fingerprint.
 
+Corpus identity SHALL be that fingerprint combined with the identity of the
+embedder actually constructed. The contract alone is not sufficient, because two
+instances can agree on every contract value and still fill a corpus with vectors
+that are not comparable — one from the real embedder, one from the deterministic
+stand-in, both of the declared width. Corpus identity SHALL be computed where
+both are known, rather than by copying the embedder choice into the contract.
+
+The value reported to an operator as the instance's corpus identity SHALL be the
+value the store enforces, so that a refusal can be explained by comparing the
+strings shown.
+
 #### Scenario: A changed contract value changes the fingerprint
 
 - **WHEN** two contracts differ in any single value
@@ -107,3 +125,13 @@ of them SHALL change the fingerprint.
 
 - **WHEN** two contracts differ only in the declared embedding library version
 - **THEN** their fingerprints differ, and a store built under one refuses the other
+
+#### Scenario: A changed embedder changes corpus identity
+
+- **WHEN** one contract is combined with the real embedder and with the deterministic embedder
+- **THEN** the two corpus identities differ
+
+#### Scenario: The reported identity is the enforced one
+
+- **WHEN** an instance reports its corpus identity
+- **THEN** the value reported is the one the store records and compares

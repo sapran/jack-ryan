@@ -13,7 +13,12 @@ SHALL be refused by a real-model configuration, and the reverse. Both produce
 vectors of the declared width, so nothing downstream can distinguish them: the
 refusal at open is the only point where the difference is still visible.
 
-The refusal SHALL name both the recorded value and the configured one.
+The refusal SHALL name both the recorded value and the configured one, and SHALL
+state how to proceed: restore the configuration the recorded value names, or
+reingest under the current one. Two long identity strings differing in one
+component tell an operator what happened but not what to do about it, and this
+refusal is expected during ordinary work — every fingerprint change produces it
+for every existing corpus.
 
 #### Scenario: Reopening under the same contract succeeds
 
@@ -29,3 +34,8 @@ The refusal SHALL name both the recorded value and the configured one.
 
 - **WHEN** a store filled by one embedder is reopened by a configuration selecting another
 - **THEN** initialisation fails, naming the recorded and the configured values
+
+#### Scenario: The refusal says how to proceed
+
+- **WHEN** a store refuses to open under a different corpus identity
+- **THEN** the message states that the configuration can be restored or the casefiles reingested

@@ -26,21 +26,21 @@ summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
 Current state: **M3 slice 1 shipped, and the prototype's verification debt is
-cleared.** Five changes are archived — M0, M1 and M2, then
-`hard-formats-and-containers` and `contract-covers-embedding-library` — and
-thirteen capabilities are published in `openspec/specs/`. No archived task is
-left unticked: compose wiring and the two-vendor agent test both ran, and the
-contract fingerprint now covers the embedding library and verifies it against
-the module actually imported.
+cleared.** Six changes are archived — M0, M1 and M2, then
+`hard-formats-and-containers`, `contract-covers-embedding-library` and
+`corpus-identity-covers-the-embedder` — and thirteen capabilities are published
+in `openspec/specs/`. No change is in flight and no archived task is left
+unticked: compose wiring and the two-vendor agent test both ran, and corpus
+identity now covers the embedding library, the module actually imported, and
+which embedder produced the vectors.
 
-In flight: `corpus-identity-covers-the-embedder`, which widens corpus identity
-to include which embedder produced the vectors. Archive it before starting
-anything else, and update this paragraph when you do.
+The model-dependent M3 legs (OCR/VLM, rerank, summaries, statistical NER) are
+next; the assistant writing back is M4. Retrieval quality has never been
+measured, which matters most for the rerank leg — see `docs/handover.md`.
 
 What remains unverified is recorded in `docs/handover.md`, and what is known
 but deliberately unfixed is in `docs/implementation-notes.md` — read both before
-trusting that something works. The model-dependent M3 legs (OCR/VLM, rerank,
-summaries, statistical NER) follow separately; the assistant writing back is M4.
+trusting that something works.
 
 ## Rules
 
