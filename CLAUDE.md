@@ -18,10 +18,12 @@ with resolvable citations. Depth (OCR, hard formats, retrieval quality,
 summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
-Current state: **M2 archived — the prototype is complete.** An agent reaches
-the corpus over MCP and answers with citations that resolve. All three
-prototype changes are archived and eleven capabilities are published in
-`openspec/specs/`. Depth is M3; the assistant writing back is M4.
+Current state: **M3 slice 1 built — containers and the hard formats.** The
+prototype (M0–M2) is archived and eleven capabilities are published in
+`openspec/specs/`. In flight: `hard-formats-and-containers` — mail,
+spreadsheets, archives, document hierarchy, and the expansion budget. The
+model-dependent M3 legs (OCR/VLM, rerank, summaries, statistical NER) follow
+separately; the assistant writing back is M4.
 
 ## Rules
 
@@ -101,6 +103,20 @@ silently corrupted corpus.
 - **Docling PDF extraction needs models on first use.** Markdown, HTML, DOCX and
   PPTX parse offline. Build the image with `--build-arg PREFETCH_MODELS=true`
   for a container that is offline from its first run.
+- **A container extractor never routes what it holds.** It yields entries and
+  stops; the pipeline routes them. That is what makes a format supported inside
+  an archive exactly when it is supported outside one.
+- **Container entries are yielded one at a time, never returned together.** All
+  at once puts a whole archive in memory before the expansion budget can refuse
+  any of it — which makes the byte ceiling unreachable in the case it exists for.
+- **`containment_path` is display; `identity_path` is identity.** A folder walk
+  records a path but keeps content-only identity, so two copies in one folder
+  are one document. An expansion's path *is* part of its identity, so the same
+  attachment on two messages is two documents — which message carried it is
+  itself evidence.
+- **A descendant never outlives its container.** `documents.parent_id` carries
+  `ON DELETE CASCADE`, verified to recurse through nesting and to fire the chunk
+  trigger at every level. Never replace it with code that has to remember.
 
 ## Commands
 
@@ -121,7 +137,7 @@ jackryan casefile list
 jackryan casefile show <id|short-id|slug>
 jackryan ingest <casefile> <file-or-folder>
 jackryan search <casefile> "a question"
-jackryan document list <casefile>
+jackryan document list <casefile> [--expanded]
 jackryan serve-mcp                      # the agent surface over stdio
 
 # Docker
@@ -135,7 +151,8 @@ docker compose run --rm cli casefile list
 - `src/jackryan/app.py` — composition root; the only place wiring happens
 - `src/jackryan/storage/port.py` — `StorePort`, the one deliberate abstraction
 - `src/jackryan/storage/sqlite.py` — the single-file store and its contract guard
-- `src/jackryan/ingestion/` — format router, extractors, chunker
+- `src/jackryan/ingestion/` — format router, extractors, chunker, container and
+  mail and spreadsheet readers, the expansion budget
 - `src/jackryan/embedding/` — embedder port, the real model, and the test double
 - `src/jackryan/services/` — all business logic
 - `src/jackryan/server.py`, `cli.py` — thin adapters

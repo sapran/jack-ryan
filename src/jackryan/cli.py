@@ -31,7 +31,7 @@ def _render(casefile: Casefile) -> dict[str, Any]:
 
 
 def _render_document(document: Document) -> dict[str, Any]:
-    return {
+    row = {
         "id": document.id,
         "short_id": document.short_id,
         "filename": document.filename,
@@ -41,6 +41,13 @@ def _render_document(document: Document) -> dict[str, Any]:
         "characters": len(document.extracted_text),
         "created_at": document.created_at.isoformat(),
     }
+    if document.containment_path and document.containment_path != document.filename:
+        # Where it was found, because an attachment's own name identifies
+        # nothing without the message and archive that carried it.
+        row["found_at"] = document.containment_path
+    if document.child_count:
+        row["children"] = document.child_count
+    return row
 
 
 def _render_hit(hit: SearchHit) -> dict[str, Any]:
@@ -131,6 +138,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doc_list = document.add_parser("list", help="list a casefile's documents")
     doc_list.add_argument("casefile")
+    doc_list.add_argument(
+        "--expanded",
+        action="store_true",
+        help="include documents expanded out of archives, mailboxes, and messages",
+    )
     doc_show = document.add_parser("show", help="show one document")
     doc_show.add_argument("casefile")
     doc_show.add_argument("reference")
@@ -216,7 +228,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "document":
             if args.document_command == "list":
                 _print(
-                    [_render_document(d) for d in context.ingestion.list_documents(args.casefile)],
+                    [
+                        _render_document(d)
+                        for d in context.ingestion.list_documents(
+                            args.casefile, include_expanded=args.expanded
+                        )
+                    ],
                     args.json,
                     "No documents yet. Add some with: jackryan ingest <casefile> <path>",
                 )

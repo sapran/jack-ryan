@@ -17,9 +17,11 @@ the machine unless you point it at an endpoint yourself.
 through an MCP surface and answers with citations that resolve to a real
 passage. That was the loop the whole build was staged around.
 
-Next is **M3** — depth: scanned documents, email archives, spreadsheets, better
-retrieval, and names extracted from the text. Then **M4**, where the assistant
-writes back: tags, a running picture of the investigation, and cited reports.
+**M3 is under way.** The first slice — email, spreadsheets, archives, and the
+document hierarchy that holds them together — is built. Still to come in M3:
+scanned documents, better retrieval, summaries, and names extracted from the
+text. Then **M4**, where the assistant writes back: tags, a running picture of
+the investigation, and cited reports.
 
 The design document and full staged plan: [`docs/design.md`](docs/design.md).
 
@@ -37,8 +39,12 @@ jackryan ingest harbour-leases-2021 ~/dumps/harbour
 jackryan search harbour-leases-2021 "who signed the lease"
 ```
 
-Supported formats today: PDF, DOCX, PPTX, HTML, Markdown, and plain text.
-Scanned documents, email archives, and spreadsheets come with M3.
+Supported formats today: PDF, DOCX, PPTX, HTML, Markdown, plain text, email
+(EML, MBOX, MSG), spreadsheets (XLSX, CSV, TSV), and archives (ZIP, TAR).
+Archives, mailboxes and messages are expanded through the same pipeline, so a
+document three levels down is searched and cited like any other — and its
+citation names the path you would follow to find it by hand. Scanned documents
+come with the rest of M3.
 
 ## Working it with an AI
 
