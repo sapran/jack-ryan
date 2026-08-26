@@ -151,3 +151,29 @@ def test_the_same_hash_in_one_casefile_reuses_the_row(tmp_path):
     assert first.id == second.id
     assert len(store.list_documents(casefile.id)) == 1
     store.close()
+
+
+def test_a_corpus_built_under_one_embedding_library_is_refused_under_another(tmp_path):
+    """The end-to-end shape of the defect, through real fingerprints.
+
+    Two contracts that differ only in the embedding library version. Before that
+    value entered the fingerprint these produced the same string, so the store
+    opened a mean-pooled corpus under a CLS-pooled configuration and appended to
+    it — vectors of the right width that mean something else, which no later
+    check can detect.
+    """
+    from jackryan.config import Contract
+
+    built_under = Contract(embed_library="fastembed==0.5.1")
+    opened_under = Contract(embed_library="fastembed==0.8.0")
+    assert built_under.fingerprint() != opened_under.fingerprint()
+
+    path = tmp_path / "corpus.db"
+    first = SqliteStore(path)
+    first.initialize(built_under.fingerprint(), built_under.embed_dimensions)
+    first.close()
+
+    second = SqliteStore(path)
+    with pytest.raises(ConfigError):
+        second.initialize(opened_under.fingerprint(), opened_under.embed_dimensions)
+    second.close()

@@ -111,6 +111,7 @@ def check_real_embedder(workspace: Path) -> None:
     embedder = ModelEmbedder(
         model_name=contract.embed_model,
         dimensions=contract.embed_dimensions,
+        embed_library=contract.embed_library,
         cache_dir=str(workspace / "models"),
     )
     try:

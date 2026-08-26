@@ -119,7 +119,7 @@ it report coverage honestly.
 
 ---
 
-## A real defect, now confirmed against a live install, still not fixed
+## A real defect — found, confirmed, and now fixed
 
 **The contract fingerprint does not cover the embedding library version, and
 it needs to.**
@@ -153,18 +153,35 @@ corpus-coupled (it becomes the chunks) and the extractor version is not in the
 fingerprint either. Lower severity, since a change there produces visibly
 different text rather than quietly misaligned vectors.
 
-Suggested fix, as an OpenSpec change before any further M3 work:
+**Fixed by the `contract-covers-embedding-library` change.** What landed, and
+the three decisions behind it:
 
-1. Pin `fastembed` to an exact version, and `docling` too.
-2. Add the embedding library version to the fingerprint — either as an explicit
-   `embed_library` contract field, or read from the installed distribution at
-   fingerprint time.
-3. Decide deliberately whether pooling strategy belongs in the contract as its
-   own field, since it is the thing that actually changed.
+1. `fastembed` and `docling` are pinned exactly, with the reason written at the
+   pins so a later cleanup does not loosen them back.
+2. The contract gained an `embed_library` value — `fastembed==0.8.0` — and the
+   fingerprint covers it. It is **declared, not read from the installed
+   package**: reading the environment would make the fingerprint a property of
+   whatever happens to be installed rather than a written fact, and would refuse
+   a valid corpus after a patch bump that changed nothing.
+3. What makes the declaration trustworthy is that it is verified. A declared
+   version that is not the installed one is fatal at configuration load *and* at
+   embedder construction, naming both versions and saying how to proceed. Two
+   places because the CLI and the tests build embedders without a full boot —
+   the same "enforced where it was written, not where every caller crosses"
+   pattern this repository has now hit four times.
 
-Doing this **before** the first real corpus exists is nearly free. Afterwards it
-forces a reingest. Right now no corpus outside development exists, which will
-not be true for long.
+Pooling did **not** become its own contract field. A field implies the operator
+can set it, and through `fastembed`'s default path they cannot; the library
+version is the honest proxy. `docling` is pinned but deliberately kept out of
+the fingerprint: its changes produce different *text*, which is visible and
+internally consistent, where a pooling change produces invisible mismatched
+vectors. `openspec/changes/.../design.md` carries the full argument.
+
+**This is a breaking change, by design.** The fingerprint string changed, so any
+corpus built before it — including the one built during the 6/6 run recorded
+above, whose vectors are mean-pooled — is refused until reingested. That is the
+correct outcome and the reason for doing it now: no corpus outside development
+exists. Afterwards it would have cost a forced reingest of real evidence.
 
 ---
 
@@ -196,14 +213,21 @@ PST stays last, as `docs/design.md` § 10 has it.
   VLM, and statistical NER remain unexercised**, because no code for them
   exists yet.
 - **No LLM endpoint.** Nothing that calls one has ever been run.
-- **No Docker beyond the CI gate.** CI builds the image *and* runs the CLI
-  inside a container — `docker run --rm jackryan:ci jackryan --version`, on
-  every push and pull request — so the image and the CLI entrypoint work; the
-  archived M0 task 7.3 records exactly that. What is unexercised is everything
-  the compose file adds: `docker compose up` has never been run, so the server
-  `CMD`, the `HEALTHCHECK`, the `/data` volume and the scaled-to-zero `cli`
-  service are all unproven. That is what M0's still-unticked 7.4 says.
-  `--build-arg PREFETCH_MODELS=true` has never been used either.
+- **~~No Docker.~~ Compose settled 2026-08-26 — M0 task 7.4 is done.** The image
+  was built and `docker compose up -d` run for the first time. Evidence, in the
+  order it was taken: the container reported `Up (healthy)` and
+  `docker inspect` returned health status `healthy`, so the `HEALTHCHECK` fires
+  and passes; `GET /health` answered from the *host* over the published port
+  (not from inside the container) with the profile and contract fingerprint;
+  `docker compose run --rm cli casefile create ...` started the scaled-to-zero
+  `cli` service and created a casefile; and `GET /api/casefiles` on the
+  long-lived service then returned that same casefile, which is the proof that
+  the `/data` volume is genuinely shared between the two services rather than
+  each holding its own. The stack was then torn down.
+
+  Still unused: `--build-arg PREFETCH_MODELS=true`, so no offline-from-first-run
+  image has ever been built — see the note in `docs/implementation-notes.md`
+  about `check_real_embedder`, which would fail spuriously in exactly that image.
 - **No live agent.** The MCP surface is driven by tests through `call_tool`, by
   one real HTTP `initialize`, and now by `verify_model_paths.py` in process
   against real vectors. **No model has ever chosen to call it** — that is still

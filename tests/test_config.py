@@ -78,3 +78,75 @@ def test_unset_secret_placeholder_is_fatal(tmp_path, monkeypatch):
 
 def test_contract_fingerprint_changes_with_any_value():
     assert Contract().fingerprint() != Contract(chunk_max_chars=512).fingerprint()
+
+
+def test_the_fingerprint_covers_the_embedding_library():
+    # The defect this guards: fastembed 0.5.1 and 0.8.0 embed the same model
+    # with different pooling, producing vectors of the declared width that are
+    # not comparable. Before this value entered the fingerprint the two were
+    # indistinguishable, so the store admitted one corpus into the other.
+    assert (
+        Contract().fingerprint()
+        != Contract(embed_library="fastembed==0.5.1").fingerprint()
+    )
+
+
+def test_the_default_contract_declares_the_installed_library():
+    # The declaration has to be a fact, not an aspiration: if the shipped
+    # default drifts from what the pins install, every fresh instance is fatal.
+    from importlib import metadata
+
+    declared = Contract().embed_library
+    distribution, _, version = declared.partition("==")
+    assert metadata.version(distribution) == version, (
+        f"contract declares {declared!r} but {metadata.version(distribution)} is installed; "
+        "update DEFAULT_CONTRACT and the pyproject pin together"
+    )
+
+
+def test_a_declared_library_version_that_is_not_installed_is_fatal(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "JACKRYAN_CONFIG",
+        write_config(tmp_path, "contract:\n  embed_library: fastembed==0.5.1\n"),
+    )
+    with pytest.raises(ConfigError) as exc:
+        load_config()
+    message = str(exc.value)
+    assert "0.5.1" in message, "the declared version must be named"
+    assert "reingest" in message, "the operator must be told how to proceed"
+
+
+def test_a_declared_distribution_that_is_absent_is_fatal(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "JACKRYAN_CONFIG",
+        write_config(tmp_path, "contract:\n  embed_library: no-such-distribution==1.0\n"),
+    )
+    with pytest.raises(ConfigError, match="no-such-distribution"):
+        load_config()
+
+
+def test_a_malformed_library_declaration_is_fatal(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "JACKRYAN_CONFIG",
+        write_config(tmp_path, "contract:\n  embed_library: fastembed\n"),
+    )
+    with pytest.raises(ConfigError, match="distribution"):
+        load_config()
+
+
+def test_every_contract_value_is_in_the_fingerprint_and_nothing_else_is():
+    # The spec's claim is that the contract declares exactly what determines
+    # corpus identity: no decorative field, and none left out. A value added to
+    # the dataclass but forgotten in fingerprint() would let two incompatible
+    # corpora share an identity — which is how the embedding library was missed.
+    import dataclasses
+
+    from jackryan.config import DEFAULT_CONTRACT
+
+    fields = {f.name for f in dataclasses.fields(Contract)}
+    assert fields == set(DEFAULT_CONTRACT), (
+        "Contract fields and DEFAULT_CONTRACT keys have drifted apart"
+    )
+    fingerprint = Contract().fingerprint()
+    for name in fields:
+        assert f"{name}=" in fingerprint, f"{name} is declared but not in the fingerprint"

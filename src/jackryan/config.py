@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,12 @@ DEFAULT_CONTRACT: dict[str, Any] = {
     "chunk_overlap_chars": 200,
     "embed_model": "intfloat/multilingual-e5-large",
     "embed_dimensions": 1024,
+    # The library version is corpus-coupled: fastembed changed this model from
+    # CLS to mean pooling between 0.5.1 and 0.8.0, which produces vectors of the
+    # declared width that are not comparable with the ones already stored. Width
+    # and model name cannot tell the two apart, so the version is declared here
+    # and checked against what is installed.
+    "embed_library": "fastembed==0.8.0",
 }
 
 
@@ -44,6 +51,14 @@ class Contract:
     chunk_overlap_chars: int = DEFAULT_CONTRACT["chunk_overlap_chars"]
     embed_model: str = DEFAULT_CONTRACT["embed_model"]
     embed_dimensions: int = DEFAULT_CONTRACT["embed_dimensions"]
+    embed_library: str = DEFAULT_CONTRACT["embed_library"]
+    """The embedding library and exact version, as ``<distribution>==<version>``.
+
+    Declared rather than read from the environment so the fingerprint stays a
+    written fact reproducible from configuration alone. It is verified against
+    the installed distribution at load, which is what makes the declaration
+    trustworthy.
+    """
 
     def fingerprint(self) -> str:
         """A stable identity for this contract.
@@ -56,6 +71,7 @@ class Contract:
             f"chunk_overlap_chars={self.chunk_overlap_chars}",
             f"embed_model={self.embed_model}",
             f"embed_dimensions={self.embed_dimensions}",
+            f"embed_library={self.embed_library}",
         )
         return "|".join(parts)
 
@@ -106,6 +122,51 @@ class Config:
     @property
     def db_path(self) -> Path:
         return self.data_dir / "jackryan.db"
+
+
+def embed_library_mismatch(declared: str) -> str | None:
+    """Describe how ``declared`` disagrees with what is installed, or ``None``.
+
+    Returns a message rather than raising, because the two callers report the
+    same fact as different typed errors: configuration raises ``ConfigError`` at
+    load, the embedder raises ``EmbeddingError`` where vectors are produced. Both
+    must fire — the CLI and the tests build embedders without a full boot, so a
+    check that lived only in the composition root would be a rule enforced where
+    it was written rather than where every caller crosses.
+    """
+    distribution, separator, declared_version = declared.partition("==")
+    distribution = distribution.strip()
+    declared_version = declared_version.strip()
+    if not distribution or not separator or not declared_version:
+        return (
+            f"contract embed_library is {declared!r}; expected "
+            "'<distribution>==<version>', for example 'fastembed==0.8.0'"
+        )
+
+    try:
+        installed = metadata.version(distribution)
+    except metadata.PackageNotFoundError:
+        return (
+            f"contract declares embed_library {declared!r} but the {distribution!r} "
+            "distribution is not installed, so the vectors it would produce cannot "
+            "be identified"
+        )
+    except Exception as exc:  # unusual packaging layouts, not a missing package
+        return (
+            f"contract declares embed_library {declared!r} but the installed version "
+            f"of {distribution!r} could not be read ({type(exc).__name__}: {exc}), so "
+            "it cannot be verified"
+        )
+
+    if installed != declared_version:
+        return (
+            f"contract declares embed_library {declared!r} but {distribution!r} "
+            f"{installed} is installed. These produce vectors of the same width that "
+            "are not comparable, which no later check can detect. Either install "
+            f"{distribution}=={declared_version}, or set embed_library to "
+            f"{distribution}=={installed} and reingest every casefile."
+        )
+    return None
 
 
 def _interpolate(value: Any) -> Any:
@@ -232,6 +293,7 @@ def _build_contract(document: dict[str, Any]) -> Contract:
             chunk_overlap_chars=int(values["chunk_overlap_chars"]),
             embed_model=str(values["embed_model"]),
             embed_dimensions=int(values["embed_dimensions"]),
+            embed_library=str(values["embed_library"]).strip(),
         )
         if contract.chunk_overlap_chars >= contract.chunk_max_chars:
             raise ConfigError(
@@ -240,6 +302,9 @@ def _build_contract(document: dict[str, Any]) -> Contract:
             )
         if contract.chunk_max_chars < 1 or contract.embed_dimensions < 1:
             raise ConfigError("contract chunk_max_chars and embed_dimensions must be positive")
+        mismatch = embed_library_mismatch(contract.embed_library)
+        if mismatch:
+            raise ConfigError(mismatch)
         return contract
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"contract value is not of the expected type: {exc}") from exc

@@ -18,9 +18,16 @@ _QUERY_PREFIX = "query: "
 class ModelEmbedder:
     name = "model"
 
-    def __init__(self, model_name: str, dimensions: int, cache_dir: str | None = None) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        dimensions: int,
+        embed_library: str,
+        cache_dir: str | None = None,
+    ) -> None:
         self._model_name = model_name
         self._dimensions = dimensions
+        self._embed_library = embed_library
         self._cache_dir = cache_dir
         self._model = None
 
@@ -31,6 +38,15 @@ class ModelEmbedder:
     def _load(self):
         """Load on first use, and fail loudly rather than substituting anything."""
         if self._model is None:
+            # The corpus records which library built its vectors. A different
+            # version of the same library can return the declared width from the
+            # declared model and still mean something else, so this is checked
+            # before any vector exists rather than after one is stored.
+            from ..config import embed_library_mismatch
+
+            mismatch = embed_library_mismatch(self._embed_library)
+            if mismatch:
+                raise EmbeddingError(mismatch)
             try:
                 from fastembed import TextEmbedding
 

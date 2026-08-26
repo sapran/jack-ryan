@@ -40,7 +40,10 @@ and why it was parked.
   an accurate message, verified by forcing one. Noted so nobody "fixes" the
   guard by weakening the one in `ModelEmbedder`.
 
-- **The contract fingerprint does not cover the embedding library version.**
-  Fully written up in `docs/handover.md` — it has its own section there, with a
-  suggested three-step fix. Repeated here only so this file is a complete index
-  of what is known and unfixed.
+## Fixed
+
+- **~~The contract fingerprint does not cover the embedding library version.~~**
+  Fixed by the `contract-covers-embedding-library` change on 2026-08-26: the
+  contract declares `embed_library`, the fingerprint covers it, and a declared
+  version that is not the installed one is fatal at both configuration load and
+  embedder construction. See `docs/handover.md` for the decisions.

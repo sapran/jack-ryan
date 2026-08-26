@@ -14,9 +14,17 @@ dependencies = [
     "pyyaml>=6.0",
     # Extraction engine. Heavy by design: its weight is the OCR and VLM
     # machinery that later milestones depend on.
-    "docling>=2.0",
+    # Pinned exactly, not loosely: what this produces becomes the chunks, so a
+    # version move changes the corpus. It is deliberately not in the contract
+    # fingerprint — see openspec/specs/layered-configuration — because the text
+    # it changes is visible, unlike a change of embedding pooling.
+    "docling==2.122.0",
     # ONNX embeddings, so no torch runtime is needed to search.
-    "fastembed>=0.4",
+    # Pinned exactly and named in the corpus contract's fingerprint. 0.5.1 and
+    # 0.8.0 embed the same model with different pooling, producing vectors of
+    # the same width that are not comparable. A loose pin here is the one
+    # dependency change that can corrupt a corpus with no error anywhere.
+    "fastembed==0.8.0",
     # Vector search inside the same SQLite file that holds the text.
     "sqlite-vec>=0.1.6",
     # The agent-facing surface.
