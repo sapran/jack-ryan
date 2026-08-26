@@ -21,6 +21,11 @@ dependencies = [
     "sqlite-vec>=0.1.6",
     # The agent-facing surface.
     "mcp>=2.0",
+    # Spreadsheets. MIT.
+    "openpyxl>=3.1",
+    # Outlook .msg, the one mail format with no standard-library reader.
+    # GPLv3, which AGPL-3.0's compatibility clause admits.
+    "extract-msg>=0.54",
 ]
 
 [project.optional-dependencies]

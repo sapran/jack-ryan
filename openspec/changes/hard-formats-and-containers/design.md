@@ -132,20 +132,32 @@ storage becomes a real cost.
 identities, hence the same document ids. Reingest stability — the property
 bookmarks and citations depend on — survives.
 
-### Deletion collects descendants explicitly, then deletes through the existing path
+### Deletion cascades in the schema, not in code
 
-Deleting a document resolves its descendant ids with a recursive CTE, then
-deletes them through the same code that already deletes a document's chunks.
+`documents.parent_id` carries `ON DELETE CASCADE`. Deleting a document deletes
+its descendants, their chunks, and the full-text and vector sidecars, without
+any delete path having to know to do so.
 
-*Why.* The tempting alternative is a self-referencing foreign key with
-`ON DELETE CASCADE`. It requires `PRAGMA foreign_keys=ON` to be set on every
-connection, and whether the existing `AFTER DELETE` trigger on `chunks` fires
-for cascade-deleted rows depends further on `recursive_triggers`. Two pragmas
-have to be right, on every connection, or the corpus silently accumulates
-orphaned FTS and vector rows — which is precisely the M1 defect that made the
-next ingest anywhere in the corpus fail permanently. An explicit collect-then-
-delete depends on no pragma and goes through the one path already known to clean
-up.
+*Why.* The alternative — collecting descendant ids with a recursive CTE and
+deleting them explicitly — puts the guarantee in code that a future path can
+forget. That is the shape of the M1 defect, where a delete path orphaned FTS and
+vector rows and, because SQLite reuses rowids, the next ingest anywhere in the
+corpus failed permanently. A constraint the database enforces cannot be
+forgotten by code written later.
+
+*Correction.* An earlier revision of this document chose the explicit route,
+arguing that a cascade fires the chunk cleanup trigger only when
+`recursive_triggers` is enabled. **That is false**, and it was checked rather
+than reasoned about: with `recursive_triggers` off, a three-level cascade
+deleted every descendant, every chunk, and every matching FTS and vector row.
+The remaining half of the argument — that a cascade depends on
+`PRAGMA foreign_keys=ON` — is true, but that pragma is set once at
+initialisation on the single connection the store owns, and the store is the
+only thing that opens the corpus.
+
+*Retained:* `descendant_ids` still exists, built on a recursive CTE bounded to
+64 levels. It reports what a delete would take, and is what a test asserts
+against; it is not what performs the deletion.
 
 ### A directory is a traversal, not a document
 

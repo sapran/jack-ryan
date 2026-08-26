@@ -43,13 +43,27 @@ def provenance(
     char_start: int | None = None,
     char_end: int | None = None,
     heading_path: str = "",
+    containment_path: str = "",
 ) -> dict[str, Any]:
-    """Where a piece of text came from, so a claim can be traced back to it."""
+    """Where a piece of text came from, so a claim can be traced back to it.
+
+    The containment path is here because a document produced by expansion does
+    not identify itself. An attachment called `scan.pdf` is evidence only once
+    it is known which message carried it and which archive carried that; a
+    citation a person cannot follow back by hand is not a chain of evidence.
+
+    Every value here is document-derived and therefore attacker-controlled to
+    the same degree as the text it describes. Callers pass these through the
+    same one-line collapse as any other corpus value before they reach a
+    line-oriented block.
+    """
     block: dict[str, Any] = {
         "casefile_id": casefile_id,
         "document_id": document_id,
         "document": filename,
     }
+    if containment_path and containment_path != filename:
+        block["found_at"] = containment_path
     if char_start is not None:
         block["char_start"] = char_start
     if char_end is not None:

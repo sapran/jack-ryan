@@ -20,7 +20,7 @@ import sqlite_vec
 from ..errors import ConfigError, ConflictError
 from .port import Casefile, Chunk, Document
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS store_meta (
@@ -50,10 +50,25 @@ CREATE TABLE IF NOT EXISTS documents (
     extractor      TEXT NOT NULL DEFAULT '',
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL,
-    UNIQUE(casefile_id, content_hash)
+    -- CASCADE, so a descendant cannot outlive the container that carried it
+    -- whatever path does the deleting. Verified to recurse through nesting and
+    -- to fire the chunk trigger below at every level, which is what keeps the
+    -- full-text and vector sidecars from being orphaned.
+    parent_id      TEXT REFERENCES documents(id) ON DELETE CASCADE,
+    -- Where this document was found, for a human to follow. Always recorded,
+    -- including the directory names a walk passed through.
+    containment_path TEXT NOT NULL DEFAULT '',
+    -- The part of that path which counts toward identity: empty for a file
+    -- ingested directly, so two copies in one folder are one document; the
+    -- containment path for one expanded out of a container, so the same
+    -- attachment on two messages is two documents — which message carried it
+    -- is itself evidence.
+    identity_path  TEXT NOT NULL DEFAULT '',
+    UNIQUE(casefile_id, content_hash, identity_path)
 );
 
 CREATE INDEX IF NOT EXISTS idx_documents_casefile ON documents(casefile_id);
+CREATE INDEX IF NOT EXISTS idx_documents_parent ON documents(parent_id);
 
 -- The implicit integer rowid is the key that ties a chunk to its full-text
 -- entry and to its vector, so all three are addressed identically.
@@ -115,6 +130,10 @@ def _row_to_document(row: sqlite3.Row) -> Document:
         extractor=row["extractor"],
         created_at=_from_iso(row["created_at"]),
         updated_at=_from_iso(row["updated_at"]),
+        parent_id=row["parent_id"],
+        containment_path=row["containment_path"],
+        identity_path=row["identity_path"],
+        child_count=row["child_count"] if "child_count" in row.keys() else 0,
     )
 
 
@@ -309,15 +328,18 @@ class SqliteStore:
         with self._lock:
             self._db.execute(
                 "INSERT INTO documents (id, casefile_id, content_hash, filename, media_type,"
-                " byte_size, extracted_text, extractor, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                " ON CONFLICT(casefile_id, content_hash) DO UPDATE SET"
+                " byte_size, extracted_text, extractor, created_at, updated_at,"
+                " parent_id, containment_path, identity_path)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(casefile_id, content_hash, identity_path) DO UPDATE SET"
                 "   filename = excluded.filename,"
                 "   media_type = excluded.media_type,"
                 "   byte_size = excluded.byte_size,"
                 "   extracted_text = excluded.extracted_text,"
                 "   extractor = excluded.extractor,"
-                "   updated_at = excluded.updated_at",
+                "   updated_at = excluded.updated_at,"
+                "   parent_id = excluded.parent_id,"
+                "   containment_path = excluded.containment_path",
                 (
                     document.id,
                     document.casefile_id,
@@ -329,10 +351,15 @@ class SqliteStore:
                     document.extractor,
                     _to_iso(document.created_at),
                     _to_iso(document.updated_at),
+                    document.parent_id,
+                    document.containment_path,
+                    document.identity_path,
                 ),
             )
             self._db.commit()
-        stored = self.find_document_by_hash(document.casefile_id, document.content_hash)
+        stored = self.find_document_by_hash(
+            document.casefile_id, document.content_hash, document.identity_path
+        )
         assert stored is not None
         return stored
 
@@ -343,13 +370,82 @@ class SqliteStore:
             ).fetchone()
         return _row_to_document(row) if row else None
 
-    def find_document_by_hash(self, casefile_id: str, content_hash: str) -> Document | None:
+    def find_document_by_hash(
+        self, casefile_id: str, content_hash: str, identity_path: str = ""
+    ) -> Document | None:
+        """Find by identity: content, and for an expansion, where it was found.
+
+        `identity_path` is empty for a file ingested directly, so two copies in
+        one folder are one document. For an expansion it is the containment
+        path, so the same bytes reached through two containers resolve to two
+        documents and each keeps the link to what carried it.
+        """
         with self._lock:
             row = self._db.execute(
-                "SELECT * FROM documents WHERE casefile_id = ? AND content_hash = ?",
-                (casefile_id, content_hash),
+                "SELECT * FROM documents"
+                " WHERE casefile_id = ? AND content_hash = ? AND identity_path = ?",
+                (casefile_id, content_hash, identity_path),
             ).fetchone()
         return _row_to_document(row) if row else None
+
+    def list_children(self, document_id: str) -> list[Document]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM documents WHERE parent_id = ? ORDER BY containment_path",
+                (document_id,),
+            ).fetchall()
+        return [_row_to_document(r) for r in rows]
+
+    def ancestors(self, document_id: str) -> list[Document]:
+        """The chain from the directly ingested file down to this document's parent.
+
+        Bounded by the same depth the expansion budget allows, so a parent cycle
+        introduced by a bug cannot spin here.
+        """
+        with self._lock:
+            rows = self._db.execute(
+                "WITH RECURSIVE chain(id, depth) AS ("
+                "   SELECT parent_id, 1 FROM documents WHERE id = ?"
+                "   UNION ALL"
+                "   SELECT d.parent_id, chain.depth + 1 FROM documents d"
+                "     JOIN chain ON d.id = chain.id"
+                "     WHERE d.parent_id IS NOT NULL AND chain.depth < 64"
+                " )"
+                " SELECT documents.* FROM chain JOIN documents ON documents.id = chain.id"
+                " ORDER BY chain.depth DESC",
+                (document_id,),
+            ).fetchall()
+        return [_row_to_document(r) for r in rows]
+
+    def delete_document(self, document_id: str) -> bool:
+        """Delete a document and everything expanded out of it.
+
+        Descendants and all three chunk sidecars go with it by cascade, declared
+        in the schema rather than performed here, so a delete path written later
+        cannot forget and leave the corpus with orphaned vector rows.
+        """
+        with self._lock:
+            cursor = self._db.execute(
+                "DELETE FROM documents WHERE id = ?", (document_id,)
+            )
+            self._db.commit()
+            return cursor.rowcount > 0
+
+    def descendant_ids(self, document_id: str) -> list[str]:
+        """Every document expanded out of this one, at any depth."""
+        with self._lock:
+            rows = self._db.execute(
+                "WITH RECURSIVE tree(id, depth) AS ("
+                "   SELECT id, 0 FROM documents WHERE parent_id = ?"
+                "   UNION ALL"
+                "   SELECT d.id, tree.depth + 1 FROM documents d"
+                "     JOIN tree ON d.parent_id = tree.id"
+                "     WHERE tree.depth < 64"
+                " )"
+                " SELECT id FROM tree",
+                (document_id,),
+            ).fetchall()
+        return [r["id"] for r in rows]
 
     def find_documents_by_id_prefix(self, casefile_id: str, prefix: str) -> list[Document]:
         pattern = _escape_like(prefix) + "%"
@@ -361,10 +457,26 @@ class SqliteStore:
             ).fetchall()
         return [_row_to_document(r) for r in rows]
 
-    def list_documents(self, casefile_id: str) -> list[Document]:
+    def list_documents(
+        self, casefile_id: str, include_expanded: bool = False
+    ) -> list[Document]:
+        """A casefile's documents, newest first.
+
+        Expanded children are excluded unless asked for: three archives that
+        expand to forty thousand documents are three things an analyst put in,
+        and an inventory that returns forty thousand rows is not an inventory.
+        Each row carries how many children it has, so a caller can see there is
+        more to reach without paying to fetch it.
+        """
+        clause = "" if include_expanded else " AND d.parent_id IS NULL"
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM documents WHERE casefile_id = ? ORDER BY created_at DESC",
+                "SELECT d.*, ("
+                "   SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id"
+                " ) AS child_count"
+                " FROM documents d"
+                f" WHERE d.casefile_id = ?{clause}"
+                " ORDER BY d.created_at DESC",
                 (casefile_id,),
             ).fetchall()
         return [_row_to_document(r) for r in rows]
@@ -453,7 +565,10 @@ class SqliteStore:
         """
         with self._lock:
             totals = self._db.execute(
-                "SELECT COUNT(*) AS documents, COALESCE(SUM(LENGTH(extracted_text)), 0) AS characters"
+                "SELECT COUNT(*) AS documents,"
+                "       COALESCE(SUM(parent_id IS NULL), 0) AS ingested,"
+                "       COALESCE(SUM(parent_id IS NOT NULL), 0) AS expanded,"
+                "       COALESCE(SUM(LENGTH(extracted_text)), 0) AS characters"
                 " FROM documents WHERE casefile_id = ?",
                 (casefile_id,),
             ).fetchone()
@@ -462,8 +577,13 @@ class SqliteStore:
                 " GROUP BY media_type ORDER BY media_type",
                 (casefile_id,),
             ).fetchall()
+        # Split rather than one figure: a casefile of three archives holding
+        # forty thousand documents is both "3" and "40,003", and a count that
+        # does not say which it means misrepresents the size of the corpus.
         return {
             "documents": totals["documents"],
+            "documents_ingested": totals["ingested"],
+            "documents_expanded": totals["expanded"],
             "characters": totals["characters"],
             "by_type": {(r["media_type"] or "unknown"): r["count"] for r in by_type},
         }

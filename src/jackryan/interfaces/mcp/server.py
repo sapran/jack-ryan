@@ -86,14 +86,23 @@ def _render_casefile(casefile: Casefile) -> dict[str, Any]:
 
 
 def _render_document(document: Document) -> dict[str, Any]:
-    return {
+    row: dict[str, Any] = {
         "document_id": document.id,
         "short_id": document.short_id,
-        "filename": document.filename,
+        # Corpus-derived, so collapsed before it can reach a line-oriented
+        # block — a filename or an archive entry name may contain a newline.
+        "filename": one_line(document.filename, 200),
         "media_type": document.media_type,
         "characters": len(document.extracted_text),
         "byte_size": document.byte_size,
     }
+    if document.containment_path and document.containment_path != document.filename:
+        row["found_at"] = one_line(document.containment_path, 200)
+    if document.child_count:
+        # Marked, not expanded: a listing says there is more to reach without
+        # returning the forty thousand documents an archive might hold.
+        row["children"] = document.child_count
+    return row
 
 
 def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
@@ -151,9 +160,21 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             return from_exception(exc)
 
         by_type = stats["by_type"]
+        # Say what was counted. A casefile of three archives holding forty
+        # thousand documents is both "3" and "40,003", and one figure offered
+        # without saying which misrepresents the size of the corpus — which an
+        # agent then repeats as coverage.
+        expanded = stats["documents_expanded"]
+        composition = (
+            f"{stats['documents']} documents "
+            f"({stats['documents_ingested']} ingested directly, {expanded} expanded "
+            f"from containers)"
+            if expanded
+            else f"{stats['documents']} documents"
+        )
         formatted = (
             f"{one_line(resolved.title, 80)} ({one_line(resolved.slug, 40)})\n"
-            f"{stats['documents']} documents, {stats['characters']:,} characters of extracted text\n"
+            f"{composition}, {stats['characters']:,} characters of extracted text\n"
             + (
                 "\n".join(
                     f"  {count:>4}  {one_line(kind, 60)}" for kind, count in sorted(by_type.items())
@@ -164,6 +185,8 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         return {
             "casefile": _render_casefile(resolved),
             "document_count": stats["documents"],
+            "documents_ingested": stats["documents_ingested"],
+            "documents_expanded": stats["documents_expanded"],
             "total_characters": stats["characters"],
             "documents_by_type": by_type,
             "formatted": formatted,
@@ -182,7 +205,9 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         rows = [_render_document(d) for d in documents]
         formatted = (
             "\n".join(
-                f"{r['short_id']}  {one_line(r['filename'], 60):<40}  {r['characters']:>8,} chars"
+                f"{r['short_id']}  {one_line(r.get('found_at') or r['filename'], 60):<40}"
+                f"  {r['characters']:>8,} chars"
+                + (f"  (+{r['children']} inside)" if r.get("children") else "")
                 for r in rows
             )
             or "No documents in this casefile."
@@ -251,6 +276,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
                 char_start=chunk.char_start,
                 char_end=chunk.char_end,
                 heading_path=chunk.heading_path,
+                containment_path=one_line(document.containment_path, 200),
             ),
             "text": fence(chunk.text, nonce),
             "neighbours": [
@@ -309,6 +335,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
                 filename=found.filename,
                 char_start=start,
                 char_end=end,
+                containment_path=one_line(found.containment_path, 200),
             ),
             "text": fence(window, nonce),
             "content_notice": NOTICE,
@@ -335,14 +362,20 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         heading = one_line(chunk.heading_path, 60)
         where = f", {heading}" if heading else ""
         nonce = new_nonce()
+        # A document produced by expansion is named by where it was found, not
+        # by its own filename: an attachment called `scan.pdf` identifies
+        # nothing until the message and archive that carried it are named. Both
+        # are corpus values, so both are collapsed to one line first.
+        source = one_line(document.containment_path or document.filename, 200)
         return {
             "citation": (
-                f"{one_line(document.filename, 80)}{where} "
+                f"{source}{where} "
                 f"(chars {chunk.char_start}–{chunk.char_end}, {resolved.slug}/{document.short_id})"
             ),
             "chunk_id": chunk.id,
             "document_id": document.id,
-            "document": document.filename,
+            "document": one_line(document.filename, 200),
+            "found_at": source,
             "casefile": resolved.slug,
             "char_start": chunk.char_start,
             "char_end": chunk.char_end,

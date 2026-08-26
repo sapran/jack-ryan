@@ -9,8 +9,9 @@ the machine.
 
 ### Requirement: A container is expanded through the same router as any other file
 
-An extractor MAY return child documents alongside its text. Each child SHALL be
-routed and extracted by the same registry that handles a file offered directly,
+An extractor MAY hold child documents alongside its text, yielded one at a time
+on a separate call. Each child SHALL be routed and extracted by the same
+registry that handles a file offered directly,
 so a format is supported inside a container exactly when it is supported outside
 one, and a container extractor SHALL NOT know how to read what it contains.
 

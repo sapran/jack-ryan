@@ -8,11 +8,19 @@ inspecting the file. An extractor SHALL NOT know about another, and adding a
 format SHALL be registering an extractor rather than editing the pipeline.
 
 Every extractor SHALL return a normalised result carrying the extracted text,
-whatever structure it recovered, the file's native metadata, and any child
-documents it found, so that everything downstream is independent of which
-extractor ran. An extractor that finds children SHALL return them for the
-pipeline to route; it SHALL NOT extract them itself, because doing so would make
-support for a format depend on which container it was found in.
+whatever structure it recovered, the file's native metadata, and whether the
+file holds further files, so that everything downstream is independent of which
+extractor ran.
+
+An extractor that holds further files SHALL yield them one at a time, on a
+separate call from the one that extracts its text. It SHALL NOT return them all
+together: a container holding many entries would otherwise be wholly resident in
+memory before the expansion budget could refuse any of it, leaving the ceiling
+unreachable in the case it exists for.
+
+An extractor SHALL yield its children for the pipeline to route and SHALL NOT
+extract them itself, because doing so would make support for a format depend on
+which container it was found in.
 
 When no registered extractor accepts a file, ingestion SHALL fail with a typed
 error naming the file and its type rather than storing an empty document.
@@ -33,8 +41,13 @@ its children have a parent to hang from.
 
 #### Scenario: A file yielding no usable text is refused
 
-- **WHEN** extraction produces no usable text and no children
+- **WHEN** extraction produces no usable text and the file holds nothing to expand
 - **THEN** ingestion fails rather than storing a document with empty content
+
+#### Scenario: A container's entries are not all resident at once
+
+- **WHEN** a container's entries are read
+- **THEN** they are yielded one at a time, so expansion can be stopped partway
 
 #### Scenario: A container with no text of its own is stored
 

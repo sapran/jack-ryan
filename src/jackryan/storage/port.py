@@ -30,10 +30,29 @@ class Document:
     extractor: str
     created_at: datetime
     updated_at: datetime
+    # Absent for a file ingested directly; set for one found inside another.
+    parent_id: str | None = None
+    # The names from the ingested file down to this one, joined — including the
+    # directories a folder walk passed through. What an analyst follows to find
+    # the same evidence by hand. Display, not identity.
+    containment_path: str = ""
+    # The part of that path which counts toward identity: empty for a file
+    # ingested directly, the containment path for one expanded out of a
+    # container. Two copies in one folder are one document; the same attachment
+    # on two messages is two.
+    identity_path: str = ""
+    # How many documents were expanded directly out of this one. Carried so a
+    # listing can show that there is more to reach without fetching it.
+    child_count: int = 0
 
     @property
     def short_id(self) -> str:
         return self.id[:8]
+
+    @property
+    def is_expanded(self) -> bool:
+        """Whether this document came out of another rather than off disk."""
+        return self.parent_id is not None
 
 
 @dataclass(frozen=True)
@@ -116,11 +135,23 @@ class StorePort(Protocol):
 
     def get_document(self, document_id: str) -> Document | None: ...
 
-    def find_document_by_hash(self, casefile_id: str, content_hash: str) -> Document | None: ...
+    def find_document_by_hash(
+        self, casefile_id: str, content_hash: str, identity_path: str = ""
+    ) -> Document | None: ...
+
+    def delete_document(self, document_id: str) -> bool: ...
+
+    def list_children(self, document_id: str) -> list[Document]: ...
+
+    def ancestors(self, document_id: str) -> list[Document]: ...
+
+    def descendant_ids(self, document_id: str) -> list[str]: ...
 
     def find_documents_by_id_prefix(self, casefile_id: str, prefix: str) -> list[Document]: ...
 
-    def list_documents(self, casefile_id: str) -> list[Document]: ...
+    def list_documents(
+        self, casefile_id: str, include_expanded: bool = False
+    ) -> list[Document]: ...
 
     def replace_chunks(
         self, document_id: str, chunks: list[Chunk], embeddings: list[list[float]]
