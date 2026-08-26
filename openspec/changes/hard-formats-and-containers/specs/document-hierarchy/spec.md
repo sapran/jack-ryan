@@ -63,20 +63,35 @@ because an attachment's own filename identifies nothing on its own.
 - **WHEN** a document with no parent reports its containment path
 - **THEN** the path is its own name
 
-### Requirement: Listing distinguishes what was ingested from what was expanded
+### Requirement: Listing returns what was ingested, and reaches expansions on request
 
-A document listing SHALL make a document's place in the hierarchy visible, and
-SHALL be able to return only directly ingested documents, so that an inventory
-of a casefile is not swamped by the descendants of one archive.
+A document listing SHALL return only directly ingested documents by default, and
+SHALL return expanded descendants when explicitly asked. Three archives that
+expand to forty thousand documents SHALL present as three documents to a caller
+who asked for an inventory, because that is what was put in.
+
+A listing SHALL make a document's place in the hierarchy visible, and a document
+with children SHALL be identifiable as such without listing them, so that a
+caller can tell there is more to reach.
 
 Counts describing a casefile SHALL state which they are counting. A count that
 mixes containers and their descendants without saying so misrepresents the size
 of the corpus.
 
-#### Scenario: A listing can exclude expanded children
+#### Scenario: A listing excludes expanded children by default
 
-- **WHEN** a casefile's documents are listed with children excluded
+- **WHEN** a casefile's documents are listed with no option given
 - **THEN** only documents ingested directly are returned
+
+#### Scenario: Expansions are returned when asked for
+
+- **WHEN** a casefile's documents are listed with descendants requested
+- **THEN** documents produced by expansion are returned as well
+
+#### Scenario: A container is identifiable without listing its children
+
+- **WHEN** a document with children appears in a listing
+- **THEN** it is marked as having children, and how many
 
 #### Scenario: A count says what it counted
 

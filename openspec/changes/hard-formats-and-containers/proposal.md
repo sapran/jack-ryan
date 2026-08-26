@@ -76,5 +76,6 @@ endpoint, which is why it is first.
   queries, and cascading deletion; schema version advances.
 - `src/jackryan/interfaces/mcp/` — citation and provenance carry the containment
   path.
-- Dependencies: `openpyxl` for XLSX and `extract-msg` for MSG. EML, MBOX, ZIP,
-  TAR, and CSV are standard library.
+- Dependencies: `openpyxl` for XLSX (MIT) and `extract-msg` for MSG (GPLv3,
+  admitted by AGPL-3.0's compatibility clause). EML, MBOX, ZIP, TAR, and CSV are
+  standard library.

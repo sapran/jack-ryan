@@ -103,6 +103,14 @@ existing operational limit lives. They are deliberately **not** in the
 `contract:` block: changing them does not invalidate a corpus, and putting them
 there would make tuning a limit a reason the store refuses to open.
 
+The defaults are **depth 8, 50,000 descendants, 20 GB extracted per ingest**,
+chosen against a real leak dump rather than a round number: deep enough for an
+archive holding an archive holding a mailbox holding attachments, wide enough
+for a large mailbox export, and a byte ceiling far above any honest corpus while
+still orders of magnitude below what a zip bomb produces. They are deliberately
+generous, because hitting a bound stops an ingest and a false stop costs an
+analyst more than a permissive ceiling costs the machine.
+
 ### Identity of an expanded document is content plus containment path
 
 A directly ingested document keeps today's rule — hash of its bytes. An expanded
@@ -182,11 +190,12 @@ that bounds everything else, and the directory is removed when the ingest ends.
 The risk is disk pressure during a large ingest, not unbounded growth.
 
 **`extract-msg` is a third-party parser reading attacker-controlled input** →
-Its licence is checked before adoption (task 1.4), it runs behind the same size
-bound as every other extractor, and a failure to parse one message is an entry
-failure rather than an ingest failure. MSG is the one format here without a
-standard-library reader; if the licence or robustness check fails, it drops from
-the slice and EML/MBOX still cover mail exports.
+Licence checked: it is GPLv3, and AGPL-3.0's compatibility clause admits GPLv3
+code, so combining it is permitted. `openpyxl` is MIT. The robustness question
+remains, and is handled structurally: it runs behind the same size bound as
+every other extractor, and a failure to parse one message is an entry failure
+rather than an ingest failure. MSG is the one format here without a
+standard-library reader.
 
 **A schema change makes an existing corpus unreadable** → Real, and accepted:
 no corpus outside development exists. The contract fingerprint already refuses a
