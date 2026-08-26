@@ -6,6 +6,14 @@ Human-facing design and the staged plan: `docs/design.md`. Read it before
 proposing anything — it carries the nine design principles, the ten locked
 decisions, and which milestone each capability belongs to.
 
+**`docs/handover.md` records what is verified and what is not.** Read it before
+trusting that anything here has been run: every test still uses a stand-in
+embedder and none opens a PDF, so `scripts/verify_model_paths.py` is the only
+thing covering the model-dependent paths — it passed 6/6 on 2026-08-26, and the
+handover says exactly what that does and does not settle. It also carries an
+unfixed defect in the contract fingerprint that is cheap to fix now and
+expensive later.
+
 ## What this is
 
 A self-hosted investigation workbench. An analyst drops document dumps into
@@ -18,12 +26,11 @@ with resolvable citations. Depth (OCR, hard formats, retrieval quality,
 summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
-Current state: **M3 slice 1 built — containers and the hard formats.** The
-prototype (M0–M2) is archived and eleven capabilities are published in
-`openspec/specs/`. In flight: `hard-formats-and-containers` — mail,
-spreadsheets, archives, document hierarchy, and the expansion budget. The
-model-dependent M3 legs (OCR/VLM, rerank, summaries, statistical NER) follow
-separately; the assistant writing back is M4.
+Current state: **M3 slice 1 shipped and archived — containers and the hard
+formats.** The prototype (M0–M2) and `hard-formats-and-containers` are both
+archived, and thirteen capabilities are published in `openspec/specs/`. No
+change is in flight. The model-dependent M3 legs (OCR/VLM, rerank, summaries,
+statistical NER) follow separately; the assistant writing back is M4.
 
 ## Rules
 
