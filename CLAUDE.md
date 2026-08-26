@@ -26,11 +26,18 @@ with resolvable citations. Depth (OCR, hard formats, retrieval quality,
 summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
-Current state: **M3 slice 1 shipped and archived — containers and the hard
-formats.** The prototype (M0–M2) and `hard-formats-and-containers` are both
-archived, and thirteen capabilities are published in `openspec/specs/`. No
-change is in flight. The model-dependent M3 legs (OCR/VLM, rerank, summaries,
-statistical NER) follow separately; the assistant writing back is M4.
+Current state: **M3 slice 1 shipped, and the prototype's verification debt is
+cleared.** Four changes are archived — the M0–M2 prototype,
+`hard-formats-and-containers`, and `contract-covers-embedding-library` — and
+thirteen capabilities are published in `openspec/specs/`. No change is in
+flight, and no archived task is left unticked: compose wiring and the
+two-vendor agent test both ran, and the contract fingerprint now covers the
+embedding library and verifies it against the module actually imported.
+
+What remains unverified is recorded in `docs/handover.md`, and what is known
+but deliberately unfixed is in `docs/implementation-notes.md` — read both before
+trusting that something works. The model-dependent M3 legs (OCR/VLM, rerank,
+summaries, statistical NER) follow separately; the assistant writing back is M4.
 
 ## Rules
 
