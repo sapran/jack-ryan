@@ -149,7 +149,10 @@ def create_app(context: Context | None = None) -> FastAPI:
             "status": "ok",
             "version": __version__,
             "profile": ctx.config.profile.name,
-            "contract": ctx.config.contract.fingerprint(),
+            # The value the store enforces, not the contract alone: an
+            # operator comparing this against a refusal must be looking at
+            # the same string the guard compared.
+            "contract": ctx.corpus_fingerprint,
         }
 
     @app.get("/api/casefiles")

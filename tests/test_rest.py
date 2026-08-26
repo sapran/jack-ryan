@@ -19,7 +19,14 @@ def test_health_reports_profile_and_contract(client, context):
     body = client.get("/health").json()
     assert body["status"] == "ok"
     assert body["profile"] == context.config.profile.name
-    assert body["contract"] == context.config.contract.fingerprint()
+    # The value the store enforces, not the contract alone. An operator holding
+    # a refusal has to be able to compare it against what /health showed them;
+    # reporting a string that guards nothing sends them after the wrong
+    # difference.
+    assert body["contract"] == context.corpus_fingerprint
+    assert body["contract"] != context.config.contract.fingerprint(), (
+        "corpus identity must be more than the contract, or the embedder is unrecorded"
+    )
 
 
 def test_create_and_fetch_a_casefile(client):

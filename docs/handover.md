@@ -228,6 +228,22 @@ the fingerprint: its changes produce different *text*, which is visible and
 internally consistent, where a pooling change produces invisible mismatched
 vectors. `openspec/changes/.../design.md` carries the full argument.
 
+**A sibling gap, found by review of that change and fixed straight after.** The
+fingerprint recorded which *library* built the vectors but not which
+*embedder*, so a corpus filled by the deterministic stand-in opened under a
+real-model configuration and real query vectors were compared against hash
+vectors of the same width. Closed by `corpus-identity-covers-the-embedder`:
+corpus identity is now the contract plus the embedder actually constructed, and
+`/health` reports the value the store enforces rather than the contract alone.
+The lesson is the one this file keeps repeating — the first fix made the
+fingerprint *assert* something it could not check, which is worse than saying
+nothing.
+
+**Both of those changes are breaking, and each bumped the fingerprint
+separately** — so if a corpus is refused, read the two identity strings to see
+which component differs before assuming which one refused you. The paragraph
+below is about the *library* change specifically.
+
 **This is a breaking change, by design.** The fingerprint string changed, so any
 corpus built before it — including the one built during the 6/6 run recorded
 above, whose vectors are mean-pooled — is refused until reingested. That is the
@@ -249,9 +265,15 @@ were deferred and why they are now unblocked:
 | The summarization layer | Per-chunk contextual summaries at ingest (a config switch, off by default — it is the dominant ingest cost), then per-document map-reduce. |
 | Mentions / NER | Classical NER plus pattern identifiers, as facets and pivots. Pattern extraction needs no model and could ship first. |
 
-Recommended order: **fix the fingerprint gap**, then OCR/VLM (the biggest and
-most-blocked), then rerank and section-window together as a retrieval-quality
-slice, then summaries, then mentions.
+Recommended order: ~~fix the fingerprint gap~~ — done, twice over: the library
+version and then the embedder identity — so **OCR/VLM next** (the biggest and
+most-blocked leg), then rerank and section-window together as a
+retrieval-quality slice, then summaries, then mentions.
+
+Worth knowing before that slice: retrieval quality has never been measured. The
+6/6 run and the two-vendor test both say so explicitly, and rerank is a change
+whose whole point is retrieval quality — so it needs something to measure
+against before it can be said to work.
 
 PST stays last, as `docs/design.md` § 10 has it.
 

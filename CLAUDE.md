@@ -10,9 +10,8 @@ decisions, and which milestone each capability belongs to.
 trusting that anything here has been run: every test still uses a stand-in
 embedder and none opens a PDF, so `scripts/verify_model_paths.py` is the only
 thing covering the model-dependent paths — it passed 6/6 on 2026-08-26, and the
-handover says exactly what that does and does not settle. It also carries an
-unfixed defect in the contract fingerprint that is cheap to fix now and
-expensive later.
+handover says exactly what that does and does not settle. What is known but
+deliberately unfixed lives in `docs/implementation-notes.md`.
 
 ## What this is
 
@@ -27,12 +26,16 @@ summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
 Current state: **M3 slice 1 shipped, and the prototype's verification debt is
-cleared.** Four changes are archived — the M0–M2 prototype,
-`hard-formats-and-containers`, and `contract-covers-embedding-library` — and
-thirteen capabilities are published in `openspec/specs/`. No change is in
-flight, and no archived task is left unticked: compose wiring and the
-two-vendor agent test both ran, and the contract fingerprint now covers the
-embedding library and verifies it against the module actually imported.
+cleared.** Five changes are archived — M0, M1 and M2, then
+`hard-formats-and-containers` and `contract-covers-embedding-library` — and
+thirteen capabilities are published in `openspec/specs/`. No archived task is
+left unticked: compose wiring and the two-vendor agent test both ran, and the
+contract fingerprint now covers the embedding library and verifies it against
+the module actually imported.
+
+In flight: `corpus-identity-covers-the-embedder`, which widens corpus identity
+to include which embedder produced the vectors. Archive it before starting
+anything else, and update this paragraph when you do.
 
 What remains unverified is recorded in `docs/handover.md`, and what is known
 but deliberately unfixed is in `docs/implementation-notes.md` — read both before
@@ -85,11 +88,20 @@ never overwrites it. This holds for code as much as for the assistant.
 
 ### Corpus identity is guarded, not assumed
 
-The `contract:` block (chunk size, overlap, embedder family, dimensions) is
-corpus-coupled. Changing any value changes the fingerprint, and the store
-refuses to open a corpus built under a different one. Never weaken that guard
-to make a test pass — it is the only thing standing between a config typo and a
-silently corrupted corpus.
+The `contract:` block (chunk size, overlap, embedder family, dimensions, and the
+embedding library version) is corpus-coupled. Changing any value changes the
+fingerprint, and the store refuses to open a corpus built under a different one.
+Never weaken that guard to make a test pass — it is the only thing standing
+between a config typo and a silently corrupted corpus.
+
+**Corpus identity is the contract plus `profiles.<name>.embedder`, not the
+contract alone.** That one profile field is the exception to profiles being safe
+to change: it selects which implementation produces the vectors. It is composed
+into the recorded identity at the composition root rather than copied into the
+contract, because two copies of one setting can disagree. Treating identity as a
+contract-only property is what let a deterministic corpus open under a
+real-model configuration — real vectors compared against hash vectors of the
+same width, which nothing downstream can detect.
 
 ## Pitfalls
 

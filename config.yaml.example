@@ -3,7 +3,11 @@
 # Two layers with different lifetimes:
 #   contract — corpus-coupled. Changing any value invalidates an existing
 #              corpus and forces a reingest. Frozen once documents exist.
-#   profiles — swappable infrastructure. Safe to change at any time.
+#   profiles — swappable infrastructure. Safe to change at any time, with one
+#              exception: `embedder` decides which implementation produces the
+#              vectors, so changing it invalidates every vector already stored.
+#              Corpus identity records it, and the store refuses a corpus filled
+#              by the other one.
 #
 # Precedence: real environment variable > this file > built-in default.
 
