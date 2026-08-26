@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,12 @@ DEFAULT_CONTRACT: dict[str, Any] = {
     "chunk_overlap_chars": 200,
     "embed_model": "intfloat/multilingual-e5-large",
     "embed_dimensions": 1024,
+    # The library version is corpus-coupled: fastembed changed this model from
+    # CLS to mean pooling between 0.5.1 and 0.8.0, which produces vectors of the
+    # declared width that are not comparable with the ones already stored. Width
+    # and model name cannot tell the two apart, so the version is declared here
+    # and checked against what is installed.
+    "embed_library": "fastembed==0.8.0",
 }
 
 
@@ -44,6 +51,14 @@ class Contract:
     chunk_overlap_chars: int = DEFAULT_CONTRACT["chunk_overlap_chars"]
     embed_model: str = DEFAULT_CONTRACT["embed_model"]
     embed_dimensions: int = DEFAULT_CONTRACT["embed_dimensions"]
+    embed_library: str = DEFAULT_CONTRACT["embed_library"]
+    """The embedding library and exact version, as ``<distribution>==<version>``.
+
+    Declared rather than read from the environment so the fingerprint stays a
+    written fact reproducible from configuration alone. It is verified against
+    the installed distribution at load, which is what makes the declaration
+    trustworthy.
+    """
 
     def fingerprint(self) -> str:
         """A stable identity for this contract.
@@ -56,6 +71,7 @@ class Contract:
             f"chunk_overlap_chars={self.chunk_overlap_chars}",
             f"embed_model={self.embed_model}",
             f"embed_dimensions={self.embed_dimensions}",
+            f"embed_library={self.embed_library}",
         )
         return "|".join(parts)
 
@@ -106,6 +122,164 @@ class Config:
     @property
     def db_path(self) -> Path:
         return self.data_dir / "jackryan.db"
+
+
+def canonical_embed_library(declared: str) -> tuple[str, str] | None:
+    """Split ``declared`` into a normalised ``(distribution, version)``.
+
+    Returns ``None`` when it is not of the form ``<distribution>==<version>``.
+
+    Normalising matters because the value enters the fingerprint: without it
+    ``fastembed == 0.8.0`` and ``FASTEMBED==0.8.0`` are one library to the check
+    and two different corpora to the store, so tidying whitespace in
+    ``config.yaml`` would refuse an operator's own corpus.
+    """
+    distribution, separator, version = declared.partition("==")
+    # PEP 503 name normalisation, so case and separator style do not fork identity.
+    distribution = re.sub(r"[-_.]+", "-", distribution.strip().lower())
+    version = version.strip()
+    if not distribution or not separator or not version:
+        return None
+    return distribution, version
+
+
+def _same_release(left: str, right: str) -> bool:
+    """Whether two version strings name the same release.
+
+    ``0.8`` and ``0.8.0`` are one release, so a difference in how many zeros the
+    operator wrote must not read as a version change. Anything that is not a
+    plain dotted number — a release candidate, a ``.post`` rebuild — is compared
+    exactly, because guessing at their ordering is how a guard becomes wrong in
+    the direction that lets bad vectors through.
+    """
+    try:
+        left_parts = [int(part) for part in left.split(".")]
+        right_parts = [int(part) for part in right.split(".")]
+    except ValueError:
+        return left == right
+    width = max(len(left_parts), len(right_parts))
+    left_parts += [0] * (width - len(left_parts))
+    right_parts += [0] * (width - len(right_parts))
+    return left_parts == right_parts
+
+
+def _wrong_version_message(declared: str, distribution: str, declared_version: str, found: str) -> str:
+    return (
+        f"contract declares embed_library {declared!r} but {distribution!r} {found} "
+        "is in use. These produce vectors of the same width that are not comparable, "
+        "which no later check can detect. Either install "
+        f"{distribution}=={declared_version}, or set embed_library to "
+        f"{distribution}=={found} and reingest every casefile."
+    )
+
+
+def _malformed_message(declared: str) -> str:
+    return (
+        f"contract embed_library is {declared!r}; expected "
+        "'<distribution>==<version>', for example 'fastembed==0.8.0'"
+    )
+
+
+def embed_library_mismatch(declared: str) -> str | None:
+    """Describe how ``declared`` disagrees with the *installed* distribution.
+
+    This is the configuration-time check: it reads packaging metadata, which is
+    the right question to ask of a config file — "is the thing you declared the
+    thing this environment installed?".
+
+    It is deliberately not the only check. Installed metadata says what a package
+    manager recorded, not what Python will import; a shadowing copy earlier on
+    ``sys.path`` satisfies this and still produces the vectors. The embedder runs
+    ``embed_library_running_mismatch`` against the imported module for that
+    reason.
+
+    Returns a message rather than raising, because the callers report the same
+    fact as different typed errors — ``ConfigError`` at load, ``EmbeddingError``
+    where vectors are produced.
+    """
+    parsed = canonical_embed_library(declared)
+    if parsed is None:
+        return _malformed_message(declared)
+    distribution, declared_version = parsed
+
+    try:
+        installed = metadata.version(distribution)
+    except metadata.PackageNotFoundError:
+        return (
+            f"contract declares embed_library {declared!r} but the {distribution!r} "
+            "distribution is not installed, so the vectors it would produce cannot "
+            "be identified"
+        )
+    except Exception as exc:  # unusual packaging layouts, not a missing package
+        return (
+            f"contract declares embed_library {declared!r} but the installed version "
+            f"of {distribution!r} could not be read ({type(exc).__name__}: {exc}), so "
+            "it cannot be verified"
+        )
+
+    # Broken packaging metadata — a .dist-info with no METADATA, or one with no
+    # Version: field — makes version() return None rather than raise. Without
+    # this branch that None falls through to the comparison and is reported as
+    # "fastembed None is installed", telling the operator to reingest every
+    # casefile and to write `embed_library: fastembed==None`, which can never
+    # match. Unverifiable is its own failure and has to say so.
+    if installed is None:
+        return (
+            f"contract declares embed_library {declared!r} but the installed version "
+            f"of {distribution!r} could not be determined — its distribution metadata "
+            "is present but unreadable. This is an environment fault, not a version "
+            "mismatch: repair or reinstall the distribution. Do not change the "
+            "contract, which would refuse your corpus without cause."
+        )
+
+    if not _same_release(installed, declared_version):
+        return _wrong_version_message(declared, distribution, declared_version, installed)
+    return None
+
+
+def embed_library_running_mismatch(declared: str, running_version: str | None) -> str | None:
+    """Describe how ``declared`` disagrees with the *imported module*.
+
+    Packaging metadata records what was installed. This asks the only question
+    that decides what the vectors mean: which code is actually loaded. A patched
+    checkout, a ``PYTHONPATH`` shadow, an editable install of a fork, or a stale
+    ``.dist-info`` left beside a replaced package all satisfy the metadata check
+    and produce vectors from a different library.
+
+    A module that exposes no version at all is a refusal, not a pass: an
+    unverifiable library is exactly the condition this guard exists for.
+    """
+    parsed = canonical_embed_library(declared)
+    if parsed is None:
+        return _malformed_message(declared)
+    distribution, declared_version = parsed
+
+    if not running_version:
+        return (
+            f"contract declares embed_library {declared!r} but the imported "
+            f"{distribution!r} module exposes no version, so the vectors it produces "
+            "cannot be identified. Ingestion stops rather than storing vectors whose "
+            "meaning is unknown."
+        )
+
+    if not _same_release(running_version, declared_version):
+        return _wrong_version_message(declared, distribution, declared_version, running_version)
+    return None
+
+
+def _canonicalised_embed_library(value: Any) -> str:
+    """Store the normalised spelling, so identity is the fact and not the typing.
+
+    A malformed value is left as written rather than mangled here; the mismatch
+    check that runs a few lines later reports it with a message that names what
+    was expected.
+    """
+    raw = str(value).strip()
+    parsed = canonical_embed_library(raw)
+    if parsed is None:
+        return raw
+    distribution, version = parsed
+    return f"{distribution}=={version}"
 
 
 def _interpolate(value: Any) -> Any:
@@ -232,6 +406,7 @@ def _build_contract(document: dict[str, Any]) -> Contract:
             chunk_overlap_chars=int(values["chunk_overlap_chars"]),
             embed_model=str(values["embed_model"]),
             embed_dimensions=int(values["embed_dimensions"]),
+            embed_library=_canonicalised_embed_library(values["embed_library"]),
         )
         if contract.chunk_overlap_chars >= contract.chunk_max_chars:
             raise ConfigError(
@@ -240,6 +415,9 @@ def _build_contract(document: dict[str, Any]) -> Contract:
             )
         if contract.chunk_max_chars < 1 or contract.embed_dimensions < 1:
             raise ConfigError("contract chunk_max_chars and embed_dimensions must be positive")
+        mismatch = embed_library_mismatch(contract.embed_library)
+        if mismatch:
+            raise ConfigError(mismatch)
         return contract
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"contract value is not of the expected type: {exc}") from exc

@@ -14,6 +14,12 @@ contract:
   chunk_overlap_chars: 200
   embed_model: intfloat/multilingual-e5-large
   embed_dimensions: 1024
+  # The library that produces the vectors, pinned exactly. Verified against what
+  # is installed at startup: a mismatch is fatal and names both versions. The
+  # same model under two versions of this library can return vectors of the
+  # declared width that are not comparable, and nothing downstream can tell.
+  # Changing this value forces a reingest of every casefile.
+  embed_library: fastembed==0.8.0
 
 default_profile: local
 

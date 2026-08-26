@@ -102,12 +102,60 @@ Re-run it after any change to the contract, the embedder, or the extractor. A
 failure there is a real finding, not a flaky environment — these are the only
 paths nothing else covers.
 
-**Then the one thing the script cannot do:** point a live agent at the surface
-and confirm the tool descriptions elicit the right calls — from **two different
-model vendors**, which is the acceptance criterion M2 was signed off with and
-the last task in its archived `tasks.md` that never got ticked. The script
-proves the surface *answers*. It cannot prove a model *chooses* correctly, and
-that is the part the design actually bets on.
+## The two-vendor agent test: done 2026-08-26 — M2 task 8.7 is closed
+
+The thing the script could not do: point a live agent at the surface and confirm
+the tool descriptions elicit the right calls, from **two different model
+vendors**. This was M2's acceptance criterion and the prototype's headline
+claim. It passed on both, over stdio (`jackryan serve-mcp`).
+
+**Vendor A — OpenAI, via Codex CLI** on a ChatGPT subscription sign-in (no API
+key involved; Codex holds its own OAuth tokens). Call order: `case_list_casefiles`
+→ `case_casefile_overview` → five `case_search` phrasings → three
+`case_get_passage` → three `case_cite`.
+
+**Vendor B — Anthropic, via a fresh `claude -p` process** with no prior context,
+initialised only from `analyst/role.md`. Call order: `case_list_casefiles` →
+`case_casefile_overview` → `case_list_documents` → `case_search` → four
+`case_cite`.
+
+Both called `case_casefile_overview` **before** searching, cited every factual
+claim through `case_cite`, and reported coverage in terms of what was actually
+searched. Both found a conflict of interest that required chaining three
+documents — a board member who directs the company holding 60% of the winning
+bidder — which no single document states.
+
+The corpus was **synthetic and written for this test**: four short invented
+documents about a fictional harbour lease, in the same register as the
+`Northgate Holdings` fixture already used by `scripts/verify_model_paths.py`.
+No real case material was ingested, and the corpus was not committed. Saying so
+explicitly because the names below read like case notes and this repository is
+public.
+
+More telling than the pass: both **declined to overclaim**. The minutes name who
+was present and record a 3–1 vote but never say how each member voted, and both
+agents flagged "Vlasenko voted" as their own inference rather than a corpus
+fact. The Anthropic run added the point that the minutes record no declaration
+of interest *by anyone*, "so their silence is a gap, not evidence that no
+declaration was made". That is the epistemic behaviour `analyst/role.md` asks
+for, produced from the role and the tool descriptions alone.
+
+**How the Anthropic run was made honest.** The first attempt ran with the corpus
+files sitting in the process's working directory, so a correct answer proved
+nothing — it could have come from reading the files. It was re-run from an
+**empty directory** with `Read,Write,Edit,Glob,Grep,Bash,WebFetch,WebSearch,Task`
+denied, leaving the MCP surface as the only possible source. The tool-call order
+above is from that run.
+
+**Read this narrowly in one respect.** The instance used the **deterministic
+embedder**, selected explicitly in a test profile, because the model download
+stalled. So search hits came from FTS5 and the vectors carried no meaning. That
+does not weaken the criterion — it is about whether a model *chooses* the right
+tools and cites correctly, not about retrieval quality — but it does mean this
+run is not evidence about retrieval, and a rerun on the real embedder would be
+worth having when convenient.
+
+To repeat it:
 
 ```bash
 jackryan serve-mcp     # stdio; or reach the mounted surface at /mcp
@@ -116,11 +164,13 @@ jackryan serve-mcp     # stdio; or reach the mounted surface at /mcp
 Initialise the agent with `analyst/role.md` and give it a question it must
 search for. What you are watching for: does it call `case_casefile_overview`
 before searching, does it cite through `case_cite` rather than asserting, does
-it report coverage honestly.
+it report coverage honestly. The `/mcp` HTTP mount is still undriven by a live
+agent — and that is the transport whose lifespan bug made every in-process test
+pass while real requests returned 500.
 
 ---
 
-## A real defect, now confirmed against a live install, still not fixed
+## A real defect — found, confirmed, and now fixed
 
 **The contract fingerprint does not cover the embedding library version, and
 it needs to.**
@@ -154,18 +204,35 @@ corpus-coupled (it becomes the chunks) and the extractor version is not in the
 fingerprint either. Lower severity, since a change there produces visibly
 different text rather than quietly misaligned vectors.
 
-Suggested fix, as an OpenSpec change before any further M3 work:
+**Fixed by the `contract-covers-embedding-library` change.** What landed, and
+the three decisions behind it:
 
-1. Pin `fastembed` to an exact version, and `docling` too.
-2. Add the embedding library version to the fingerprint — either as an explicit
-   `embed_library` contract field, or read from the installed distribution at
-   fingerprint time.
-3. Decide deliberately whether pooling strategy belongs in the contract as its
-   own field, since it is the thing that actually changed.
+1. `fastembed` and `docling` are pinned exactly, with the reason written at the
+   pins so a later cleanup does not loosen them back.
+2. The contract gained an `embed_library` value — `fastembed==0.8.0` — and the
+   fingerprint covers it. It is **declared, not read from the installed
+   package**: reading the environment would make the fingerprint a property of
+   whatever happens to be installed rather than a written fact, and would refuse
+   a valid corpus after a patch bump that changed nothing.
+3. What makes the declaration trustworthy is that it is verified. A declared
+   version that is not the installed one is fatal at configuration load *and* at
+   embedder construction, naming both versions and saying how to proceed. Two
+   places because the CLI and the tests build embedders without a full boot —
+   the same "enforced where it was written, not where every caller crosses"
+   pattern this repository has now hit four times.
 
-Doing this **before** the first real corpus exists is nearly free. Afterwards it
-forces a reingest. Right now no corpus outside development exists, which will
-not be true for long.
+Pooling did **not** become its own contract field. A field implies the operator
+can set it, and through `fastembed`'s default path they cannot; the library
+version is the honest proxy. `docling` is pinned but deliberately kept out of
+the fingerprint: its changes produce different *text*, which is visible and
+internally consistent, where a pooling change produces invisible mismatched
+vectors. `openspec/changes/.../design.md` carries the full argument.
+
+**This is a breaking change, by design.** The fingerprint string changed, so any
+corpus built before it — including the one built during the 6/6 run recorded
+above, whose vectors are mean-pooled — is refused until reingested. That is the
+correct outcome and the reason for doing it now: no corpus outside development
+exists. Afterwards it would have cost a forced reingest of real evidence.
 
 ---
 
@@ -197,15 +264,26 @@ PST stays last, as `docs/design.md` § 10 has it.
   VLM, and statistical NER remain unexercised**, because no code for them
   exists yet.
 - **No LLM endpoint.** Nothing that calls one has ever been run.
-- **No Docker beyond the CI gate.** CI builds the image *and* runs the CLI
-  inside a container — `docker run --rm jackryan:ci jackryan --version`, on
-  every push and pull request — so the image and the CLI entrypoint work; the
-  archived M0 task 7.3 records exactly that. What is unexercised is everything
-  the compose file adds: `docker compose up` has never been run, so the server
-  `CMD`, the `HEALTHCHECK`, the `/data` volume and the scaled-to-zero `cli`
-  service are all unproven. That is what M0's still-unticked 7.4 says.
-  `--build-arg PREFETCH_MODELS=true` has never been used either.
-- **No live agent.** The MCP surface is driven by tests through `call_tool`, by
+- **~~No Docker.~~ Compose settled 2026-08-26 — M0 task 7.4 is done.** The image
+  was built and `docker compose up -d` run for the first time. Evidence, in the
+  order it was taken: the container reported `Up (healthy)` and
+  `docker inspect` returned health status `healthy`, so the `HEALTHCHECK` fires
+  and passes; `GET /health` answered from the *host* over the published port
+  (not from inside the container) with the profile and contract fingerprint;
+  `docker compose run --rm cli casefile create ...` started the scaled-to-zero
+  `cli` service and created a casefile; and `GET /api/casefiles` on the
+  long-lived service then returned that same casefile, which is the proof that
+  the `/data` volume is genuinely shared between the two services rather than
+  each holding its own. The stack was then torn down.
+
+  Still unused: `--build-arg PREFETCH_MODELS=true`, so no offline-from-first-run
+  image has ever been built — see the note in `docs/implementation-notes.md`
+  about `check_real_embedder`, which would fail spuriously in exactly that image.
+- **~~No live agent.~~ Settled 2026-08-26 for stdio — see above.** Two vendors
+  drove the surface and chose correctly. **The `/mcp` HTTP mount is still
+  undriven by a live agent**, which is the transport that once returned 500 on
+  every real request while all sixteen in-process tests passed. Old text, kept
+  for the record: the MCP surface is driven by tests through `call_tool`, by
   one real HTTP `initialize`, and now by `verify_model_paths.py` in process
   against real vectors. **No model has ever chosen to call it** — that is still
   the open acceptance criterion, and the script cannot close it.

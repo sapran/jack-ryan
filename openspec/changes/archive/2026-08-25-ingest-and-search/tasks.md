@@ -70,8 +70,8 @@
 - [x] 9.2 Extraction verified for Markdown, HTML, DOCX, and PPTX.
 - [x] 9.3 End-to-end: ingest a folder, search it, and get ranked passages that resolve to their source.
 - [x] 9.4 Dedup verified: reingesting the same bytes keeps the identifier.
-- [ ] 9.5 PDF extraction exercised on a machine with model access — blocked in the build environment.
-- [ ] 9.6 The real embedder exercised on a machine with model access — blocked in the build environment.
+- [x] 9.5 PDF extraction exercised on a machine with model access — done 2026-08-26 by `scripts/verify_model_paths.py`; see `docs/handover.md`.
+- [x] 9.6 The real embedder exercised on a machine with model access — done 2026-08-26 by `scripts/verify_model_paths.py`; see `docs/handover.md`.
 
 ## 10. Adversarial review
 

@@ -78,3 +78,134 @@ def test_unset_secret_placeholder_is_fatal(tmp_path, monkeypatch):
 
 def test_contract_fingerprint_changes_with_any_value():
     assert Contract().fingerprint() != Contract(chunk_max_chars=512).fingerprint()
+
+
+def test_the_fingerprint_covers_the_embedding_library():
+    # The defect this guards: fastembed 0.5.1 and 0.8.0 embed the same model
+    # with different pooling, producing vectors of the declared width that are
+    # not comparable. Before this value entered the fingerprint the two were
+    # indistinguishable, so the store admitted one corpus into the other.
+    assert (
+        Contract().fingerprint()
+        != Contract(embed_library="fastembed==0.5.1").fingerprint()
+    )
+
+
+def test_the_default_contract_declares_the_installed_library():
+    # The declaration has to be a fact, not an aspiration: if the shipped
+    # default drifts from what the pins install, every fresh instance is fatal.
+    from importlib import metadata
+
+    declared = Contract().embed_library
+    distribution, _, version = declared.partition("==")
+    assert metadata.version(distribution) == version, (
+        f"contract declares {declared!r} but {metadata.version(distribution)} is installed; "
+        "update DEFAULT_CONTRACT and the pyproject pin together"
+    )
+
+
+def test_a_declared_library_version_that_is_not_installed_is_fatal(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "JACKRYAN_CONFIG",
+        write_config(tmp_path, "contract:\n  embed_library: fastembed==0.5.1\n"),
+    )
+    with pytest.raises(ConfigError) as exc:
+        load_config()
+    message = str(exc.value)
+    assert "0.5.1" in message, "the declared version must be named"
+    assert "reingest" in message, "the operator must be told how to proceed"
+
+
+def test_a_declared_distribution_that_is_absent_is_fatal(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "JACKRYAN_CONFIG",
+        write_config(tmp_path, "contract:\n  embed_library: no-such-distribution==1.0\n"),
+    )
+    with pytest.raises(ConfigError, match="no-such-distribution"):
+        load_config()
+
+
+def test_a_malformed_library_declaration_is_fatal(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "JACKRYAN_CONFIG",
+        write_config(tmp_path, "contract:\n  embed_library: fastembed\n"),
+    )
+    with pytest.raises(ConfigError, match="distribution"):
+        load_config()
+
+
+def test_every_contract_value_is_in_the_fingerprint_and_nothing_else_is():
+    # The spec's claim is that the contract declares exactly what determines
+    # corpus identity: no decorative field, and none left out. A value added to
+    # the dataclass but forgotten in fingerprint() would let two incompatible
+    # corpora share an identity — which is how the embedding library was missed.
+    import dataclasses
+
+    from jackryan.config import DEFAULT_CONTRACT
+
+    fields = {f.name for f in dataclasses.fields(Contract)}
+    assert fields == set(DEFAULT_CONTRACT), (
+        "Contract fields and DEFAULT_CONTRACT keys have drifted apart"
+    )
+    fingerprint = Contract().fingerprint()
+    for name in fields:
+        assert f"{name}=" in fingerprint, f"{name} is declared but not in the fingerprint"
+
+
+def test_unreadable_packaging_metadata_is_not_reported_as_a_version_mismatch(monkeypatch):
+    # importlib.metadata.version() returns None — it does not raise — when a
+    # .dist-info exists with no METADATA or no Version: field. Before this was
+    # handled the message read "fastembed None is installed" and told the
+    # operator to reingest every casefile and write embed_library=fastembed==None,
+    # which can never match. An environment fault must not masquerade as a
+    # version mismatch, because the remedies are opposites.
+    from jackryan import config as config_module
+
+    monkeypatch.setattr(config_module.metadata, "version", lambda _name: None)
+    message = config_module.embed_library_mismatch("fastembed==0.8.0")
+    assert message is not None
+    assert "could not be determined" in message
+    assert "None is installed" not in message
+    assert "Do not change the contract" in message
+
+
+def test_the_running_module_is_checked_not_only_the_install_ledger():
+    # Packaging metadata records what was installed; it cannot see a shadowing
+    # copy earlier on sys.path or a patched checkout. The vectors come from the
+    # imported module, so that is what decides.
+    from jackryan.config import embed_library_running_mismatch
+
+    assert embed_library_running_mismatch("fastembed==0.8.0", "0.8.0") is None
+    mismatch = embed_library_running_mismatch("fastembed==0.8.0", "0.5.1")
+    assert mismatch is not None and "0.5.1" in mismatch
+
+
+def test_a_module_without_a_version_is_refused_rather_than_trusted():
+    from jackryan.config import embed_library_running_mismatch
+
+    message = embed_library_running_mismatch("fastembed==0.8.0", None)
+    assert message is not None
+    assert "exposes no version" in message
+
+
+def test_the_same_release_written_two_ways_is_not_a_mismatch():
+    # 0.8 and 0.8.0 are one release. Reporting them as different would order a
+    # full reingest over how many zeros the operator typed.
+    from jackryan.config import embed_library_running_mismatch
+
+    assert embed_library_running_mismatch("fastembed==0.8", "0.8.0") is None
+    assert embed_library_running_mismatch("fastembed==0.8.0", "0.8") is None
+    assert embed_library_running_mismatch("fastembed==0.8.1", "0.8.0") is not None
+
+
+def test_spelling_does_not_fork_corpus_identity(tmp_path, monkeypatch):
+    # The declared value enters the fingerprint. Without normalisation, tidying
+    # whitespace or case in config.yaml would change corpus identity and the
+    # store would refuse the operator's own corpus.
+    fingerprints = set()
+    for spelling in ("fastembed==0.8.0", "fastembed == 0.8.0", "FASTEMBED==0.8.0"):
+        path = tmp_path / f"{abs(hash(spelling))}.yaml"
+        path.write_text(f"contract:\n  embed_library: {spelling}\n", encoding="utf-8")
+        monkeypatch.setenv("JACKRYAN_CONFIG", str(path))
+        fingerprints.add(load_config().contract.fingerprint())
+    assert len(fingerprints) == 1, f"spelling forked corpus identity: {fingerprints}"

@@ -64,7 +64,9 @@ def test_the_deterministic_embedder_is_never_the_default():
 
 
 def test_an_unloadable_model_fails_loudly_with_no_fallback():
-    embedder = ModelEmbedder(model_name="no/such-model-exists", dimensions=64)
+    embedder = ModelEmbedder(
+        model_name="no/such-model-exists", dimensions=64, embed_library=Contract().embed_library
+    )
     with pytest.raises(EmbeddingError) as exc:
         embedder.embed_query("anything")
     assert "no/such-model-exists" in str(exc.value)
@@ -78,7 +80,7 @@ def test_the_real_embedder_applies_asymmetric_prefixes(monkeypatch):
             seen.extend(texts)
             return [[0.0] * 4 for _ in texts]
 
-    embedder = ModelEmbedder(model_name="x", dimensions=4)
+    embedder = ModelEmbedder(model_name="x", dimensions=4, embed_library=Contract().embed_library)
     monkeypatch.setattr(embedder, "_load", lambda: FakeModel())
     embedder.embed_documents(["a passage"])
     embedder.embed_query("a question")
@@ -90,7 +92,35 @@ def test_a_mis_sized_embedding_is_refused(monkeypatch):
         def embed(self, texts):
             return [[0.0] * 9 for _ in texts]
 
-    embedder = ModelEmbedder(model_name="x", dimensions=4)
+    embedder = ModelEmbedder(model_name="x", dimensions=4, embed_library=Contract().embed_library)
     monkeypatch.setattr(embedder, "_load", lambda: WrongWidth())
     with pytest.raises(EmbeddingError, match="width 9"):
+        embedder.embed_query("anything")
+
+
+def test_an_embedder_refuses_a_library_version_that_is_not_installed():
+    # The corpus records which library built its vectors. A different version of
+    # the same library can return the declared width from the declared model and
+    # still mean something else, so the embedder refuses before producing any.
+    embedder = ModelEmbedder(
+        model_name="x", dimensions=4, embed_library="fastembed==0.0.1-not-installed"
+    )
+    with pytest.raises(EmbeddingError) as exc:
+        embedder.embed_query("anything")
+    message = str(exc.value)
+    assert "0.0.1-not-installed" in message, "the declared version must be named"
+    assert "installed" in message
+
+
+def test_the_library_check_names_a_distribution_that_is_absent():
+    embedder = ModelEmbedder(
+        model_name="x", dimensions=4, embed_library="no-such-distribution==1.0"
+    )
+    with pytest.raises(EmbeddingError, match="no-such-distribution"):
+        embedder.embed_query("anything")
+
+
+def test_a_malformed_library_declaration_is_refused():
+    embedder = ModelEmbedder(model_name="x", dimensions=4, embed_library="fastembed")
+    with pytest.raises(EmbeddingError, match="distribution.*version"):
         embedder.embed_query("anything")

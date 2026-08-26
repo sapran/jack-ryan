@@ -57,5 +57,5 @@
 - [x] 7.1 `pytest -q` green.
 - [x] 7.2 CLI smoke test: status, create, list, show by slug, and the not-found path.
 - [x] 7.3 Image builds and the CLI runs inside it — proven by the `docker` CI gate.
-- [ ] 7.4 `docker compose up -d` exercised on a machine with Docker: the image build is verified, the compose wiring (volume, health check, the scaled-to-zero `cli` service) is not.
+- [x] 7.4 `docker compose up -d` exercised on a machine with Docker — done 2026-08-26: the health check reported `healthy`, `/health` answered from the host over the published port, the scaled-to-zero `cli` service ran, and the long-lived service read back a casefile the `cli` container wrote, proving the `/data` volume is shared. See `docs/handover.md`.
 - [x] 7.5 CI observed green on the pull request: pytest, gitleaks, and docker all pass.

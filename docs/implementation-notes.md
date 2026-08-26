@@ -6,6 +6,35 @@ and why it was parked.
 
 ## Parked
 
+- **The fingerprint does not record *which embedder* built the vectors, so a
+  deterministic corpus opens under a real-model profile.** Needs its own
+  OpenSpec change; deliberately kept out of `contract-covers-embedding-library`
+  because the fix crosses the contract/profile split and is a design decision,
+  not a patch.
+
+  `Profile.embedder` is infrastructure and `Contract.fingerprint()` covers only
+  the contract, so the two embedders are indistinguishable to the store.
+  Reproduced end to end during review of PR #12: one data dir, ingest under
+  `embedder: deterministic`, then reopen under `embedder: model` — same
+  fingerprint, store opens without complaint, and real e5 query vectors are then
+  cosine-compared against blake2b hash vectors of the correct width. Vectors of
+  the right width that are not comparable: the exact defect class the contract
+  guard exists to prevent.
+
+  The gap pre-dates that PR — the embedder choice was never in the fingerprint —
+  but adding `embed_library` made the fingerprint state something *positively
+  false* for the deterministic path, where before it was merely silent. A
+  corpus built by the stand-in now asserts `fastembed==0.8.0` produced it.
+
+  Two candidate fixes, both with consequences worth thinking about rather than
+  picking quickly: add an `embedder` field to the contract (simple, but puts an
+  infrastructure choice inside the corpus-coupled layer, which the layering
+  exists to prevent); or have the composition root write the embedder identity
+  into the store's recorded fingerprint separately from `Contract.fingerprint()`
+  (keeps the layers apart, but means the fingerprint reported by `/health` is no
+  longer the one the store holds). `CLAUDE.md`'s rule that the deterministic
+  embedder must never become an implicit fallback is the thing being protected.
+
 - **`scripts/verify_model_paths.py` — the end-to-end check is weaker than its
   comment claims.** The comment above the search call says the query "shares no
   content word with the text" and names `"who signed"`, but the code sends
@@ -40,7 +69,10 @@ and why it was parked.
   an accurate message, verified by forcing one. Noted so nobody "fixes" the
   guard by weakening the one in `ModelEmbedder`.
 
-- **The contract fingerprint does not cover the embedding library version.**
-  Fully written up in `docs/handover.md` — it has its own section there, with a
-  suggested three-step fix. Repeated here only so this file is a complete index
-  of what is known and unfixed.
+## Fixed
+
+- **~~The contract fingerprint does not cover the embedding library version.~~**
+  Fixed by the `contract-covers-embedding-library` change on 2026-08-26: the
+  contract declares `embed_library`, the fingerprint covers it, and a declared
+  version that is not the installed one is fatal at both configuration load and
+  embedder construction. See `docs/handover.md` for the decisions.

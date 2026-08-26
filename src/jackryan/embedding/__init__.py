@@ -33,5 +33,6 @@ def build_embedder(config: Config) -> EmbedderPort:
     return ModelEmbedder(
         model_name=config.contract.embed_model,
         dimensions=dimensions,
+        embed_library=config.contract.embed_library,
         cache_dir=cache_dir,
     )
