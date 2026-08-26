@@ -63,8 +63,11 @@ class Contract:
     def fingerprint(self) -> str:
         """A stable identity for this contract.
 
-        The store records it at creation; a mismatch at boot means the corpus
-        on disk was built under different rules and must not be appended to.
+        This is a *component* of corpus identity, not the whole of it: two
+        instances can agree on every value here and still fill a corpus with
+        vectors that are not comparable, because the contract does not say which
+        embedder produced them. See ``corpus_fingerprint``, which is what the
+        store records.
         """
         parts = (
             f"chunk_max_chars={self.chunk_max_chars}",
@@ -122,6 +125,23 @@ class Config:
     @property
     def db_path(self) -> Path:
         return self.data_dir / "jackryan.db"
+
+
+def corpus_fingerprint(contract: Contract, embedder_name: str) -> str:
+    """The identity the store records: the contract plus who filled it.
+
+    The contract alone is not enough. The choice between the real embedder and
+    the deterministic stand-in lives in the profile layer, which is otherwise
+    safe to change, and both produce vectors of the declared width — so a corpus
+    filled by one opens under the other with nothing downstream able to tell.
+    Real query vectors then get compared against hash vectors. This is the last
+    point at which the difference is still visible.
+
+    Composed here rather than by copying the embedder into the contract: two
+    copies of one setting can disagree with each other, which is the shape of
+    the bug this closes.
+    """
+    return f"{contract.fingerprint()}|embedder={embedder_name}"
 
 
 def canonical_embed_library(declared: str) -> tuple[str, str] | None:

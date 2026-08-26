@@ -209,3 +209,30 @@ def test_spelling_does_not_fork_corpus_identity(tmp_path, monkeypatch):
         monkeypatch.setenv("JACKRYAN_CONFIG", str(path))
         fingerprints.add(load_config().contract.fingerprint())
     assert len(fingerprints) == 1, f"spelling forked corpus identity: {fingerprints}"
+
+
+def test_corpus_identity_covers_the_embedder():
+    # The contract cannot see which embedder ran, and both produce vectors of
+    # the declared width, so without this the two are indistinguishable to the
+    # store.
+    from jackryan.config import Contract, corpus_fingerprint
+
+    contract = Contract()
+    assert corpus_fingerprint(contract, "model") != corpus_fingerprint(
+        contract, "deterministic"
+    )
+
+
+def test_corpus_identity_still_changes_with_any_contract_value():
+    from jackryan.config import Contract, corpus_fingerprint
+
+    assert corpus_fingerprint(Contract(), "model") != corpus_fingerprint(
+        Contract(chunk_max_chars=512), "model"
+    )
+
+
+def test_the_contract_fingerprint_is_a_component_of_corpus_identity():
+    from jackryan.config import Contract, corpus_fingerprint
+
+    contract = Contract()
+    assert contract.fingerprint() in corpus_fingerprint(contract, "model")

@@ -168,7 +168,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "profile": context.config.profile.name,
                     "data_dir": str(context.config.data_dir),
                     "database": str(context.config.db_path),
-                    "contract": context.config.contract.fingerprint(),
+                    "contract": context.corpus_fingerprint,
                     "casefiles": len(context.casefiles.list()),
                 },
                 args.json,

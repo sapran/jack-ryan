@@ -20,6 +20,14 @@ class EmbeddingError(JackRyanError):
 
 class EmbedderPort(Protocol):
     name: str
+    """Load-bearing: this value is part of corpus identity.
+
+    The store records it, so renaming an implementation invalidates every
+    corpus it has written, and two implementations must never share a name —
+    that would let one open a corpus the other filled, which is the whole
+    condition this guards. Derived from this attribute rather than the class
+    name so that a refactor rename cannot silently change it.
+    """
 
     @property
     def dimensions(self) -> int:
