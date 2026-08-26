@@ -1,7 +1,9 @@
 # Handover
 
 Written for the next Claude Code session, on a machine that has the
-infrastructure this project has so far been built without.
+infrastructure this project was built without. Updated 2026-08-26, on such a
+machine: the model-dependent paths have now been run, and this records what
+that did and did not settle.
 
 Read `CLAUDE.md` first for the rules and pitfalls, and `docs/design.md` for the
 staged plan. This document covers only what those two cannot know: what is
@@ -11,10 +13,12 @@ verified, what is not, and why.
 
 ## Where things stand
 
-`main` is at the merge of M3 slice 1. The prototype (M0–M2) is archived, eleven
-capabilities are published in `openspec/specs/`, and 212 tests pass.
+`main` is at the merge of M3 slice 1. The prototype (M0–M2) and M3 slice 1 are
+both archived, thirteen capabilities are published in `openspec/specs/`, and 212
+tests pass.
 
-Built and merged, never yet run against real infrastructure:
+Built and merged, and — since 2026-08-26 — exercised against real model
+infrastructure for the first time; see the verification section below:
 
 - **M0** foundations — layered config, the SQLite store and its contract guard,
   casefiles, REST and CLI adapters.
@@ -25,38 +29,77 @@ Built and merged, never yet run against real infrastructure:
 - **M3 slice 1** — mail (EML/MBOX/MSG), spreadsheets (XLSX/CSV/TSV), archives
   (ZIP/TAR), document hierarchy, and the expansion budget.
 
-One change is complete but **not archived**: `hard-formats-and-containers`, all
-32 tasks done. Archiving it publishes `container-extraction` and
-`document-hierarchy` and folds the `document-ingestion` and
-`untrusted-content-boundary` deltas into the published specs. That is the
-smallest useful first task, and `/opsx:archive hard-formats-and-containers`
-does it.
+**Archived on 2026-08-26:** `hard-formats-and-containers`, all 32 tasks done,
+now at `openspec/changes/archive/2026-08-26-hard-formats-and-containers`. It
+published `container-extraction` and `document-hierarchy` and folded the
+`document-ingestion` and `untrusted-content-boundary` deltas into the published
+specs. All thirteen delta requirements landed byte-identical, and
+`untrusted-content-boundary`'s second requirement survived the block
+replacement. `openspec list` reports no active changes.
 
 ---
 
-## Start here: the verification debt
+## The verification debt: paid on 2026-08-26
 
 Every one of the 212 tests runs against a **deterministic stand-in embedder**,
-and no test has ever opened a **PDF**. The environment this was built in cannot
-reach the model host, so those paths were never exercised — not skipped by
-choice, unreachable.
+and no test opens a **PDF**. That is still true of the suite, and it is why this
+script exists: the environment the project was built in could not reach the
+model host, so those paths were never exercised — not skipped by choice,
+unreachable.
 
-That means the base claim of the whole project — *documents go in, an agent
-works them and answers with citations that resolve* — currently rests on a
-stand-in. Every milestone since M0 stacks on top of that.
+The base claim of the whole project — *documents go in, an agent works them and
+answers with citations that resolve* — therefore rested entirely on a stand-in.
+Every milestone since M0 stacks on top of it.
 
 ```bash
 python scripts/verify_model_paths.py
 ```
 
-Four checks: PDF extraction through Docling's layout models, the real embedder
-loading, the contract's declared width matching what the model actually
-produces, and a full ingest → search → cite with real vectors. It writes to a
-temporary directory and removes it; it touches no corpus of yours.
+**Result: 6 passed, 0 failed, exit 0.** Run on macOS on Apple silicon, Python
+3.12.14, with `uv venv --python 3.12 && uv pip install -e ".[dev]"` — the setup
+`CLAUDE.md` documents. Weights downloaded from the Hub on first use.
 
-Run it before building anything else. A failure there is a real finding, not a
-flaky environment — these are the only paths nothing else covers. Record the
-result here, in this file, so the next session does not have to wonder.
+| Check | Result |
+|---|---|
+| PDF extraction (Docling layout models) | `docling` recovered 44 chars including the expected phrase |
+| Real embedder loads | `intfloat/multilingual-e5-large` |
+| Contract width matches the model | 1024 dimensions, as declared |
+| Query and passage widths agree | both 1024 |
+| End-to-end with real embeddings | 2 documents, 2 hits, 2 found by vector search |
+| MCP surface answers with a citation | `note.md (chars 0–62, …)` |
+
+What that settles, stated precisely, because a green run is only worth what it
+actually covers:
+
+- **Docling opens a PDF and returns its text.** The extractor ran, not merely
+  imported. This path had never executed anywhere in the project.
+- **The shipped `embed_dimensions` default of 1024 is correct.** Nothing had
+  ever compared it to a real model, and it sizes the vector index and enters the
+  corpus fingerprint. Had it been wrong, every corpus built on the default would
+  have been mis-sized.
+- **The vector path works end to end with real embeddings.** Real vectors were
+  produced at ingest, stored in `sqlite-vec`, and nearest-neighbour search
+  returned both documents — both hits carry a vector rank, not just an FTS one.
+  Under the deterministic embedder the same assertion is vacuous, because those
+  vectors carry no meaning.
+
+  Read narrowly, though. The script's query — *"who was awarded the lease"* —
+  shares the words *awarded* and *lease* with the stored text, so FTS would have
+  matched it too. What this proves is that the vector leg **ran and returned**,
+  not that retrieval succeeded where keywords would have failed. **Retrieval
+  quality is still unmeasured**, and nothing here is evidence about it. (The
+  script's own comment claims the query "shares no content word with the text"
+  and names a different query than the code sends; the comment is wrong, the
+  check is merely weaker than it advertises.)
+- **The MCP surface answers with a citation that resolves**, driven in process
+  against a corpus built with real vectors.
+
+The script writes to a temporary directory and removes it — verified: the
+workspace it named was gone after the run. It touched no corpus.
+
+Re-run it after any change to the contract, the embedder, or the extractor. A
+failure there is a real finding, not a flaky environment — these are the only
+paths nothing else covers.
 
 **Then the one thing the script cannot do:** point a live agent at the surface
 and confirm the tool descriptions elicit the right calls — from **two different
@@ -76,7 +119,7 @@ it report coverage honestly.
 
 ---
 
-## A real defect found while writing this, not yet fixed
+## A real defect, now confirmed against a live install, still not fixed
 
 **The contract fingerprint does not cover the embedding library version, and
 it needs to.**
@@ -95,6 +138,15 @@ So a corpus ingested under 0.5.1 and later queried under 0.8.0 has **the same
 fingerprint and incompatible vectors**. The guard passes; retrieval degrades
 silently. That is precisely the failure the contract guard exists to prevent,
 and it is invisible — no error, no refusal, just worse answers that look fine.
+
+**Confirmed on 2026-08-26, no longer a prediction.** A clean
+`uv pip install -e ".[dev]"` against the current pins resolved `fastembed` to
+**0.8.0** and `docling` to **2.122.0**, and the run of
+`scripts/verify_model_paths.py` above emitted that warning at every one of the
+three points it loads the embedder. So the version a fresh install gets today is
+the mean-pooling one, and the vectors the six passing checks were built on are
+mean-pooled. Nothing records that fact anywhere a future run could read it —
+which is the defect.
 
 The same class of gap applies to `docling>=2.0`: extraction output is
 corpus-coupled (it becomes the chunks) and the extractor version is not in the
@@ -139,14 +191,18 @@ PST stays last, as `docs/design.md` § 10 has it.
 
 ## What this environment could not do, so you should not trust it was checked
 
-- **No model weights.** `huggingface.co` was unreachable. PDF extraction, the
-  real embedder, rerank, VLM, and statistical NER were all unexercised.
+- **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real
+  embedder are now exercised — see the verification section above. **Rerank,
+  VLM, and statistical NER remain unexercised**, because no code for them
+  exists yet.
 - **No LLM endpoint.** Nothing that calls one has ever been run.
 - **No Docker.** `docker compose up` has never been executed. CI builds the
   image, so it compiles — but no one has watched a container start, and
   `--build-arg PREFETCH_MODELS=true` has never been used.
-- **No live agent.** The MCP surface is driven by tests through `call_tool` and
-  by one real HTTP `initialize`. No model has ever chosen to call it.
+- **No live agent.** The MCP surface is driven by tests through `call_tool`, by
+  one real HTTP `initialize`, and now by `verify_model_paths.py` in process
+  against real vectors. **No model has ever chosen to call it** — that is still
+  the open acceptance criterion, and the script cannot close it.
 
 Anything else in the repository that reads as verified, was.
 
