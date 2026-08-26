@@ -222,7 +222,9 @@ class SqliteStore:
                 raise ConfigError(
                     f"store at {self._path} was created with {key}={row['value']!r} "
                     f"but this instance is configured for {expected!r}. "
-                    "The corpus is only appendable under the rules that created it."
+                    "The corpus is only appendable under the rules that created it. "
+                    "Either restore the configuration the values above name, or "
+                    "reingest every casefile under the current one."
                 )
 
     def close(self) -> None:

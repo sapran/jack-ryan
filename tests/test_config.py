@@ -216,23 +216,30 @@ def test_corpus_identity_covers_the_embedder():
     # the declared width, so without this the two are indistinguishable to the
     # store.
     from jackryan.config import Contract, corpus_fingerprint
+    from jackryan.embedding.deterministic import DeterministicEmbedder
+    from jackryan.embedding.model import ModelEmbedder
 
+    # The implementations' own names, not literals: a literal keeps this green
+    # if an implementation is renamed, which the port's docstring says
+    # invalidates every corpus it wrote.
     contract = Contract()
-    assert corpus_fingerprint(contract, "model") != corpus_fingerprint(
-        contract, "deterministic"
+    assert corpus_fingerprint(contract, ModelEmbedder.name) != corpus_fingerprint(
+        contract, DeterministicEmbedder.name
     )
 
 
 def test_corpus_identity_still_changes_with_any_contract_value():
     from jackryan.config import Contract, corpus_fingerprint
+    from jackryan.embedding.model import ModelEmbedder
 
-    assert corpus_fingerprint(Contract(), "model") != corpus_fingerprint(
-        Contract(chunk_max_chars=512), "model"
+    assert corpus_fingerprint(Contract(), ModelEmbedder.name) != corpus_fingerprint(
+        Contract(chunk_max_chars=512), ModelEmbedder.name
     )
 
 
 def test_the_contract_fingerprint_is_a_component_of_corpus_identity():
     from jackryan.config import Contract, corpus_fingerprint
+    from jackryan.embedding.model import ModelEmbedder
 
     contract = Contract()
-    assert contract.fingerprint() in corpus_fingerprint(contract, "model")
+    assert contract.fingerprint() in corpus_fingerprint(contract, ModelEmbedder.name)

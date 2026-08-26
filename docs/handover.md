@@ -239,6 +239,11 @@ The lesson is the one this file keeps repeating — the first fix made the
 fingerprint *assert* something it could not check, which is worse than saying
 nothing.
 
+**Both of those changes are breaking, and each bumped the fingerprint
+separately** — so if a corpus is refused, read the two identity strings to see
+which component differs before assuming which one refused you. The paragraph
+below is about the *library* change specifically.
+
 **This is a breaking change, by design.** The fingerprint string changed, so any
 corpus built before it — including the one built during the 6/6 run recorded
 above, whose vectors are mean-pooled — is refused until reingested. That is the

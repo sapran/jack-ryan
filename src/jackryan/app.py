@@ -23,19 +23,20 @@ class Context:
     """A configured instance: config, store, and the services over it."""
 
     config: Config
+    corpus_fingerprint: str
+    """The identity the store records and enforces.
+
+    Required, not defaulted: a Context built without it would report an empty
+    corpus identity from /health and `jackryan status`, which is exactly the
+    failure this field exists to prevent — an operator comparing a string that
+    cannot explain their refusal.
+    """
+
     store: SqliteStore
     embedder: EmbedderPort
     casefiles: CasefileService
     ingestion: IngestionService
     search: SearchService
-
-    corpus_fingerprint: str = ""
-    """The identity the store records and enforces.
-
-    Held here so adapters report the value that actually guards rather than
-    recomputing one beside it. Two definitions of corpus identity is how an
-    operator ends up comparing a string that cannot explain their refusal.
-    """
 
     def close(self) -> None:
         self.store.close()
@@ -45,14 +46,23 @@ def build_context(config: Config | None = None, embedder: EmbedderPort | None = 
     """Open the store and construct the service layer over it."""
     resolved = config or load_config()
     # The embedder is built first because it is part of corpus identity: the
-    # store cannot be opened until we know who would be filling it. Safe to do
-    # in this order because constructing an embedder is cheap and cannot fail —
-    # ModelEmbedder defers every load to first use — so nothing expensive
-    # happens before the store's own guard has had its say.
+    # store cannot be opened until we know who would be filling it. Cheap in
+    # this order because ModelEmbedder defers every load to first use, so no
+    # weights are fetched before the store's guard has had its say. Note the
+    # narrower claim: construction is cheap, not infallible — DeterministicEmbedder
+    # rejects a non-positive width at construction, and that now surfaces from
+    # the composition root rather than later.
     chosen = embedder or build_embedder(resolved)
     identity = corpus_fingerprint(resolved.contract, chosen.name)
     store = SqliteStore(resolved.db_path)
-    store.initialize(identity, resolved.contract.embed_dimensions)
+    try:
+        store.initialize(identity, resolved.contract.embed_dimensions)
+    except Exception:
+        # initialize opens the connection before it verifies identity, so a
+        # refusal leaves the file, its WAL and its SHM held open on a corpus we
+        # have just rejected.
+        store.close()
+        raise
     casefiles = CasefileService(store)
     return Context(
         config=resolved,

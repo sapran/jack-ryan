@@ -6,6 +6,35 @@ and why it was parked.
 
 ## Parked
 
+- **The embedder's width is never checked against the contract's, though the
+  composition root now has both.** `build_context` constructs the embedder
+  before sizing the store, so `chosen.dimensions` and
+  `contract.embed_dimensions` are both in hand one line apart — and are not
+  compared. `build_context(config, embedder=DeterministicEmbedder(64))` against
+  a 1024-wide contract creates the vector table at 1024, records a valid
+  identity, opens cleanly, and then fails on every chunk deep inside an ingest.
+  One line would turn that into a boot-time refusal at the same depth as the
+  identity guard. Parked: found by review of the change that created the
+  adjacency; it is a different guard from the one that change is about.
+
+- **Corpus identity is an unescaped `|`-joined string over operator-supplied
+  values.** `Contract.fingerprint()` and `corpus_fingerprint` both join with `|`
+  and `=` without escaping, so an `embed_model` containing `|embedder=` produces
+  an identity that cannot be parsed back unambiguously. No two-corpora collision
+  was demonstrated and the shape pre-dates both fingerprint changes, but this is
+  the one string whose entire job is that two different corpora never share an
+  identity. Fix by escaping separators in values, or by hashing the components.
+
+- **Naming drift: the store still calls corpus identity `contract`.**
+  `initialize(contract_fingerprint=...)`, the `store_meta` key, the refusal text
+  and the `"contract"` field in `/health` and `jackryan status` all say
+  *contract*, while the specs and docs say *corpus identity* and the value now
+  includes a profile setting. An operator comparing a refusal against `/health`
+  sees a key named `contract` holding something wider. Parked because renaming
+  the `store_meta` key needs a migration or a documented legacy name, and the
+  JSON field is a published surface — both bigger than the change that exposed
+  it.
+
 - **`scripts/verify_model_paths.py` — `check_real_embedder` bypasses the
   application's model-cache resolution.** It constructs `ModelEmbedder` directly
   with `cache_dir=<tempdir>/models`, instead of going through `build_embedder`,
