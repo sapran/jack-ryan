@@ -124,6 +124,13 @@ searched. Both found a conflict of interest that required chaining three
 documents — a board member who directs the company holding 60% of the winning
 bidder — which no single document states.
 
+The corpus was **synthetic and written for this test**: four short invented
+documents about a fictional harbour lease, in the same register as the
+`Northgate Holdings` fixture already used by `scripts/verify_model_paths.py`.
+No real case material was ingested, and the corpus was not committed. Saying so
+explicitly because the names below read like case notes and this repository is
+public.
+
 More telling than the pass: both **declined to overclaim**. The minutes name who
 was present and record a 3–1 vote but never say how each member voted, and both
 agents flagged "Vlasenko voted" as their own inference rather than a corpus

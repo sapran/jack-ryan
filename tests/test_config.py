@@ -150,3 +150,62 @@ def test_every_contract_value_is_in_the_fingerprint_and_nothing_else_is():
     fingerprint = Contract().fingerprint()
     for name in fields:
         assert f"{name}=" in fingerprint, f"{name} is declared but not in the fingerprint"
+
+
+def test_unreadable_packaging_metadata_is_not_reported_as_a_version_mismatch(monkeypatch):
+    # importlib.metadata.version() returns None — it does not raise — when a
+    # .dist-info exists with no METADATA or no Version: field. Before this was
+    # handled the message read "fastembed None is installed" and told the
+    # operator to reingest every casefile and write embed_library=fastembed==None,
+    # which can never match. An environment fault must not masquerade as a
+    # version mismatch, because the remedies are opposites.
+    from jackryan import config as config_module
+
+    monkeypatch.setattr(config_module.metadata, "version", lambda _name: None)
+    message = config_module.embed_library_mismatch("fastembed==0.8.0")
+    assert message is not None
+    assert "could not be determined" in message
+    assert "None is installed" not in message
+    assert "Do not change the contract" in message
+
+
+def test_the_running_module_is_checked_not_only_the_install_ledger():
+    # Packaging metadata records what was installed; it cannot see a shadowing
+    # copy earlier on sys.path or a patched checkout. The vectors come from the
+    # imported module, so that is what decides.
+    from jackryan.config import embed_library_running_mismatch
+
+    assert embed_library_running_mismatch("fastembed==0.8.0", "0.8.0") is None
+    mismatch = embed_library_running_mismatch("fastembed==0.8.0", "0.5.1")
+    assert mismatch is not None and "0.5.1" in mismatch
+
+
+def test_a_module_without_a_version_is_refused_rather_than_trusted():
+    from jackryan.config import embed_library_running_mismatch
+
+    message = embed_library_running_mismatch("fastembed==0.8.0", None)
+    assert message is not None
+    assert "exposes no version" in message
+
+
+def test_the_same_release_written_two_ways_is_not_a_mismatch():
+    # 0.8 and 0.8.0 are one release. Reporting them as different would order a
+    # full reingest over how many zeros the operator typed.
+    from jackryan.config import embed_library_running_mismatch
+
+    assert embed_library_running_mismatch("fastembed==0.8", "0.8.0") is None
+    assert embed_library_running_mismatch("fastembed==0.8.0", "0.8") is None
+    assert embed_library_running_mismatch("fastembed==0.8.1", "0.8.0") is not None
+
+
+def test_spelling_does_not_fork_corpus_identity(tmp_path, monkeypatch):
+    # The declared value enters the fingerprint. Without normalisation, tidying
+    # whitespace or case in config.yaml would change corpus identity and the
+    # store would refuse the operator's own corpus.
+    fingerprints = set()
+    for spelling in ("fastembed==0.8.0", "fastembed == 0.8.0", "FASTEMBED==0.8.0"):
+        path = tmp_path / f"{abs(hash(spelling))}.yaml"
+        path.write_text(f"contract:\n  embed_library: {spelling}\n", encoding="utf-8")
+        monkeypatch.setenv("JACKRYAN_CONFIG", str(path))
+        fingerprints.add(load_config().contract.fingerprint())
+    assert len(fingerprints) == 1, f"spelling forked corpus identity: {fingerprints}"

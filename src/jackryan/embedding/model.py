@@ -42,14 +42,35 @@ class ModelEmbedder:
             # version of the same library can return the declared width from the
             # declared model and still mean something else, so this is checked
             # before any vector exists rather than after one is stored.
-            from ..config import embed_library_mismatch
+            from ..config import embed_library_mismatch, embed_library_running_mismatch
 
             mismatch = embed_library_mismatch(self._embed_library)
             if mismatch:
                 raise EmbeddingError(mismatch)
             try:
+                import fastembed
                 from fastembed import TextEmbedding
+            except Exception as exc:
+                raise EmbeddingError(
+                    f"could not import the embedding library for {self._model_name!r}: "
+                    f"{type(exc).__name__}: {exc}. "
+                    "Ingestion stops here rather than storing vectors from a different model."
+                ) from exc
 
+            # Deliberately outside the try above and before the one below: this
+            # is asked of the module that was actually imported, not of the
+            # install ledger checked earlier. A shadowing copy on sys.path, a
+            # patched checkout, or a stale .dist-info beside a replaced package
+            # all satisfy packaging metadata and still produce the vectors.
+            # Raising it inside either try would let `except Exception` rewrap a
+            # precise diagnosis as a generic load failure.
+            running = embed_library_running_mismatch(
+                self._embed_library, getattr(fastembed, "__version__", None)
+            )
+            if running:
+                raise EmbeddingError(running)
+
+            try:
                 self._model = TextEmbedding(
                     model_name=self._model_name, cache_dir=self._cache_dir
                 )
