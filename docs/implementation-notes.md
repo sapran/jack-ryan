@@ -35,17 +35,6 @@ and why it was parked.
   longer the one the store holds). `CLAUDE.md`'s rule that the deterministic
   embedder must never become an implicit fallback is the thing being protected.
 
-- **`scripts/verify_model_paths.py` — the end-to-end check is weaker than its
-  comment claims.** The comment above the search call says the query "shares no
-  content word with the text" and names `"who signed"`, but the code sends
-  `"who was awarded the lease"`, which shares *awarded* and *lease* with the
-  corpus text it ingests. FTS alone would match it, so the check proves the
-  vector leg ran and returned, not that semantic retrieval beat keywords.
-  Parked: found while running the script on 2026-08-26 to record its result in
-  `docs/handover.md`; fixing it is a change to a verification script, not to the
-  archive it was run for. Fix by querying a genuine paraphrase with no shared
-  content word, and asserting the hit is vector-only.
-
 - **`scripts/verify_model_paths.py` — `check_real_embedder` bypasses the
   application's model-cache resolution.** It constructs `ModelEmbedder` directly
   with `cache_dir=<tempdir>/models`, instead of going through `build_embedder`,
@@ -76,3 +65,11 @@ and why it was parked.
   contract declares `embed_library`, the fingerprint covers it, and a declared
   version that is not the installed one is fatal at both configuration load and
   embedder construction. See `docs/handover.md` for the decisions.
+
+- **~~`scripts/verify_model_paths.py` — the end-to-end check is weaker than its
+  comment claims.~~** Fixed in #10 on 2026-08-26, and resolved the other way
+  round from what the note proposed: rather than strengthening the check to a
+  paraphrase with no shared content word, the comment was corrected to say what
+  the check actually establishes — that the vector leg ran and returned, with
+  retrieval quality explicitly out of scope. The defect was that the comment
+  lied, and it no longer does.
