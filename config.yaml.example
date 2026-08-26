@@ -38,6 +38,24 @@ profiles:
     # Which agent-facing tool surface to advertise: readonly | analyst | admin.
     # An unrecognised name narrows to readonly rather than widening.
     mcp_profile: readonly
+    # Extraction. A page-bearing document is read first with recognition off;
+    # if that yields fewer than min_chars_per_page characters per page it is a
+    # scan, and recognition runs. These change the text a document yields, but
+    # only for documents ingested after the change, so they are not part of
+    # corpus identity. Each document records which rung produced its text.
+    #
+    # ocr_engine is never "auto": that picks by host operating system and
+    # discards the language below, so the same evidence read on two machines
+    # would produce two different corpora.
+    ocr_engine: rapidocr
+    # One language, in the engine's own vocabulary. "eslav" is East Slavic and
+    # reads Ukrainian, Russian and English off the same page.
+    ocr_language: eslav
+    min_chars_per_page: 100
+    # A docling vision-model spec name enables the third rung, tried only when
+    # recognition is also below the floor. Empty leaves it off: it downloads
+    # model weights and is much slower. Example: GRANITEDOCLING_TRANSFORMERS
+    vlm_model: ""
 
   remote:
     # Point at your own OpenAI-compatible endpoints. Comma-separated for

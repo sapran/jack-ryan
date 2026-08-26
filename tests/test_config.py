@@ -243,3 +243,118 @@ def test_the_contract_fingerprint_is_a_component_of_corpus_identity():
 
     contract = Contract()
     assert contract.fingerprint() in corpus_fingerprint(contract, ModelEmbedder.name)
+
+
+# --- Extraction settings -----------------------------------------------------
+#
+# These live in the profile because they change the text a document yields only
+# for documents ingested after the change, and the difference is visible in the
+# text rather than hidden in vectors of the right width. What that costs is that
+# nothing refuses a corpus built under different settings, so a mistyped setting
+# has to be fatal at load instead.
+
+
+def test_extraction_defaults_read_all_three_working_languages(monkeypatch):
+    monkeypatch.delenv("JACKRYAN_CONFIG", raising=False)
+    monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
+    profile = load_config().profile
+    # eslav is East Slavic: one recognition model for Ukrainian, Russian and
+    # English. A default that silently dropped two of the three would be worse
+    # than no default at all.
+    assert profile.ocr_engine == "rapidocr"
+    assert profile.ocr_language == "eslav"
+    assert profile.min_chars_per_page == 100
+    assert profile.vlm_model == ""
+
+
+def test_auto_recognition_engine_is_refused(tmp_path, monkeypatch):
+    path = write_config(tmp_path, "profiles:\n  local:\n    ocr_engine: auto\n")
+    monkeypatch.setenv("JACKRYAN_CONFIG", path)
+    monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
+    with pytest.raises(ConfigError) as exc:
+        load_config()
+    assert "ocr_engine" in str(exc.value)
+    # The refusal has to say why the documented value is the one you cannot
+    # have, or it reads as an arbitrary restriction.
+    assert "host operating system" in str(exc.value)
+
+
+def test_unknown_recognition_engine_is_refused(tmp_path, monkeypatch):
+    path = write_config(tmp_path, "profiles:\n  local:\n    ocr_engine: nosuchengine\n")
+    monkeypatch.setenv("JACKRYAN_CONFIG", path)
+    monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
+    with pytest.raises(ConfigError) as exc:
+        load_config()
+    assert "nosuchengine" in str(exc.value)
+
+
+def test_a_list_of_recognition_languages_is_refused(tmp_path, monkeypatch):
+    # docling's RapidOCR adapter keeps the first of a list and logs the rest
+    # away, so an operator who wrote three languages would be reading one.
+    path = write_config(
+        tmp_path, "profiles:\n  local:\n    ocr_language: [uk, ru, en]\n"
+    )
+    monkeypatch.setenv("JACKRYAN_CONFIG", path)
+    monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
+    with pytest.raises(ConfigError) as exc:
+        load_config()
+    assert "ocr_language" in str(exc.value)
+
+
+def test_an_empty_recognition_language_is_refused(tmp_path, monkeypatch):
+    path = write_config(tmp_path, 'profiles:\n  local:\n    ocr_language: ""\n')
+    monkeypatch.setenv("JACKRYAN_CONFIG", path)
+    monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
+    with pytest.raises(ConfigError):
+        load_config()
+
+
+def test_a_non_numeric_floor_is_refused(tmp_path, monkeypatch):
+    path = write_config(tmp_path, "profiles:\n  local:\n    min_chars_per_page: lots\n")
+    monkeypatch.setenv("JACKRYAN_CONFIG", path)
+    monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
+    with pytest.raises(ConfigError) as exc:
+        load_config()
+    assert "min_chars_per_page" in str(exc.value)
+
+
+def test_a_negative_floor_is_refused(tmp_path, monkeypatch):
+    # A floor below zero can never be crossed, so nothing would ever escalate
+    # and every scan would ingest as an empty document.
+    path = write_config(tmp_path, "profiles:\n  local:\n    min_chars_per_page: -1\n")
+    monkeypatch.setenv("JACKRYAN_CONFIG", path)
+    monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
+    with pytest.raises(ConfigError):
+        load_config()
+
+
+def test_a_mistyped_profile_key_is_fatal_and_names_it(tmp_path, monkeypatch):
+    # The reason profile keys are now checked at all: `ocr_langauge` would
+    # otherwise leave recognition on its default with nothing said, which is the
+    # exact failure this whole capability exists to stop.
+    path = write_config(tmp_path, "profiles:\n  local:\n    ocr_langauge: eslav\n")
+    monkeypatch.setenv("JACKRYAN_CONFIG", path)
+    monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
+    with pytest.raises(ConfigError) as exc:
+        load_config()
+    assert "ocr_langauge" in str(exc.value)
+
+
+def test_extraction_settings_are_not_part_of_corpus_identity(tmp_path, monkeypatch):
+    # The counterpart to the checks above: these settings are safe to change
+    # against an existing corpus, which is why they are in the profile layer.
+    from jackryan.config import corpus_fingerprint
+    from jackryan.embedding.model import ModelEmbedder
+
+    def identity(language: str) -> str:
+        path = write_config(
+            tmp_path / language,
+            f"profiles:\n  local:\n    ocr_language: {language}\n",
+        )
+        monkeypatch.setenv("JACKRYAN_CONFIG", path)
+        monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
+        return corpus_fingerprint(load_config().contract, ModelEmbedder.name)
+
+    (tmp_path / "eslav").mkdir()
+    (tmp_path / "cyrillic").mkdir()
+    assert identity("eslav") == identity("cyrillic")

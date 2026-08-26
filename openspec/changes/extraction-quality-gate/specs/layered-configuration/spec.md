@@ -84,11 +84,16 @@ corpus would record a pooling strategy it was not built with.
 A contract typo SHALL NOT be tolerated, because an ignored key would leave the
 instance running under different corpus rules than the operator wrote down.
 
-An extraction setting the loader does not recognise SHALL be fatal at load, and
-so SHALL a recognition engine or language the named engine cannot serve. The
-error SHALL name the setting and what the engine accepts. An extraction setting
-that is quietly ignored costs more than a rejected one: the instance runs, every
-document ingests, and only the text is wrong.
+A profile key the loader does not recognise SHALL be fatal at load, naming the
+key. A profile setting that is quietly ignored costs more than a rejected one:
+the instance runs, every document ingests, and only the text is wrong. A
+mistyped recognition language is exactly that failure, and it is indistinguishable
+from any other mistyped profile key at the point the file is read.
+
+A recognition language the configured engine cannot serve SHALL be fatal when
+the engine is constructed at startup, naming the setting and what the engine
+accepts. It is checked there rather than at load because only the engine can
+answer authoritatively, and startup is still before any document is read.
 
 #### Scenario: Unknown profile is fatal and names the alternatives
 
@@ -110,7 +115,12 @@ document ingests, and only the text is wrong.
 - **WHEN** the contract declares an embedding library version other than the one installed
 - **THEN** loading fails, naming both the declared version and the installed one
 
+#### Scenario: An unknown profile key is fatal
+
+- **WHEN** a profile block contains a key the loader does not recognise
+- **THEN** loading fails, naming the unknown key
+
 #### Scenario: An unserviceable recognition language is fatal
 
 - **WHEN** a profile names a recognition language the configured engine cannot serve
-- **THEN** loading fails, naming the setting and what the engine accepts
+- **THEN** startup fails, naming the setting and what the engine accepts

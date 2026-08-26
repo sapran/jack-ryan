@@ -1,10 +1,10 @@
 ## 1. Configuration
 
-- [ ] 1.1 Add extraction settings to `Profile`: `ocr_engine` (default `rapidocr`), `ocr_language` (default `eslav`), `min_chars_per_page` (default 100), `vlm_model` (default empty, meaning the rung is off); verify a test asserts every default and that the full suite passes unchanged
-- [ ] 1.2 Refuse `auto` as an `ocr_engine` at configuration load, naming the setting and why a host-chosen engine is not acceptable; verify a test asserts the failure and that the message names `ocr_engine`
-- [ ] 1.3 Refuse an `ocr_language` the configured engine cannot serve, naming what it accepts, and refuse a list where the engine takes one; verify a test asserts both, using a language RapidOCR does not serve
-- [ ] 1.4 Refuse an unknown extraction key in a profile block; verify a test asserts a typo is fatal and names the key
-- [ ] 1.5 Verify extraction settings do not enter the corpus fingerprint: a test changes `ocr_language` and asserts corpus identity is unchanged and an existing store still opens
+- [x] 1.1 Add extraction settings to `Profile`: `ocr_engine` (default `rapidocr`), `ocr_language` (default `eslav`), `min_chars_per_page` (default 100), `vlm_model` (default empty, meaning the rung is off); verify a test asserts every default and that the full suite passes unchanged
+- [x] 1.2 Refuse `auto` as an `ocr_engine` at configuration load, naming the setting and why a host-chosen engine is not acceptable; verify a test asserts the failure and that the message names `ocr_engine`
+- [x] 1.3 Refuse a list of `ocr_language` where the engine takes one, at load; verify a test asserts the failure names the setting
+- [x] 1.4 Refuse an unknown key in a profile block, naming it; verify `config.yaml.example` still loads and a test asserts a mistyped key is fatal
+- [x] 1.5 Verify extraction settings do not enter the corpus fingerprint: a test changes `ocr_language` and asserts corpus identity is unchanged and an existing store still opens
 
 ## 2. The quality gate
 
@@ -24,7 +24,7 @@
 
 ## 4. Startup
 
-- [ ] 4.1 Construct the configured recognition engine in `build_context` before the store is opened, and let failure propagate with a message naming the setting and how to proceed without it; verify a test asserts an unconstructable engine stops startup
+- [ ] 4.1 Construct the configured recognition engine in `build_context` before the store is opened, and let failure propagate with a message naming the setting and how to proceed without it; verify a test asserts an unconstructable engine and an unserviceable language both stop startup
 - [ ] 4.2 Verify the failed engine does not degrade: a test asserts the instance does not start with recognition silently disabled, and that no store connection is left open when startup fails
 - [ ] 4.3 Skip engine construction when the profile's embedder is `deterministic`, so the test suite and a stopped-instance CLI do not load models; verify the existing suite still runs with no network
 

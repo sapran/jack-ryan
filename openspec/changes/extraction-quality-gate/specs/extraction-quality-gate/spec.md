@@ -102,6 +102,11 @@ Where an engine recognises one language at a time, the profile SHALL name
 exactly one and a list SHALL be refused. Accepting a list and using the first
 would leave an operator who wrote three languages believing all three are read.
 
+A language the configured engine cannot serve SHALL be refused when the engine
+is constructed, naming what it accepts. Only the engine can answer that
+authoritatively, so it is asked rather than a table in this codebase that would
+drift from it.
+
 #### Scenario: An engine chosen by the host is refused
 
 - **WHEN** a profile defers the recognition engine to whatever the host provides
@@ -116,6 +121,11 @@ would leave an operator who wrote three languages believing all three are read.
 
 - **WHEN** a profile names several recognition languages for an engine that recognises one
 - **THEN** loading fails rather than silently using the first
+
+#### Scenario: A language the engine cannot serve is refused
+
+- **WHEN** the configured engine is constructed with a language it does not serve
+- **THEN** construction fails, naming the setting and what the engine accepts
 
 ### Requirement: An extraction engine that cannot be built stops the instance
 

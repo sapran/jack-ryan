@@ -114,6 +114,41 @@ class Profile:
     meaning, so it is never selected implicitly.
     """
 
+    ocr_engine: str = "rapidocr"
+    """Which recognition engine reads page images.
+
+    Never ``auto``. Docling's ``auto`` picks by host operating system and drops
+    the configured language on the way to the engine it picks, which would make
+    the extracted text — and therefore the corpus — a property of the machine
+    that ingested it.
+    """
+
+    ocr_language: str = "eslav"
+    """The recognition model to read pages with, in the engine's own vocabulary.
+
+    ``eslav`` is East Slavic. It reads Ukrainian, Russian and English from one
+    page, which is why it is the default rather than a per-language ladder; see
+    the change's design document for the measurements.
+
+    One language, not a list: docling's RapidOCR adapter silently keeps the
+    first of a list and logs the rest away, so an operator who wrote three would
+    have two dropped without knowing.
+    """
+
+    min_chars_per_page: int = 100
+    """The floor below which extraction escalates to the next rung.
+
+    Per page rather than per document, so it means the same thing for a one-page
+    letter and a two-hundred-page report.
+    """
+
+    vlm_model: str = ""
+    """A docling vision-model spec name, or empty to leave the vision rung off.
+
+    Off by default: it downloads model weights and is slower by a large factor,
+    and the two rungs above it handle every document that is not hard.
+    """
+
 
 @dataclass(frozen=True)
 class Config:
@@ -369,6 +404,18 @@ def _select_profile(document: dict[str, Any]) -> Profile:
     if not isinstance(settings, dict):
         raise ConfigError(f"profile {name!r} must be a mapping")
 
+    # A profile key that is silently ignored is the same failure this instance
+    # guards against everywhere else: the instance runs, every document ingests,
+    # and only the result is wrong. `ocr_langauge: eslav` would leave recognition
+    # on its default with nothing said.
+    known = set(Profile.__dataclass_fields__) - {"name"}
+    unknown = set(settings) - known
+    if unknown:
+        raise ConfigError(
+            f"profile {name!r} sets unknown key(s): " + ", ".join(sorted(unknown)) +
+            ". Known keys: " + ", ".join(sorted(known))
+        )
+
     return Profile(
         name=name,
         llm_url=str(_interpolate(settings.get("llm_url", "")) or ""),
@@ -377,6 +424,10 @@ def _select_profile(document: dict[str, Any]) -> Profile:
         embedder=_validated_embedder(settings.get("embedder", "model"), name),
         mcp_profile=str(settings.get("mcp_profile", "readonly") or "readonly").strip().lower(),
         mcp_allowed_hosts=_validated_hosts(settings.get("mcp_allowed_hosts"), name),
+        ocr_engine=_validated_ocr_engine(settings.get("ocr_engine"), name),
+        ocr_language=_validated_ocr_language(settings.get("ocr_language"), name),
+        min_chars_per_page=_validated_floor(settings.get("min_chars_per_page"), name),
+        vlm_model=str(settings.get("vlm_model", "") or "").strip(),
     )
 
 
@@ -396,6 +447,72 @@ def _validated_hosts(value: Any, profile: str) -> tuple[str, ...]:
             "answer nothing over HTTP"
         )
     return cleaned
+
+
+RECOGNITION_ENGINES = ("rapidocr", "easyocr", "tesseract", "ocrmac")
+"""Engines a profile may name.
+
+``auto`` is deliberately absent; it is refused with its own message below, since
+"unknown engine" would not tell an operator why the one docling documents is the
+one they cannot have.
+"""
+
+
+def _validated_ocr_engine(value: Any, profile: str) -> str:
+    choice = str(value or Profile.ocr_engine).strip().lower()
+    if choice == "auto":
+        raise ConfigError(
+            f"profile {profile!r} sets ocr_engine='auto'. The recognition engine must be "
+            "named: 'auto' picks by host operating system and discards the configured "
+            "language, so the same evidence read on two machines would produce two "
+            f"different corpora. Name one of: {', '.join(RECOGNITION_ENGINES)}."
+        )
+    if choice not in RECOGNITION_ENGINES:
+        raise ConfigError(
+            f"profile {profile!r} sets ocr_engine={choice!r}; expected one of "
+            f"{', '.join(RECOGNITION_ENGINES)}"
+        )
+    return choice
+
+
+def _validated_ocr_language(value: Any, profile: str) -> str:
+    """Take exactly one language.
+
+    Whether the engine can serve it is settled when the engine is built, which
+    is the only place that can answer authoritatively. This checks the shape: a
+    list would be silently reduced to its first element by docling's RapidOCR
+    adapter, leaving an operator who wrote three languages reading one.
+    """
+    if isinstance(value, (list, tuple, set)):
+        raise ConfigError(
+            f"profile {profile!r} sets ocr_language to a list. The engine recognises one "
+            "language at a time and would keep only the first, so name the single one to "
+            "use — 'eslav' reads Ukrainian, Russian and English together."
+        )
+    choice = str(value if value is not None else Profile.ocr_language).strip()
+    if not choice:
+        raise ConfigError(
+            f"profile {profile!r} sets an empty ocr_language; scans would be read with no "
+            "recognition model named"
+        )
+    return choice
+
+
+def _validated_floor(value: Any, profile: str) -> int:
+    if value is None:
+        return Profile.min_chars_per_page
+    try:
+        floor = int(value)
+    except (TypeError, ValueError):
+        raise ConfigError(
+            f"profile {profile!r} sets min_chars_per_page={value!r}, which is not a number"
+        ) from None
+    if floor < 0:
+        raise ConfigError(
+            f"profile {profile!r} sets min_chars_per_page={floor}; a negative floor can "
+            "never be crossed, so nothing would ever escalate"
+        )
+    return floor
 
 
 def _validated_embedder(value: Any, profile: str) -> str:
