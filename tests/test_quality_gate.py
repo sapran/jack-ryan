@@ -274,6 +274,26 @@ def test_an_unknown_vision_model_is_refused_without_loading_weights(monkeypatch)
     assert "NOT_A_REAL_SPEC" in str(exc.value)
 
 
+def test_a_service_cannot_be_given_a_router_and_a_gate_that_disagree():
+    # The gate the service verifies has to be the gate its extractors read with.
+    # A router built elsewhere carries its own, so accepting both would let a run
+    # verify one engine and read with another.
+    from jackryan.ingestion.router import FormatRouter
+    from jackryan.services.ingestion import IngestionService
+
+    with pytest.raises(ValueError, match="not both"):
+        IngestionService(
+            store=None,
+            casefiles=None,
+            embedder=None,
+            contract=None,
+            router=FormatRouter(),
+            gate=QualityGate(
+                ocr_engine="rapidocr", ocr_language="eslav", min_chars_per_page=100
+            ),
+        )
+
+
 def test_the_engine_is_built_once_however_many_runs_verify(monkeypatch):
     from jackryan.ingestion import quality_gate as module
 

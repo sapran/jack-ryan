@@ -100,6 +100,17 @@ class IngestionService:
         budget: ExpansionBudget | None = None,
         gate: QualityGate | None = None,
     ) -> None:
+        if router is not None and gate is not None:
+            # The gate this service verifies must be the gate its extractors
+            # read with. A router built elsewhere carries its own, so accepting
+            # both would let a run verify one engine and read with another —
+            # two copies of one setting, free to disagree, which is the exact
+            # shape of the corpus-identity bug this project has already fixed
+            # twice. Pass the gate and let the router be built from it.
+            raise ValueError(
+                "pass either a router or a gate, not both: the verified engine and the "
+                "reading engine would be different objects"
+            )
         self._store = store
         self._casefiles = casefiles
         self._embedder = embedder
