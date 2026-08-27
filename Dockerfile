@@ -6,6 +6,18 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# OpenCV's shared-library dependencies, which python:3.12-slim does not carry.
+# Not optional and not only a build-time need: `opencv-python` arrives with the
+# RapidOCR recognition engine, and `import cv2` happens every time recognition
+# runs. Without these, OCR inside the container fails with
+# `ImportError: libxcb.so.1` — which is why `--build-arg PREFETCH_MODELS=true`
+# could not complete before they were added. Determined by installing them into
+# the built image and importing cv2, not by guessing: libgl1 alone still leaves
+# `libgthread-2.0.so.0` missing.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Dependency layer first so source edits do not invalidate the install.
 COPY pyproject.toml README.md ./
 COPY src ./src

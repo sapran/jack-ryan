@@ -386,6 +386,42 @@ process startup — and reading it out of the database is the only way to see it
   Hugging Face one the embedder and docling's layout models use. An air-gapped
   deployment has to allow or mirror it. The image's `PREFETCH_MODELS=true` path
   now builds the engine so a prefetched image carries them.
+
+**A defect found by building the image, which had never been built.** The
+container could not do OCR at all, and nothing said so.
+
+`opencv-python` arrives with the RapidOCR engine and `python:3.12-slim` carries
+neither `libgl1` nor `libglib2.0-0`, so `import cv2` fails with
+`ImportError: libxcb.so.1`. Three consequences, all pre-dating this change:
+
+- **`docker build --build-arg PREFETCH_MODELS=true` failed outright**, in
+  docling's own `download_models()`, before reaching anything this change added.
+  That is the documented way to build a released, offline-capable image. The
+  previous handover recorded that this build mode had never been run — this is
+  what it was hiding.
+- **Recognition in the shipped container silently did nothing.** Before this
+  change, an ingest there hit `auto`, which tries rapidocr, catches the
+  `ImportError`, tries easyocr, finds it absent, and then logs a warning and
+  yields the pages unchanged. Every scanned page in a container ingested as an
+  empty document, with no error anywhere.
+- **After this change it fails loudly instead** — which is correct, and which
+  also means the container cannot ingest at all until the libraries are present.
+
+Fixed by installing both packages in the base layer, not under the prefetch
+branch, because `import cv2` happens whenever recognition runs and not only when
+weights are fetched. The set was determined by installing candidates into the
+built image and importing `cv2`: `libgl1` alone still leaves
+`libgthread-2.0.so.0` missing.
+
+**CI could not have caught it, and still cannot.** `.github/workflows/docker.yml`
+builds with `PREFETCH_MODELS=false` and then runs `jackryan --version`. That
+proves the image builds and the binary starts; it touches no document, so no
+extractor and no recognition engine is ever constructed. Worth knowing before
+reading a green Docker gate as "the container works".
+
+The lesson is the one this file keeps repeating, in its container form: **a build
+argument nobody has run is not a supported path.** `PREFETCH_MODELS=true` was
+documented, referenced in `docs/implementation-notes.md`, and broken.
 - **This is a breaking schema change.** `documents` gained `text_source` and
   `SCHEMA_VERSION` went 4 → 5. This store has no migration mechanism at all —
   no `ALTER TABLE` anywhere — so an existing store is refused until recreated.
