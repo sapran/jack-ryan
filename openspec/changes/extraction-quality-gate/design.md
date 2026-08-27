@@ -31,7 +31,8 @@ the compensating control for living with it.
   bottom.
 - A born-digital document costs less than it does today, not more.
 - Every extraction says which rung produced it, all the way out to the agent.
-- A misconfiguration is fatal at startup, never a quiet degradation.
+- A misconfiguration is fatal before any document is read, never a quiet
+  degradation.
 
 **Non-Goals:**
 
@@ -150,16 +151,34 @@ none. A new `text_source` column takes `text-layer | ocr | vlm | native`.
 something; two facts in one column is how the `contract`-versus-corpus-identity
 naming drift in `docs/implementation-notes.md` started.
 
-### The startup check builds the engine, it does not look it up
+### The check builds the engine, and runs once per ingest
 
-The composition root constructs the configured recognition engine before the
-store is opened, and lets the failure propagate.
+`IngestionService.ingest` verifies the engine before it reads the first
+document, and the verification *builds* the recognition pipeline rather than
+looking anything up.
 
-*Why:* `docs/handover.md` records this repository hitting the same lesson four
-times — a stored value says what *should* load, not what *does*. An engine that
-is installed can still fail to construct. Building it is the only check that
-answers the question, and doing it at startup puts the failure where the
-operator is looking rather than deep inside an ingest.
+*Why build it:* `docs/handover.md` records this repository hitting the same
+lesson four times — a stored value says what *should* load, not what *does*. It
+bites here in a specific way: a `DocumentConverter` builds its pipelines lazily,
+so constructing one with `ocr_language='klingon'` returns an object quite
+happily and fails on the first scan instead. `initialize_pipeline` builds the
+recognition model, which is what actually answers whether the engine and the
+language work here, and it raises naming every language the backbone serves.
+
+*Why per run and not at process start:* an instance that only searches never
+needs a recognition engine, and building one costs seconds plus a possible model
+download — a cost `jackryan status` and every other read should not pay. The run
+is the unit that matters, because a run that stops part way has already stored
+documents, and which ones depends on the order the files happened to be walked.
+
+*Alternative rejected:* checking on the first document that needs recognition.
+By then the run has stored whatever came before it in the walk.
+
+*Accepted weakness:* the vision model is resolved by name, not built. Its
+weights are gigabytes and the rung is reached rarely, so charging every run for
+it would be worse than the gap. A vision model that resolves but cannot run
+fails on the first document that needs it, and the specification says so rather
+than implying the same guarantee as the recognition engine.
 
 ## Risks / Trade-offs
 

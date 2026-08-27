@@ -41,7 +41,7 @@ scan is indistinguishable from text lifted from a PDF's text layer. Nothing
 refuses a misconfigured OCR engine, because nothing configures one.
 
 **Desired behaviour.** Extraction escalates deliberately through a quality gate,
-records which rung produced the text, and refuses at startup to run with an
+records which rung produced the text, and refuses to begin an ingest with an
 engine it cannot construct.
 
 - **A three-rung quality gate.** A page-bearing document is read first with OCR
@@ -70,9 +70,12 @@ engine it cannot construct.
 - **The usable-text guard learns what usable means.** A document whose recovered
   text carries no letters or digits in any script is refused rather than stored,
   which is what nine characters of punctuation should have hit.
-- **A configured engine that cannot be built is fatal at startup**, naming the
-  setting and how to disarm it — not discovered on the first scan, deep inside
-  an ingest.
+- **A configured engine that cannot be built stops the ingest before it reads
+  anything**, naming the setting and how to proceed without it — not discovered
+  on the first scan, deep inside a run that has already stored documents.
+  Checked once per run rather than at process start: an instance that only
+  searches never needs a recognition engine, and building one costs seconds and
+  a model download that `jackryan status` should not pay for.
 
 **The UK/RU extraction spike, settled.** `docs/design.md` § 11 leaves the OCR
 engine and language choice open until M3. It is decided here on evidence: the
@@ -104,8 +107,9 @@ scans, and this change does not claim one.
 
 - `document-ingestion`: what counts as usable text; that image formats are
   accepted; and that a document records how its text was obtained.
-- `layered-configuration`: extraction settings are profile, not contract, and a
-  profile naming an engine that cannot be constructed is fatal at load.
+- `layered-configuration`: extraction settings are profile, not contract; an
+  unknown profile key is fatal at load; and a recognition language the engine
+  cannot serve is fatal when the engine is built, before any document is read.
 - `mcp-tool-surface`: a passage and a citation report how their text was
   obtained, so an agent can weigh OCR'd text accordingly.
 
@@ -116,10 +120,13 @@ scans, and this change does not claim one.
 - `src/jackryan/ingestion/` — a new module holding the gate and the engine
   configuration, so the extractor stays a reader.
 - `src/jackryan/config.py` — new `Profile` fields; validation at load.
-- `src/jackryan/app.py` — the startup refusal, at the composition root beside
-  the existing identity guard.
-- `src/jackryan/storage/sqlite.py` — one new column on `documents`, with the
-  schema step that adds it.
+- `src/jackryan/app.py` — the gate built at the composition root and injectable,
+  exactly as the embedder is.
+- `src/jackryan/services/ingestion.py` — the engine verified once, at the start
+  of a run, before the first document is read.
+- `src/jackryan/storage/sqlite.py` — one new column on `documents`, and a schema
+  version bump, which refuses an existing store because this store has no
+  migration mechanism.
 - `src/jackryan/interfaces/mcp/` — the new field on passage and citation shapes.
 - `Dockerfile` — OCR weights under the existing model prefetch, so an offline
   image can OCR from its first run.
