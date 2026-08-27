@@ -6,6 +6,17 @@ and why it was parked.
 
 ## Parked
 
+- **Every ingest now prints RapidOCR's own log lines and a progress bar.**
+  Verifying the recognition engine at the start of a run builds it, and the
+  library logs at INFO and draws a `Loading weights:` bar straight to the
+  terminal — including for a run that contains no page-bearing document at all.
+  Observed on `jackryan ingest <casefile> <folder-of-markdown>`. Cosmetic, not a
+  correctness problem, and the verification it comes from is deliberate. Parked
+  because the fix is to decide a logging policy for third-party libraries at the
+  CLI adapter, and this repository has none to slot into; muting loggers wholesale
+  is how real warnings get lost, so it deserves its own change rather than a line
+  smuggled into this one.
+
 - **Nothing bounds how long an ingest may spend, and recognition makes that
   matter.** `ExpansionBudget` bounds nesting depth, descendant count and
   extracted bytes — not time. `docs/design.md` § 5 names "a per-document time

@@ -136,6 +136,13 @@ class QualityGate:
         When nothing does, the richest attempt is returned rather than the last
         one: more recovered text is more evidence, and a document that is thin
         on every rung is refused a layer up by the usable-text rule, not here.
+
+        A rung that *raises* fails the whole reading rather than falling back to
+        the thin attempt above it. That attempt is below the floor by
+        definition — it is why the rung ran — so keeping it would store a
+        near-empty document in place of an error, which is the failure this
+        whole gate exists to stop. A failed read is retryable; a stored empty
+        document is not.
         """
         attempts: list[Reading] = []
         for source in self.rungs():
