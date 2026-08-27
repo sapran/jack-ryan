@@ -22,6 +22,7 @@ from ..errors import ValidationError
 from ..ingestion.budget import ExpansionBudget
 from ..ingestion.chunker import chunk_text
 from ..ingestion.extractors import ExtractionError
+from ..ingestion.quality_gate import QualityGate
 from ..ingestion.router import FormatRouter
 from ..storage.port import Chunk, Document, StorePort
 from .casefiles import CasefileService
@@ -97,12 +98,18 @@ class IngestionService:
         contract: Contract,
         router: FormatRouter | None = None,
         budget: ExpansionBudget | None = None,
+        gate: QualityGate | None = None,
     ) -> None:
+        if router is not None and gate is not None:
+            raise ValueError(
+                "pass either a router or a gate, not both: the router already owns one, "
+                "and two would be free to disagree"
+            )
         self._store = store
         self._casefiles = casefiles
         self._embedder = embedder
         self._contract = contract
-        self._router = router or FormatRouter()
+        self._router = router or FormatRouter(gate=gate)
         # Held as limits rather than as a live budget: each ingest spends its
         # own. Injectable so a deployment can tune a ceiling without editing
         # code, and so a test can reach one without building a hostile archive
@@ -147,6 +154,14 @@ class IngestionService:
         path = Path(target).expanduser()
         if not path.exists():
             raise ValidationError(f"{path} does not exist")
+
+        # Before anything is read, and asked of the router rather than of a
+        # copy held here: the engine that gets verified has to be the engine the
+        # extractors read with. A recognition engine that cannot be built is
+        # never worked around — an instance that quietly reads scans without one
+        # stores them as empty documents, which is unrecoverable without
+        # noticing and reingesting.
+        self._router.gate.verify()
 
         depth, descendants, extracted = self._limits
         budget = ExpansionBudget(
@@ -314,6 +329,7 @@ class IngestionService:
                 byte_size=len(raw),
                 extracted_text=extraction.text,
                 extractor=extraction.extractor,
+                text_source=extraction.text_source,
                 created_at=existing.created_at if existing else now,
                 updated_at=now,
                 parent_id=work.parent_id,

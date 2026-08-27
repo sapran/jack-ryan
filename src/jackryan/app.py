@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from .config import Config, corpus_fingerprint, load_config
 from .embedding import build_embedder
 from .embedding.port import EmbedderPort
+from .ingestion.quality_gate import QualityGate
 from .services.casefiles import CasefileService
 from .services.ingestion import IngestionService
 from .services.search import SearchService
@@ -42,8 +43,18 @@ class Context:
         self.store.close()
 
 
-def build_context(config: Config | None = None, embedder: EmbedderPort | None = None) -> Context:
-    """Open the store and construct the service layer over it."""
+def build_context(
+    config: Config | None = None,
+    embedder: EmbedderPort | None = None,
+    gate: QualityGate | None = None,
+) -> Context:
+    """Open the store and construct the service layer over it.
+
+    The gate is injectable for the same reason the embedder is: so a test can
+    wire a real instance without loading models. Absent, it is built from the
+    profile, and nothing about it is verified here — the recognition engine is
+    built at the start of an ingest run, which is the only place that needs it.
+    """
     resolved = config or load_config()
     # The embedder is built first because it is part of corpus identity: the
     # store cannot be opened until we know who would be filling it. Cheap in
@@ -64,12 +75,15 @@ def build_context(config: Config | None = None, embedder: EmbedderPort | None = 
         store.close()
         raise
     casefiles = CasefileService(store)
+    chosen_gate = gate or QualityGate.from_profile(resolved.profile)
     return Context(
         config=resolved,
         store=store,
         corpus_fingerprint=identity,
         embedder=chosen,
         casefiles=casefiles,
-        ingestion=IngestionService(store, casefiles, chosen, resolved.contract),
+        ingestion=IngestionService(
+            store, casefiles, chosen, resolved.contract, gate=chosen_gate
+        ),
         search=SearchService(store, casefiles, chosen),
     )

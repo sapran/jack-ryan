@@ -13,12 +13,12 @@ verified, what is not, and why.
 
 ## Where things stand
 
-`main` is at the merge of M3 slice 1. The prototype (M0–M2) and M3 slice 1 are
-both archived, thirteen capabilities are published in `openspec/specs/`, and 212
-tests pass.
+`main` is at the merge of M3 slice 2. The prototype (M0–M2) and both M3 slices
+are archived, fourteen capabilities are published in `openspec/specs/`, and 308
+tests pass with 2 skipped behind `JACKRYAN_MODEL_TESTS=1`.
 
 Built and merged, and — since 2026-08-26 — exercised against real model
-infrastructure for the first time; see the verification section below:
+infrastructure for the first time; see the verification sections below:
 
 - **M0** foundations — layered config, the SQLite store and its contract guard,
   casefiles, REST and CLI adapters.
@@ -28,6 +28,10 @@ infrastructure for the first time; see the verification section below:
   profile gating, and the harness-neutral analyst pack in `analyst/`.
 - **M3 slice 1** — mail (EML/MBOX/MSG), spreadsheets (XLSX/CSV/TSV), archives
   (ZIP/TAR), document hierarchy, and the expansion budget.
+- **M3 slice 2** — the extraction quality gate: recognition configured
+  deliberately for English, Ukrainian and Russian, a three-rung escalation
+  ladder, page images as documents, and `text_source` recorded per document and
+  surfaced to the agent.
 
 **Archived on 2026-08-26:** `hard-formats-and-containers`, all 32 tasks done,
 now at `openspec/changes/archive/2026-08-26-hard-formats-and-containers`. It
@@ -254,37 +258,262 @@ exists. Afterwards it would have cost a forced reingest of real evidence.
 
 ## What is left in M3
 
-Slice 1 took the leg that needed no model. The rest all do, which is why they
-were deferred and why they are now unblocked:
+Slice 1 took the leg that needed no model. Slice 2 — the extraction quality gate
+— took OCR and the VLM path. What remains:
 
 | Leg | Notes |
 |---|---|
-| OCR + the VLM escalation path | Docling's quality gate: standard → OCR (eng+ukr+rus, EasyOCR default) → VLM for complex layouts and Latin-script scans. The UK/RU extraction spike belongs here. |
 | Cross-encoder rerank | After RRF, before the answer. Must degrade to unranked `top_k` rather than blocking — never a hard dependency. |
 | Section-window expansion | Expand a matched chunk to a coherent section for the agent to read. Needs no model; small; could be folded into any slice. |
 | The summarization layer | Per-chunk contextual summaries at ingest (a config switch, off by default — it is the dominant ingest cost), then per-document map-reduce. |
 | Mentions / NER | Classical NER plus pattern identifiers, as facets and pivots. Pattern extraction needs no model and could ship first. |
 
-Recommended order: ~~fix the fingerprint gap~~ — done, twice over: the library
-version and then the embedder identity — so **OCR/VLM next** (the biggest and
-most-blocked leg), then rerank and section-window together as a
-retrieval-quality slice, then summaries, then mentions.
+Recommended order: ~~fix the fingerprint gap~~ (done twice, the library version
+then the embedder identity) → ~~OCR/VLM~~ (done, see below) → **rerank and
+section-window together as a retrieval-quality slice**, then summaries, then
+mentions.
 
-Worth knowing before that slice: retrieval quality has never been measured. The
-6/6 run and the two-vendor test both say so explicitly, and rerank is a change
-whose whole point is retrieval quality — so it needs something to measure
-against before it can be said to work.
+Worth knowing before that slice, and it has not changed: **retrieval quality has
+never been measured.** The 6/6 run, the two-vendor test and the quality gate's
+own verification all say so explicitly, and rerank is a change whose whole point
+is retrieval quality — so it needs something to measure against before it can be
+said to work. That is now the single largest unaddressed gap in the project.
 
 PST stays last, as `docs/design.md` § 10 has it.
+
+## The extraction quality gate: what it fixed, and what it proves
+
+**The defect it closed was not a missing feature. Recognition was already
+running, and had never been configured.** `DoclingExtractor` built a bare
+`DocumentConverter()`, which under the pinned `docling==2.122.0` means
+`do_ocr=True` with `ocr_options=OcrAutoOptions()`. Measured against an image-only
+PDF: English recovered perfectly, Ukrainian and Russian recovered as **nine
+characters of punctuation** — `'.\n\n:    .'` — which is not empty, so the
+"refuse a document with no usable text" guard passed it and it stored, chunked
+and embedded as a document an analyst could list and never find.
+
+Three causes, each read out of the installed package rather than inferred:
+`OcrAutoModel` picks the engine by host operating system (so extracted text, and
+therefore the corpus, depended on the machine that ingested it); it forwards only
+`mode` to the engine it picks, dropping the configured language entirely; and
+finding no engine at all it logs a warning and yields the pages unchanged.
+
+**The UK/RU extraction spike, settled on measurement.** An image-only PDF with
+one pure-Ukrainian, one pure-Russian and one pure-Latin line, scored by
+similarity to the ground truth:
+
+| OCR language | Ukrainian | Russian | English |
+|---|---|---|---|
+| `auto` — what shipped before | 0.11 | 0.11 | 1.00 |
+| `eslav` — the new default | 0.86 | **0.87** | 1.00 |
+| `cyrillic` | **0.88** | 0.74 | 1.00 |
+
+One model covers all three languages, so there is no per-language routing.
+`eslav` wins Russian by a wide margin — `cyrillic` substituted Latin homoglyphs,
+producing "pеreдana" — and loses Ukrainian by 0.02. RapidOCR was chosen over
+EasyOCR (which `docs/design.md` § 5 named as the intended default) because it is
+already installed by the `docling` pin, so the change adds no dependency.
+
+**Read this narrowly.** One synthetic fixture, one font, a clean render, drawn
+by PIL rather than photographed. It settles which model can read which script
+and gives a directional quality signal. **It is not a benchmark on real scans,
+and recognition quality on real scans remains unmeasured.** `eslav` visibly
+confuses Ukrainian і with и — "Правління" comes back as "Правлиння" — which is
+why the check scores similarity rather than exact match.
+
+**What the automated verification covers, and what it deliberately does not.**
+`scripts/verify_model_paths.py --only ocr` runs the ladder twice: once on the
+shipped default, which must recover all three languages, and once forced to
+`en`, which must lose the Cyrillic. The second run is the point — without it the
+first could pass on an engine that ignored the language setting entirely. In the
+suite itself, the gate's escalation policy is tested with injected rung readers
+and never loads a model; the two checks that build a real pipeline are behind
+`JACKRYAN_MODEL_TESTS=1`, so `pytest` still runs offline.
+
+**Run on 2026-08-27: 8 passed, 0 failed, exit 0**, and the recognition checks
+re-run on 2026-08-28 after the review fixes: **4 passed** for `--only pdf --only
+ocr`, now including a third recognition check that the review asked for. macOS
+on Apple silicon, Python 3.12, weights fetched on first use. The six earlier
+checks still pass unchanged.
+
+| Check | Result |
+|---|---|
+| PDF extraction (Docling layout models) | `docling` recovered 44 chars including the expected phrase |
+| **Recognition of a scan** | escalated to `ocr` from a page with no text layer — uk=0.86 ru=0.87 en=1.00 |
+| **Recognition language matters** | forced to `en`, the same page scores uk=0.11 ru=0.11 |
+| **A misconfigured engine is refused** | constructing the converter *succeeded* for a nonsense language and initialising the pipeline refused it — the fail-open the check exists to close, demonstrated rather than asserted |
+| Real embedder loads | `intfloat/multilingual-e5-large` |
+| Contract width matches the model | 1024 dimensions, as declared |
+| Query and passage widths agree | both 1024 |
+| End-to-end with real embeddings | 2 documents, 2 hits, 2 found by vector search |
+| MCP surface answers with a citation | `note.md (chars 0–62, …)` |
+
+**The vision rung, run once on 2026-08-27 — `--only vlm`, 2 passed.**
+`GRANITEDOCLING_TRANSFORMERS` loaded and read the same scan, returning 136
+characters. It reads Ukrainian **better** than the recognition model does:
+"Правління" came back correct, where `eslav` gives "Правлиння". That is one page
+and not a basis for changing the default, but it is the first directional
+evidence about where the vision rung earns its cost, and it points at
+Ukrainian diacritics rather than at complex layout.
+
+*The first version of this check was vacuous and passed anyway.* It asserted
+`VLM in gate.rungs()` — true from configuration alone, whether or not a model
+ever ran — and read the ladder's result, which was the OCR reading, because with
+a floor nothing clears the richest attempt wins and OCR's output was longer. It
+now reads at the vision rung directly and asserts on the text that came back.
+Worth recording as the fourth instance of this project's recurring lesson: an
+assertion that cannot fail certifies nothing.
+
+Also checked by hand through the shipped CLI, because the script drives the
+service layer rather than the binary: `jackryan status` returns immediately and
+loads no engine, `jackryan ingest` logs RapidOCR building
+`eslav_PP-OCRv5_rec_mobile.onnx` **before** reading any document, and the stored
+row carries `text_source='native'` under `schema_version=5`. That is the
+distinction the design turns on — verification belongs to an ingest run, not to
+process startup — and reading it out of the database is the only way to see it.
+
+**Weaker guarantees, stated rather than glossed:**
+
+- **At startup the vision rung is verified by name only.** `QualityGate.verify()`
+  builds the recognition engine — really builds it, via `initialize_pipeline`,
+  because a `DocumentConverter` constructed with a nonsense language returns
+  quite happily and fails on the first scan. It only *resolves* the vision
+  model's spec name, because its weights are gigabytes and the rung is reached
+  rarely. A vision model that resolves but cannot run therefore fails on the
+  first document that needs it, not at the start of the run.
+- **`text_source` is a disclosure, not a guarantee.** It reaches the agent as
+  `read_as` on every payload carrying corpus text. It says a quotation came from
+  recognition; it does not make that quotation right. Recognition renders a word
+  as a plausible different word and nothing downstream detects it.
+- **Recognition weights come from `modelscope.cn`**, a different host from the
+  Hugging Face one the embedder and docling's layout models use. An air-gapped
+  deployment has to allow or mirror it. The image's `PREFETCH_MODELS=true` path
+  now builds the engine so a prefetched image carries them.
+
+**A defect found by building the image, which had never been built.** The
+container could not do OCR at all, and nothing said so.
+
+`opencv-python` arrives with the RapidOCR engine and `python:3.12-slim` carries
+neither `libgl1` nor `libglib2.0-0`, so `import cv2` fails with
+`ImportError: libxcb.so.1`. Three consequences, all pre-dating this change:
+
+- **`docker build --build-arg PREFETCH_MODELS=true` failed outright**, in
+  docling's own `download_models()`, before reaching anything this change added.
+  That is the documented way to build a released, offline-capable image. The
+  previous handover recorded that this build mode had never been run — this is
+  what it was hiding.
+- **Recognition in the shipped container silently did nothing.** Before this
+  change, an ingest there hit `auto`, which tries rapidocr, catches the
+  `ImportError`, tries easyocr, finds it absent, and then logs a warning and
+  yields the pages unchanged. Every scanned page in a container ingested as an
+  empty document, with no error anywhere.
+- **After this change it fails loudly instead** — which is correct, and which
+  also means the container cannot ingest at all until the libraries are present.
+
+Fixed by installing both packages in the base layer, not under the prefetch
+branch, because `import cv2` happens whenever recognition runs and not only when
+weights are fetched. The set was determined by installing candidates into the
+built image and importing `cv2`: `libgl1` alone still leaves
+`libgthread-2.0.so.0` missing.
+
+**With that fixed, the offline image was built and driven.** `docker build
+--build-arg PREFETCH_MODELS=true` completed, and the image read the same
+three-language scan under `--network none`, scoring uk=0.86 ru=0.87 en=1.00 —
+identical to the host. The RapidOCR log lines name the weights it loaded from
+inside the image (`File exists and is valid: …/eslav_PP-OCRv5_rec_mobile.onnx`),
+which with no network it could not have fetched. That is the first time an
+offline-from-first-run image has been built *or* exercised in this project.
+
+Sizes, measured rather than assumed: **5.81GB without the prefetch, 10.2GB with**
+— so the weights add about 4.4GB, where the Dockerfile comment used to claim
+2.5GB. It is corrected in place. Most of the 5.81GB base is the CUDA stack that
+`docling` pulls in through torch and that an arm64 container cannot use.
+
+## The adversarial review of this change, and what it caught
+
+Before merge, the diff was reviewed by six independent lenses — gate
+correctness, configuration, storage, the security surface, test quality, and
+spec-versus-code fidelity — each finding then handed to a separate agent
+instructed to *refute* it and to default to rejection when unsure. It produced
+24 findings; the ones that survived were real, and two were serious.
+
+**The tests certified nothing about the change's headline feature.** Replacing
+all five `text_source` seam sites with the literal `"native"` left the suite
+green at 292 passed. Every test in the suite produced `native`, so the
+extractor → service → store → payload wiring could be removed entirely and
+nothing would notice. Closed by an ingest that goes through the real service
+with a stubbed gate returning `ocr`, asserting the stored row and all four
+agent payloads. Both halves were then shown to fail under the reviewer's own
+mutations.
+
+**A photograph with no text stored as `<!-- image -->`, labelled `text-layer`.**
+Docling marks a picture region it read no text from with that comment. It clears
+no floor, but it carries letters, so the usable-text refusal passed it — and the
+document then stored, chunked, embedded, and told the agent its text came off
+the page. That is the nine-characters-of-punctuation failure again, in docling's
+clothes rather than an OCR engine's, and it was reproduced end to end on a real
+PNG. Closed by `content_of`, which both the floor and the refusal now measure
+through.
+
+Also closed: images were bounded only by *file* bytes, which is the one quantity
+a decompression bomb makes meaningless — a few-kilobyte PNG can declare any
+number of pixels — so there is now an explicit pixel ceiling read from the
+header before any decode; `min_chars_per_page: 0` was accepted and silently
+switched the whole ladder off, since `>=` means a floor of zero is cleared by an
+empty reading; the router now owns the gate outright, because the service's own
+copy could be verified while the extractors read through a different one; and
+the `gate` fixture's alarm did not sound, because the `AssertionError` it raised
+was caught twice on the way out and surfaced as an ordinary per-document
+failure.
+
+**Two findings recorded rather than fixed**, both real:
+
+- **`read_as: text-layer` is the strongest provenance value the surface offers,
+  and rung one never checks the page.** It reads the PDF's content stream, so
+  text an adversary rendered invisibly — white on white, behind an image, zero
+  size — is reported as having come off the page. Fixing it means comparing the
+  stream against the rendered page, which is a different capability.
+- **The floor is a whole-document average.** Whether a scanned page is
+  recognised depends on how much text sits on the *other* pages, and the party
+  supplying the document chooses that. A per-page gate is the fix and is a
+  larger design; `design.md` already lists per-page rung selection as a non-goal.
+
+Both are in `docs/implementation-notes.md`.
+
+**A caution about the method itself.** The refuting agents proved their claims by
+mutating the source — and left the mutants in the working tree: `read_as`
+deleted from `provenance()`, `text_source = ''` in the upsert, `.strip()` dropped
+from `chars_per_page`, `initialize_pipeline` removed from `check_engine`, and a
+bare `except Exception: continue` inserted into the escalation loop. Nothing was
+committed, because the diff was read before committing rather than trusted. If
+you run this kind of review again, `git diff` against the branch head before you
+stage anything.
+
+**CI could not have caught it, and still cannot.** `.github/workflows/docker.yml`
+builds with `PREFETCH_MODELS=false` and then runs `jackryan --version`. That
+proves the image builds and the binary starts; it touches no document, so no
+extractor and no recognition engine is ever constructed. Worth knowing before
+reading a green Docker gate as "the container works".
+
+The lesson is the one this file keeps repeating, in its container form: **a build
+argument nobody has run is not a supported path.** `PREFETCH_MODELS=true` was
+documented, referenced in `docs/implementation-notes.md`, and broken.
+- **This is a breaking schema change.** `documents` gained `text_source` and
+  `SCHEMA_VERSION` went 4 → 5. This store has no migration mechanism at all —
+  no `ALTER TABLE` anywhere — so an existing store is refused until recreated.
+  Free only because no corpus exists outside development; see
+  `docs/implementation-notes.md`, because the next schema change will not be.
 
 ---
 
 ## What this environment could not do, so you should not trust it was checked
 
 - **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real
-  embedder are now exercised — see the verification section above. **Rerank,
-  VLM, and statistical NER remain unexercised**, because no code for them
-  exists yet.
+  embedder are now exercised — see the verification section above. Recognition
+  joined them on 2026-08-27 with the extraction quality gate, and the vision
+  rung was driven once by `--only vlm`. **Rerank and statistical NER remain
+  unexercised**, because no code for them exists yet. The vision rung is not
+  part of a default verification run and has been driven on exactly one page.
 - **No LLM endpoint.** Nothing that calls one has ever been run.
 - **~~No Docker.~~ Compose settled 2026-08-26 — M0 task 7.4 is done.** The image
   was built and `docker compose up -d` run for the first time. Evidence, in the

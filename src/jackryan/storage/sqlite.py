@@ -20,7 +20,7 @@ import sqlite_vec
 from ..errors import ConfigError, ConflictError
 from .port import Casefile, Chunk, Document
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS store_meta (
@@ -48,6 +48,13 @@ CREATE TABLE IF NOT EXISTS documents (
     byte_size      INTEGER NOT NULL DEFAULT 0,
     extracted_text TEXT NOT NULL DEFAULT '',
     extractor      TEXT NOT NULL DEFAULT '',
+    -- Which rung of the quality gate produced the text: a text layer, OCR, a
+    -- vision model, or direct parsing for a format with no pages. Recorded per
+    -- document because corpus identity deliberately does not cover the
+    -- extractor, so this is the only thing that makes a later re-extraction
+    -- targetable — and because text read by OCR is weaker evidence than text
+    -- lifted off the page, which the analyst has to be able to see.
+    text_source    TEXT NOT NULL DEFAULT '',
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL,
     -- CASCADE, so a descendant cannot outlive the container that carried it
@@ -128,6 +135,7 @@ def _row_to_document(row: sqlite3.Row) -> Document:
         byte_size=row["byte_size"],
         extracted_text=row["extracted_text"],
         extractor=row["extractor"],
+        text_source=row["text_source"],
         created_at=_from_iso(row["created_at"]),
         updated_at=_from_iso(row["updated_at"]),
         parent_id=row["parent_id"],
@@ -330,15 +338,19 @@ class SqliteStore:
         with self._lock:
             self._db.execute(
                 "INSERT INTO documents (id, casefile_id, content_hash, filename, media_type,"
-                " byte_size, extracted_text, extractor, created_at, updated_at,"
+                " byte_size, extracted_text, extractor, text_source, created_at, updated_at,"
                 " parent_id, containment_path, identity_path)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(casefile_id, content_hash, identity_path) DO UPDATE SET"
                 "   filename = excluded.filename,"
                 "   media_type = excluded.media_type,"
                 "   byte_size = excluded.byte_size,"
                 "   extracted_text = excluded.extracted_text,"
                 "   extractor = excluded.extractor,"
+                # Overwritten on reingest, not preserved: the value has to
+                # describe the text now stored beside it. A document reingested
+                # after the recognition engine changed was read by the new one.
+                "   text_source = excluded.text_source,"
                 "   updated_at = excluded.updated_at,"
                 "   parent_id = excluded.parent_id,"
                 "   containment_path = excluded.containment_path",
@@ -351,6 +363,7 @@ class SqliteStore:
                     document.byte_size,
                     document.extracted_text,
                     document.extractor,
+                    document.text_source,
                     _to_iso(document.created_at),
                     _to_iso(document.updated_at),
                     document.parent_id,

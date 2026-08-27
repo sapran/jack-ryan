@@ -25,18 +25,23 @@ with resolvable citations. Depth (OCR, hard formats, retrieval quality,
 summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
-Current state: **M3 slice 1 shipped, and the prototype's verification debt is
-cleared.** Six changes are archived — M0, M1 and M2, then
-`hard-formats-and-containers`, `contract-covers-embedding-library` and
-`corpus-identity-covers-the-embedder` — and thirteen capabilities are published
-in `openspec/specs/`. No change is in flight and no archived task is left
-unticked: compose wiring and the two-vendor agent test both ran, and corpus
-identity now covers the embedding library, the module actually imported, and
-which embedder produced the vectors.
+Current state: **M3 slice 2 shipped — extraction now reads scans in all three
+working languages.** Seven changes are archived — M0, M1 and M2, then
+`hard-formats-and-containers`, `contract-covers-embedding-library`,
+`corpus-identity-covers-the-embedder` and `extraction-quality-gate` — and
+fourteen capabilities are published in `openspec/specs/`. No change is in flight
+and no archived task is left unticked.
 
-The model-dependent M3 legs (OCR/VLM, rerank, summaries, statistical NER) are
-next; the assistant writing back is M4. Retrieval quality has never been
-measured, which matters most for the rerank leg — see `docs/handover.md`.
+Recognition was already running before slice 2 and had never been configured: a
+Ukrainian scan ingested as nine characters of punctuation, which passed the
+empty-document guard. It is now deliberate — engine and language named in the
+profile, `auto` refused, a three-rung escalation ladder, and `text_source`
+recorded per document and shown to the agent.
+
+The remaining M3 legs are rerank, section-window expansion, summaries and
+statistical NER; the assistant writing back is M4. **Retrieval quality has never
+been measured**, which matters most for the rerank leg and is now the largest
+unaddressed gap — see `docs/handover.md`.
 
 What remains unverified is recorded in `docs/handover.md`, and what is known
 but deliberately unfixed is in `docs/implementation-notes.md` — read both before
@@ -129,6 +134,30 @@ same width, which nothing downstream can detect.
 - **Docling PDF extraction needs models on first use.** Markdown, HTML, DOCX and
   PPTX parse offline. Build the image with `--build-arg PREFETCH_MODELS=true`
   for a container that is offline from its first run.
+- **Never set `ocr_engine: auto`, and never re-admit it.** docling's `auto`
+  picks the engine by host operating system, forwards only `mode` to what it
+  picked — dropping the configured language — and, finding no engine, logs a
+  warning and yields the pages unchanged. It is refused at configuration load.
+  Extracted text becomes the corpus, so an engine chosen by the host makes the
+  corpus a property of the machine that ingested it.
+- **A recognition engine that cannot be built stops the ingest.** It never falls
+  back to another engine and never falls back to reading pages without
+  recognition: a scan read without recognition is an empty document, which looks
+  ingested. The check runs once at the start of an ingest run — not at process
+  start, which would charge every `jackryan status` seconds and a model download.
+- **Constructing a `DocumentConverter` verifies nothing.** It builds its
+  pipelines lazily, so one made with a nonsense recognition language returns
+  quite happily and fails on the first scan. `check_engine` calls
+  `initialize_pipeline`, which builds the model. Do not "simplify" it back.
+- **`text_source` is a disclosure, not a guarantee.** It says which rung produced
+  a document's text so an analyst can weigh an OCR'd quotation differently. It
+  does not make that text correct — recognition renders a word as a plausible
+  different word, and nothing downstream detects it.
+- **Extraction settings are profile, not contract, and that is a deliberate
+  trade.** Changing the recognition engine or language does not invalidate a
+  corpus, so nothing refuses a corpus built under different settings. The
+  per-document `text_source` is what makes a later re-extraction targetable, and
+  it is the whole compensation for that gap.
 - **A container extractor never routes what it holds.** It yields entries and
   stops; the pipeline routes them. That is what makes a format supported inside
   an archive exactly when it is supported outside one.

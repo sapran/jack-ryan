@@ -5,6 +5,7 @@ import pytest
 from jackryan.app import Context, build_context
 from jackryan.config import Config, Contract, Profile
 from jackryan.embedding.deterministic import DeterministicEmbedder
+from jackryan.ingestion.quality_gate import QualityGate
 from jackryan.services.casefiles import CasefileService
 
 # Small but real: chunks stay readable in failures, and the vector width is
@@ -27,13 +28,47 @@ def config(tmp_path) -> Config:
 
 
 @pytest.fixture
-def context(config: Config) -> Context:
+def gate() -> QualityGate:
+    """A quality gate whose rungs are stand-ins, for the same reason as the embedder.
+
+    No test in this suite ingests a PDF or an image, so no rung should ever run.
+    The readers raise rather than return, so a test that starts to depend on
+    real recognition fails loudly here instead of quietly downloading a model.
+    """
+
+    class RungWasReached(BaseException):
+        """Deliberately not an `Exception`.
+
+        `_GatedReader._read_pages` wraps `Exception` into `ExtractionError`, and
+        the ingest service turns that into an ordinary "failed" outcome for one
+        document. An `AssertionError` raised here would therefore be swallowed
+        twice and surface as a per-file failure a test could pass straight over
+        — the fixture's stated safety would not hold. Deriving from
+        `BaseException` puts it past both handlers.
+        """
+
+    def unreached(path):
+        raise RungWasReached(
+            f"a rung reader ran for {path}: the suite is not meant to reach recognition"
+        )
+
+    return QualityGate(
+        ocr_engine="rapidocr",
+        ocr_language="eslav",
+        min_chars_per_page=100,
+        readers={"text-layer": unreached, "ocr": unreached},
+    )
+
+
+@pytest.fixture
+def context(config: Config, gate: QualityGate) -> Context:
     """A fully wired instance, assembled the way production assembles one.
 
-    The embedder is the deterministic implementation, so the suite never
-    downloads a model, but every other part is the real thing.
+    The embedder is the deterministic implementation and the gate's rungs are
+    stand-ins, so the suite never downloads a model, but every other part is the
+    real thing.
     """
-    ctx = build_context(config, embedder=DeterministicEmbedder(TEST_DIMENSIONS))
+    ctx = build_context(config, embedder=DeterministicEmbedder(TEST_DIMENSIONS), gate=gate)
     yield ctx
     ctx.close()
 

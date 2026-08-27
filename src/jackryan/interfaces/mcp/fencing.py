@@ -35,6 +35,20 @@ def fence(text: str, nonce: str) -> str:
     return f"<<<UNTRUSTED {nonce}\n{text}\n{nonce} UNTRUSTED>>>"
 
 
+def read_as(text_source: str) -> str:
+    """How the text was obtained, reduced to a value this codebase can vouch for.
+
+    Constrained rather than escaped. The other provenance values are corpus
+    strings that must be sanitised because their content is arbitrary; this one
+    has exactly four legitimate values, all written by this codebase, so
+    anything else is not a string to be made safe — it is a value that should
+    never reach an agent as though it meant something.
+    """
+    from ...ingestion.quality_gate import TEXT_SOURCES
+
+    return text_source if text_source in TEXT_SOURCES else "unrecorded"
+
+
 def provenance(
     *,
     casefile_id: str,
@@ -44,6 +58,7 @@ def provenance(
     char_end: int | None = None,
     heading_path: str = "",
     containment_path: str = "",
+    text_source: str = "",
 ) -> dict[str, Any]:
     """Where a piece of text came from, so a claim can be traced back to it.
 
@@ -52,8 +67,12 @@ def provenance(
     it is known which message carried it and which archive carried that; a
     citation a person cannot follow back by hand is not a chain of evidence.
 
-    Every value here is document-derived and therefore attacker-controlled to
-    the same degree as the text it describes. Callers pass these through the
+    `read_as` says how the text was recovered. Text read by recognition off a
+    noisy scan can be fluent and wrong, and nothing downstream can detect that,
+    so an agent asked to cite what it claims has to be told which it is holding.
+
+    Every other value here is document-derived and therefore attacker-controlled
+    to the same degree as the text it describes. Callers pass these through the
     same one-line collapse as any other corpus value before they reach a
     line-oriented block.
     """
@@ -61,6 +80,7 @@ def provenance(
         "casefile_id": casefile_id,
         "document_id": document_id,
         "document": filename,
+        "read_as": read_as(text_source),
     }
     if containment_path and containment_path != filename:
         block["found_at"] = containment_path

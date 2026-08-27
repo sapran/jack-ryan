@@ -20,7 +20,7 @@ from ...errors import JackRyanError
 from ...storage.port import Casefile, Document
 from .annotations import stamp_for
 from .errors import error_payload, from_exception
-from .fencing import NOTICE, fence, new_nonce, provenance
+from .fencing import NOTICE, fence, new_nonce, provenance, read_as
 from .profiles import resolve_profile_name, tools_for_profile
 from .shapes import listing_payload, one_line, search_payload
 
@@ -277,6 +277,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
                 char_end=chunk.char_end,
                 heading_path=chunk.heading_path,
                 containment_path=one_line(document.containment_path, 200),
+                text_source=document.text_source,
             ),
             "text": fence(chunk.text, nonce),
             "neighbours": [
@@ -336,6 +337,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
                 char_start=start,
                 char_end=end,
                 containment_path=one_line(found.containment_path, 200),
+                text_source=found.text_source,
             ),
             "text": fence(window, nonce),
             "content_notice": NOTICE,
@@ -376,6 +378,10 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             "document_id": document.id,
             "document": one_line(document.filename, 200),
             "found_at": source,
+            # A quotation read by recognition off a scan can be fluent and
+            # wrong, and no later check catches it. An agent citing a claim has
+            # to be able to say which kind of text it is quoting.
+            "read_as": read_as(document.text_source),
             "casefile": resolved.slug,
             "char_start": chunk.char_start,
             "char_end": chunk.char_end,

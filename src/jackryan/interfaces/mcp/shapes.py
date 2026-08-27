@@ -58,6 +58,7 @@ def search_payload(hits: list[SearchHit], query: str, casefile_id: str) -> dict[
                     char_end=hit.chunk.char_end,
                     heading_path=hit.chunk.heading_path,
                     containment_path=one_line(hit.document.containment_path, 200),
+                    text_source=hit.document.text_source,
                 ),
                 # The only place a passage body appears, and it is fenced.
                 "text": fence(hit.chunk.text, nonce),

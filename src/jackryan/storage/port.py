@@ -30,6 +30,12 @@ class Document:
     extractor: str
     created_at: datetime
     updated_at: datetime
+    # Which rung of the extraction quality gate produced `extracted_text`: the
+    # document's own text layer, recognition, a vision model, or direct parsing
+    # for a format with no page images. Empty only for a document this codebase
+    # did not write. Text recovered by recognition can be fluent and wrong, so
+    # this travels with the text all the way to the agent.
+    text_source: str = ""
     # Absent for a file ingested directly; set for one found inside another.
     parent_id: str | None = None
     # The names from the ingested file down to this one, joined — including the
