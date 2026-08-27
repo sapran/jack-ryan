@@ -131,6 +131,24 @@ async def test_a_passage_and_a_citation_both_report_how_the_text_was_read(
 
 
 @pytest.mark.anyio
+async def test_reading_a_document_reports_how_its_text_was_obtained(
+    context, casefile, corpus
+):
+    # Every tool that returns corpus text has to carry it, not just the ones a
+    # citation goes through: an agent reading a document whole is exactly the
+    # caller most likely to quote from it.
+    context.ingestion.ingest(casefile.short_id, corpus)
+    document = context.store.list_documents(casefile.id)[0]
+    server = build_mcp_server(context)
+    payload = await call(
+        server,
+        "case_read_document",
+        {"casefile": casefile.short_id, "document": document.id},
+    )
+    assert payload["provenance"]["read_as"] == NATIVE
+
+
+@pytest.mark.anyio
 async def test_search_results_report_how_each_hit_was_read(context, casefile, corpus):
     context.ingestion.ingest(casefile.short_id, corpus)
     server = build_mcp_server(context)
