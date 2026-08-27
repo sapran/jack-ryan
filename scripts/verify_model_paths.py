@@ -269,6 +269,54 @@ def check_recognition(workspace: Path) -> None:
         + f" — below {RECOGNISED}, so the language setting is what recovers them",
     )
 
+    # The fail-open guard, which nothing else exercises. A DocumentConverter
+    # builds its pipelines lazily, so one constructed with a nonsense language
+    # returns quite happily and fails on the first scan instead. check_engine
+    # calls initialize_pipeline for exactly this reason, and only a real engine
+    # can show that the difference is real.
+    from jackryan.ingestion.quality_gate import RecognitionError, build_converter, check_engine
+
+    lazy_construction_succeeded = False
+    try:
+        build_converter(OCR, engine="rapidocr", language="nosuchlanguage")
+        lazy_construction_succeeded = True
+    except Exception:
+        pass
+
+    try:
+        check_engine("rapidocr", "nosuchlanguage")
+    except RecognitionError as exc:
+        if not lazy_construction_succeeded:
+            record(
+                "A misconfigured engine is refused",
+                PASS,
+                "the language was refused, though constructing the converter also failed, "
+                "so this run does not show that building the pipeline is what caught it",
+            )
+        elif "nosuchlanguage" in str(exc):
+            record(
+                "A misconfigured engine is refused",
+                PASS,
+                "constructing the converter succeeded and initialising the pipeline "
+                "refused the language — which is why the check builds it rather than "
+                "holding it",
+            )
+        else:
+            record(
+                "A misconfigured engine is refused",
+                FAIL,
+                f"refused, but the message does not name the setting: {exc}",
+            )
+    except Exception as exc:
+        record("A misconfigured engine is refused", FAIL, f"{type(exc).__name__}: {exc}")
+    else:
+        record(
+            "A misconfigured engine is refused",
+            FAIL,
+            "a language the engine cannot serve was accepted, so a misconfigured "
+            "instance would ingest every scan as an empty document",
+        )
+
 
 def check_vision_rung(workspace: Path) -> None:
     """The third rung, against a real vision model.

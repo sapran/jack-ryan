@@ -101,26 +101,15 @@ class IngestionService:
         gate: QualityGate | None = None,
     ) -> None:
         if router is not None and gate is not None:
-            # The gate this service verifies must be the gate its extractors
-            # read with. A router built elsewhere carries its own, so accepting
-            # both would let a run verify one engine and read with another —
-            # two copies of one setting, free to disagree, which is the exact
-            # shape of the corpus-identity bug this project has already fixed
-            # twice. Pass the gate and let the router be built from it.
             raise ValueError(
-                "pass either a router or a gate, not both: the verified engine and the "
-                "reading engine would be different objects"
+                "pass either a router or a gate, not both: the router already owns one, "
+                "and two would be free to disagree"
             )
         self._store = store
         self._casefiles = casefiles
         self._embedder = embedder
         self._contract = contract
         self._router = router or FormatRouter(gate=gate)
-        # The same gate the router's extractors hold. Kept here too so a run can
-        # verify the recognition engine before it reads anything: a run that
-        # discovers a misconfigured engine half way through has already stored
-        # documents, and which ones depends on the order the files were walked.
-        self._gate = gate
         # Held as limits rather than as a live budget: each ingest spends its
         # own. Injectable so a deployment can tune a ceiling without editing
         # code, and so a test can reach one without building a hostile archive
@@ -166,12 +155,13 @@ class IngestionService:
         if not path.exists():
             raise ValidationError(f"{path} does not exist")
 
-        # Before anything is read. A recognition engine that cannot be built is
-        # never worked around: an instance that quietly reads scans without it
+        # Before anything is read, and asked of the router rather than of a
+        # copy held here: the engine that gets verified has to be the engine the
+        # extractors read with. A recognition engine that cannot be built is
+        # never worked around — an instance that quietly reads scans without one
         # stores them as empty documents, which is unrecoverable without
         # noticing and reingesting.
-        if self._gate is not None:
-            self._gate.verify()
+        self._router.gate.verify()
 
         depth, descendants, extracted = self._limits
         budget = ExpansionBudget(

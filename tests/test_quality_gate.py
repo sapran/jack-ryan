@@ -152,6 +152,34 @@ def test_the_floor_is_measured_per_page_not_per_document():
     assert called_many == [TEXT_LAYER, OCR]
 
 
+def test_a_rung_that_raises_fails_the_whole_reading():
+    """The invariant `read` documents, which had no test.
+
+    The attempt above a failed rung is below the floor by definition — it is why
+    the rung ran — so falling back to it would store a near-empty document in
+    place of an error. A failed read is retryable; a stored empty document is
+    not, because it looks ingested.
+    """
+
+    def explode(path):
+        raise RecognitionError("the engine died mid-page")
+
+    gate = QualityGate(
+        ocr_engine="rapidocr",
+        ocr_language="eslav",
+        min_chars_per_page=100,
+        readers={TEXT_LAYER: lambda path: ("thin", 1), OCR: explode},
+    )
+    with pytest.raises(RecognitionError):
+        gate.read(SOMEWHERE)
+
+
+def test_the_strip_in_chars_per_page_is_load_bearing():
+    # Whitespace is not recovered text. Without the strip, a page of blank lines
+    # clears the floor and is never escalated.
+    assert Reading(text=" " * 500, source=TEXT_LAYER, pages=1).chars_per_page == 0
+
+
 def test_a_page_count_of_zero_is_scored_as_one_page():
     # A format that reports no pages must not divide by zero, and must not be
     # treated as infinitely dense either.

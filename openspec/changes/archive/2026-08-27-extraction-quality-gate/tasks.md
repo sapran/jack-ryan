@@ -30,8 +30,8 @@
 
 ## 5. Storage and surface
 
-- [x] 5.1 Add a `text_source` column to `documents` with an additive schema step defaulting to the empty string; verify a test opens a store created before the column and asserts it still reads
-- [x] 5.2 Persist and return `text_source` through the document row and the service layer; verify a test asserts it survives reingest and reflects the rung of that ingest
+- [x] 5.1 Add a `text_source` column to `documents` and bump `SCHEMA_VERSION` 4 → 5. *Amended during review: this task was written for an additive step whose verification was "a test opens a store created before the column and asserts it still reads". Neither shipped, and neither could — this store has `CREATE TABLE IF NOT EXISTS` and no `ALTER TABLE` anywhere, so an existing store is refused rather than migrated. Corrected here rather than left ticked against a description of the opposite; see the migration plan in `design.md` and the note in `docs/implementation-notes.md`.*
+- [x] 5.2 Persist and return `text_source` through the document row and the service layer; verify a test asserts it survives reingest and reflects the rung of that ingest. *The second half was ticked before it was true: the only test using a non-`native` value reached the store through `upsert_document` directly, so an ingest that produces the rung was never exercised. Closed during review by `test_an_ingested_scan_records_the_recognition_rung`.*
 - [x] 5.3 Report `text_source` on passage and citation payloads through the MCP shapes; verify a test asserts both carry it and that the value is fenced like every other corpus-derived value
 - [x] 5.4 Verify the sanitisation seam: a test asserts a `text_source` value cannot break the fence, by the same assertion pattern used for `found_at`
 

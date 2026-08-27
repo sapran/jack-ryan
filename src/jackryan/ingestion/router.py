@@ -17,7 +17,8 @@ from .extractors import (
     Extractor,
     default_extractors,
 )
-from .quality_gate import QualityGate
+from ..config import Profile
+from .quality_gate import QualityGate, content_of
 
 
 def has_usable_text(text: str) -> bool:
@@ -32,7 +33,7 @@ def has_usable_text(text: str) -> bool:
     analyst can list and can never find — which is worse than the extraction
     having failed outright.
     """
-    return any(character.isalnum() for character in text)
+    return any(character.isalnum() for character in content_of(text))
 
 
 class FormatRouter:
@@ -41,9 +42,19 @@ class FormatRouter:
         extractors: list[Extractor] | None = None,
         gate: QualityGate | None = None,
     ) -> None:
+        # The router owns the gate, and anything that needs to verify the
+        # engine asks the router for it. One object, one answer: a service
+        # holding its own copy could verify one engine while the extractors
+        # read with another.
+        self._gate = gate or QualityGate.from_profile(Profile(name="default"))
         self._extractors = (
-            extractors if extractors is not None else default_extractors(gate)
+            extractors if extractors is not None else default_extractors(self._gate)
         )
+
+    @property
+    def gate(self) -> QualityGate:
+        """The quality gate this router's extractors read through."""
+        return self._gate
 
     def extractor_for(self, path: Path) -> Extractor | None:
         for extractor in self._extractors:

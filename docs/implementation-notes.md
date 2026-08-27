@@ -6,6 +6,27 @@ and why it was parked.
 
 ## Parked
 
+- **`read_as: text-layer` is the strongest provenance the surface offers, and
+  nothing checks the page it claims to come from.** Rung one reads the PDF's
+  content stream. Text an adversary rendered invisibly — white on white, behind
+  an image, at zero size — is in that stream, is never displayed, and reaches
+  the agent labelled as having come off the page: the value that says "trust
+  this more than OCR". Found by review of the `extraction-quality-gate` change.
+  Parked: detecting it means rendering the page and comparing it with the
+  stream, which is a different capability from the escalation ladder and would
+  need its own evidence about false positives. Worth doing before this workbench
+  is pointed at documents supplied by an opposing party.
+
+- **The escalation floor is a whole-document average.** `chars_per_page` divides
+  total recovered characters by page count, so whether page 40 gets recognised
+  depends on how much text sits on pages 1-39 — and whoever supplies the
+  document chooses that. A hundred-page report with one scanned insert clears
+  the floor comfortably and the insert is never read. Parked: `design.md` names
+  per-page rung selection as a non-goal for this change, and doing it properly
+  means the rung becomes a property of the page rather than the document, which
+  changes what `text_source` means. Real, and the reason to revisit it is a
+  corpus where it bites.
+
 - **The vision rung runs on an unpinned `transformers`, and it produces corpus
   text.** Observed during the same image build: the container resolved
   `transformers 5.16.1` where the development venv holds 5.8.1. It reaches the

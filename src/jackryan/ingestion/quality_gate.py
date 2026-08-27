@@ -13,6 +13,7 @@ read this" is a policy, where an extractor is a reader.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,28 @@ escalated and never carries one of the other three.
 
 TEXT_SOURCES = (TEXT_LAYER, OCR, VLM, NATIVE)
 
+# Docling marks a region it read as a picture but recovered no text from with an
+# HTML comment: `<!-- image -->`. It is structure, not content, and a page of
+# photographs comes back as nothing else.
+_MARKUP_COMMENT = re.compile(r"<!--.*?-->", re.S)
+
+
+def content_of(text: str) -> str:
+    """`text` with structural markers removed, for deciding whether it is a reading.
+
+    Two callers need the same answer and would otherwise disagree: the gate,
+    deciding whether a rung recovered enough to stop, and the router, deciding
+    whether a document has usable text at all.
+
+    Without this, a photograph of a wall ingests as `<!-- image -->` — which
+    clears no floor, but does carry letters, so the usable-text refusal passes
+    it. The document then stores, chunks and embeds; it is listable, findable by
+    nothing, and reports that its text came off the page's own text layer. That
+    is the same failure as the nine characters of punctuation this capability was
+    written to stop, wearing docling's clothes instead of an OCR engine's.
+    """
+    return _MARKUP_COMMENT.sub(" ", text or "")
+
 
 class RecognitionError(JackRyanError):
     """A recognition engine or vision model could not be built or run."""
@@ -50,7 +73,10 @@ class Reading:
 
     @property
     def chars_per_page(self) -> float:
-        return len(self.text.strip()) / max(self.pages, 1)
+        # Measured on content, not on markup. A page of photographs comes back
+        # as one `<!-- image -->` per region, and counting those would let a
+        # picture-heavy scan clear the floor without a word having been read.
+        return len(content_of(self.text).strip()) / max(self.pages, 1)
 
 
 # A rung reader turns a file into text and a page count. Injectable so the

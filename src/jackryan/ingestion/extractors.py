@@ -239,6 +239,18 @@ class DoclingExtractor(_GatedReader):
         )
 
 
+# A ceiling on how large a picture may be once decoded. Roughly an A4 page at
+# 1000 dpi, so far above any real scan and far below what exhausts a host.
+#
+# It is a separate bound because every other limit in this pipeline is measured
+# in *file* bytes — MAX_FILE_BYTES, the expansion budget's byte ceiling — and
+# file bytes are exactly what a decompression bomb makes meaningless. A 60KB PNG
+# can declare 60000x60000 pixels and cost 10GB to decode, which no byte ceiling
+# anywhere would refuse. Images became ingestable in this change, so the
+# quantity that matters became reachable for the first time.
+MAX_IMAGE_PIXELS = 80_000_000
+
+
 class ImageExtractor(_GatedReader):
     """A page that arrived as an image rather than inside a document.
 
@@ -255,7 +267,50 @@ class ImageExtractor(_GatedReader):
         return path.suffix.lower() in IMAGE_SUFFIXES
 
     def extract(self, path: Path) -> Extraction:
+        self._refuse_a_bomb(path)
         return self._read_pages(path, IMAGE_SUFFIXES[path.suffix.lower()], self.name)
+
+    def _refuse_a_bomb(self, path: Path) -> None:
+        """Refuse a picture whose declared size would cost too much to decode.
+
+        Read from the header, which is cheap: Pillow's `open` is lazy and gives
+        the dimensions without decoding a single pixel. The check happens before
+        the gate rather than inside it because the gate would otherwise decode
+        the same file once per rung.
+        """
+        try:
+            from PIL import Image
+        except ImportError:  # pragma: no cover - packaging failure
+            raise ExtractionError(
+                "the image reader is not installed"
+            ) from None
+
+        try:
+            # Pillow raises its own bomb error at a lower default; ours is the
+            # number this project stands behind, so set it aside and decide here.
+            previous = Image.MAX_IMAGE_PIXELS
+            Image.MAX_IMAGE_PIXELS = None
+            try:
+                with Image.open(path) as image:
+                    width, height = image.size
+            finally:
+                Image.MAX_IMAGE_PIXELS = previous
+        except ExtractionError:
+            raise
+        except Exception as exc:
+            raise ExtractionError(
+                f"could not read the image header of {path.name}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        pixels = width * height
+        if pixels > MAX_IMAGE_PIXELS:
+            raise ExtractionError(
+                f"{path.name} declares {width}x{height} = {pixels} pixels, over the "
+                f"{MAX_IMAGE_PIXELS}-pixel limit. A small file can declare a very large "
+                "picture, and decoding it is what costs the memory, so this is bounded "
+                "separately from the file size."
+            )
 
 
 def default_extractors(gate: QualityGate | None = None) -> list[Extractor]:

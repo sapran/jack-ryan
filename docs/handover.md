@@ -426,6 +426,66 @@ Sizes, measured rather than assumed: **5.81GB without the prefetch, 10.2GB with*
 2.5GB. It is corrected in place. Most of the 5.81GB base is the CUDA stack that
 `docling` pulls in through torch and that an arm64 container cannot use.
 
+## The adversarial review of this change, and what it caught
+
+Before merge, the diff was reviewed by six independent lenses — gate
+correctness, configuration, storage, the security surface, test quality, and
+spec-versus-code fidelity — each finding then handed to a separate agent
+instructed to *refute* it and to default to rejection when unsure. It produced
+24 findings; the ones that survived were real, and two were serious.
+
+**The tests certified nothing about the change's headline feature.** Replacing
+all five `text_source` seam sites with the literal `"native"` left the suite
+green at 292 passed. Every test in the suite produced `native`, so the
+extractor → service → store → payload wiring could be removed entirely and
+nothing would notice. Closed by an ingest that goes through the real service
+with a stubbed gate returning `ocr`, asserting the stored row and all four
+agent payloads. Both halves were then shown to fail under the reviewer's own
+mutations.
+
+**A photograph with no text stored as `<!-- image -->`, labelled `text-layer`.**
+Docling marks a picture region it read no text from with that comment. It clears
+no floor, but it carries letters, so the usable-text refusal passed it — and the
+document then stored, chunked, embedded, and told the agent its text came off
+the page. That is the nine-characters-of-punctuation failure again, in docling's
+clothes rather than an OCR engine's, and it was reproduced end to end on a real
+PNG. Closed by `content_of`, which both the floor and the refusal now measure
+through.
+
+Also closed: images were bounded only by *file* bytes, which is the one quantity
+a decompression bomb makes meaningless — a few-kilobyte PNG can declare any
+number of pixels — so there is now an explicit pixel ceiling read from the
+header before any decode; `min_chars_per_page: 0` was accepted and silently
+switched the whole ladder off, since `>=` means a floor of zero is cleared by an
+empty reading; the router now owns the gate outright, because the service's own
+copy could be verified while the extractors read through a different one; and
+the `gate` fixture's alarm did not sound, because the `AssertionError` it raised
+was caught twice on the way out and surfaced as an ordinary per-document
+failure.
+
+**Two findings recorded rather than fixed**, both real:
+
+- **`read_as: text-layer` is the strongest provenance value the surface offers,
+  and rung one never checks the page.** It reads the PDF's content stream, so
+  text an adversary rendered invisibly — white on white, behind an image, zero
+  size — is reported as having come off the page. Fixing it means comparing the
+  stream against the rendered page, which is a different capability.
+- **The floor is a whole-document average.** Whether a scanned page is
+  recognised depends on how much text sits on the *other* pages, and the party
+  supplying the document chooses that. A per-page gate is the fix and is a
+  larger design; `design.md` already lists per-page rung selection as a non-goal.
+
+Both are in `docs/implementation-notes.md`.
+
+**A caution about the method itself.** The refuting agents proved their claims by
+mutating the source — and left the mutants in the working tree: `read_as`
+deleted from `provenance()`, `text_source = ''` in the upsert, `.strip()` dropped
+from `chars_per_page`, `initialize_pipeline` removed from `check_engine`, and a
+bare `except Exception: continue` inserted into the escalation loop. Nothing was
+committed, because the diff was read before committing rather than trusted. If
+you run this kind of review again, `git diff` against the branch head before you
+stage anything.
+
 **CI could not have caught it, and still cannot.** `.github/workflows/docker.yml`
 builds with `PREFETCH_MODELS=false` and then runs `jackryan --version`. That
 proves the image builds and the binary starts; it touches no document, so no

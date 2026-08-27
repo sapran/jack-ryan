@@ -358,3 +358,64 @@ def test_extraction_settings_are_not_part_of_corpus_identity(tmp_path, monkeypat
     (tmp_path / "eslav").mkdir()
     (tmp_path / "cyrillic").mkdir()
     assert identity("eslav") == identity("cyrillic")
+
+
+def test_a_floor_of_zero_is_refused(tmp_path, monkeypatch):
+    """Zero switches the whole ladder off, and used to be accepted.
+
+    `clears_floor` compares with `>=`, so a floor of zero is cleared by every
+    reading including an empty one: the first rung always wins, recognition
+    never runs, and every scan is then refused as having no usable text. A
+    negative floor behaves identically and was already refused.
+    """
+    path = write_config(tmp_path, "profiles:\n  local:\n    min_chars_per_page: 0\n")
+    monkeypatch.setenv("JACKRYAN_CONFIG", path)
+    monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
+    with pytest.raises(ConfigError) as exc:
+        load_config()
+    assert "min_chars_per_page" in str(exc.value)
+
+
+def test_a_fractional_floor_is_refused_rather_than_truncated(tmp_path, monkeypatch):
+    # int(0.5) is zero, which would reach the same silent disabling by a
+    # different route.
+    path = write_config(tmp_path, "profiles:\n  local:\n    min_chars_per_page: 0.5\n")
+    monkeypatch.setenv("JACKRYAN_CONFIG", path)
+    monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
+    with pytest.raises(ConfigError):
+        load_config()
+
+
+def test_an_empty_recognition_engine_is_refused(tmp_path, monkeypatch):
+    # Its sibling ocr_language already treats empty as fatal. An operator who
+    # blanked a setting meant something by it, and silently restoring the
+    # default is the quiet substitution this loader exists to refuse.
+    path = write_config(tmp_path, 'profiles:\n  local:\n    ocr_engine: ""\n')
+    monkeypatch.setenv("JACKRYAN_CONFIG", path)
+    monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
+    with pytest.raises(ConfigError) as exc:
+        load_config()
+    assert "ocr_engine" in str(exc.value)
+
+
+def test_a_non_string_profile_key_is_refused_as_a_config_error(tmp_path, monkeypatch):
+    # YAML admits non-string keys. `1: x` used to raise a bare TypeError out of
+    # the message formatting instead of naming the problem.
+    path = write_config(tmp_path, "profiles:\n  local:\n    1: nonsense\n")
+    monkeypatch.setenv("JACKRYAN_CONFIG", path)
+    monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
+    with pytest.raises(ConfigError) as exc:
+        load_config()
+    assert "unknown key" in str(exc.value)
+
+
+def test_extraction_settings_resolve_environment_placeholders(tmp_path, monkeypatch):
+    # Every other string profile field interpolates ${VAR}; these did not, so
+    # the literal reached the engine and failed far from the configuration.
+    path = write_config(
+        tmp_path, "profiles:\n  local:\n    ocr_language: ${JR_TEST_LANG}\n"
+    )
+    monkeypatch.setenv("JACKRYAN_CONFIG", path)
+    monkeypatch.setenv("JR_TEST_LANG", "cyrillic")
+    monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
+    assert load_config().profile.ocr_language == "cyrillic"

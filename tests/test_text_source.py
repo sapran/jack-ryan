@@ -48,6 +48,94 @@ def test_the_record_survives_reingest(context, casefile, corpus):
     context.ingestion.ingest(casefile.short_id, corpus)
     second = {d.id: d.text_source for d in context.store.list_documents(casefile.id)}
     assert first == second
+    # Asserted against the value, not only against itself: two dictionaries
+    # built the same way from the same corpus are equal for any constant, so
+    # equality alone would hold with the whole feature replaced by a literal.
+    assert set(second.values()) == {NATIVE}
+
+
+# --- The seam, end to end -----------------------------------------------------
+#
+# Everything above uses documents that are `native`, which is the value the
+# fixtures happen to produce. That leaves the interesting half untested: a rung
+# other than `native` has to survive the extractor, the service, the store and
+# the payload builders. Replacing every one of those five sites with the literal
+# "native" left the whole suite green before this test existed.
+
+
+@pytest.fixture
+def scanned(context, casefile, tmp_path):
+    """A document ingested through the real pipeline, read by recognition.
+
+    The gate's rungs are stand-ins so no model loads, but everything below the
+    gate — extractor, router, service, store, MCP shapes — is the real thing,
+    which is precisely the stretch that was uncovered.
+    """
+    from jackryan.ingestion.quality_gate import QualityGate
+
+    gate = QualityGate(
+        ocr_engine="rapidocr",
+        ocr_language="eslav",
+        min_chars_per_page=100,
+        readers={
+            # What an unconfigured engine returns for a scan, and what a
+            # working one returns after escalating.
+            "text-layer": lambda path: (".\n\n:    .", 1),
+            "ocr": lambda path: (
+                "Northgate Holdings was awarded the harbour lease in March 2021. " * 3,
+                1,
+            ),
+        },
+    )
+    scan = tmp_path / "scan.pdf"
+    scan.write_bytes(b"%PDF-1.4 stub; the gate's readers stand in for docling")
+
+    from jackryan.services.ingestion import IngestionService
+
+    ingestion = IngestionService(
+        context.store, context.casefiles, context.embedder, context.config.contract, gate=gate
+    )
+    report = ingestion.ingest(casefile.short_id, scan)
+    assert report.ingested == 1, report.outcomes
+    return context.store.list_documents(casefile.id)[0]
+
+
+def test_an_ingested_scan_records_the_recognition_rung(scanned):
+    # The extractor -> service -> store half of the seam.
+    assert scanned.text_source == OCR
+
+
+@pytest.mark.anyio
+async def test_a_scan_reaches_the_agent_marked_as_recognised(context, casefile, scanned):
+    # The store -> payload half. A quotation recovered by recognition can be
+    # fluent and wrong, so an agent that cannot tell it apart from text lifted
+    # off the page will cite it with unearned confidence.
+    hits = context.search.search(casefile.short_id, "harbour lease Northgate", limit=1)
+    assert hits
+    server = build_mcp_server(context)
+    chunk_id = hits[0].chunk.id
+
+    passage = await call(
+        server, "case_get_passage", {"casefile": casefile.short_id, "chunk_id": chunk_id}
+    )
+    assert passage["provenance"]["read_as"] == OCR
+
+    citation = await call(
+        server, "case_cite", {"casefile": casefile.short_id, "chunk_id": chunk_id}
+    )
+    assert citation["read_as"] == OCR
+
+    results = await call(
+        server,
+        "case_search",
+        {"casefile": casefile.short_id, "query": "harbour lease Northgate"},
+    )
+    assert any(r["provenance"]["read_as"] == OCR for r in results["results"])
+
+    document = await call(
+        server, "case_read_document", {"casefile": casefile.short_id, "document": scanned.id}
+    )
+    assert document["provenance"]["read_as"] == OCR
 
 
 def test_reingest_overwrites_the_record_rather_than_keeping_the_old_one(

@@ -409,7 +409,10 @@ def _select_profile(document: dict[str, Any]) -> Profile:
     # and only the result is wrong. `ocr_langauge: eslav` would leave recognition
     # on its default with nothing said.
     known = set(Profile.__dataclass_fields__) - {"name"}
-    unknown = set(settings) - known
+    # Keys are stringified before sorting: YAML admits non-string keys, and
+    # `1: x` in a profile block would otherwise raise a bare TypeError from the
+    # join instead of the ConfigError that names the problem.
+    unknown = {str(key) for key in settings} - known
     if unknown:
         raise ConfigError(
             f"profile {name!r} sets unknown key(s): " + ", ".join(sorted(unknown)) +
@@ -427,7 +430,7 @@ def _select_profile(document: dict[str, Any]) -> Profile:
         ocr_engine=_validated_ocr_engine(settings.get("ocr_engine"), name),
         ocr_language=_validated_ocr_language(settings.get("ocr_language"), name),
         min_chars_per_page=_validated_floor(settings.get("min_chars_per_page"), name),
-        vlm_model=str(settings.get("vlm_model", "") or "").strip(),
+        vlm_model=str(_interpolate(settings.get("vlm_model", "")) or "").strip(),
     )
 
 
@@ -459,7 +462,18 @@ one they cannot have.
 
 
 def _validated_ocr_engine(value: Any, profile: str) -> str:
-    choice = str(value or Profile.ocr_engine).strip().lower()
+    if value is None:
+        return Profile.ocr_engine
+    choice = str(_interpolate(value)).strip().lower()
+    if not choice:
+        # An empty value used to fall through to the default. Its sibling
+        # ocr_language treats empty as fatal, and an operator who blanked a
+        # setting meant something by it — silently restoring the default is the
+        # quiet-substitution this loader exists to refuse.
+        raise ConfigError(
+            f"profile {profile!r} sets an empty ocr_engine; name one of "
+            f"{', '.join(RECOGNITION_ENGINES)}, or remove the key to take the default"
+        )
     if choice == "auto":
         raise ConfigError(
             f"profile {profile!r} sets ocr_engine='auto'. The recognition engine must be "
@@ -489,7 +503,7 @@ def _validated_ocr_language(value: Any, profile: str) -> str:
             "language at a time and would keep only the first, so name the single one to "
             "use — 'eslav' reads Ukrainian, Russian and English together."
         )
-    choice = str(value if value is not None else Profile.ocr_language).strip()
+    choice = str(_interpolate(value) if value is not None else Profile.ocr_language).strip()
     if not choice:
         raise ConfigError(
             f"profile {profile!r} sets an empty ocr_language; scans would be read with no "
@@ -499,18 +513,38 @@ def _validated_ocr_language(value: Any, profile: str) -> str:
 
 
 def _validated_floor(value: Any, profile: str) -> int:
+    """The floor, which must be at least one character per page.
+
+    Zero is refused, not accepted. `clears_floor` compares with `>=`, so a floor
+    of zero is cleared by every reading including an empty one: the first rung
+    always wins, recognition never runs, and every scan is then refused as
+    having no usable text. That is the whole capability switched off by a value
+    that looks like "no minimum", which is exactly the quiet misconfiguration
+    this loader exists to refuse. A negative floor behaves identically and was
+    already refused; the two now give the same answer.
+
+    A fractional value is refused rather than truncated, because `int(0.5)` is
+    zero and would reach the same silent disabling by a different route.
+    """
     if value is None:
         return Profile.min_chars_per_page
-    try:
-        floor = int(value)
-    except (TypeError, ValueError):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise ConfigError(
             f"profile {profile!r} sets min_chars_per_page={value!r}, which is not a number"
-        ) from None
-    if floor < 0:
+        )
+    try:
+        floor = int(str(value).strip())
+    except (TypeError, ValueError):
         raise ConfigError(
-            f"profile {profile!r} sets min_chars_per_page={floor}; a negative floor can "
-            "never be crossed, so nothing would ever escalate"
+            f"profile {profile!r} sets min_chars_per_page={value!r}; expected a whole "
+            "number of characters per page"
+        ) from None
+    if floor < 1:
+        raise ConfigError(
+            f"profile {profile!r} sets min_chars_per_page={floor}. A floor below one is "
+            "cleared by every reading, including an empty one, so the first rung always "
+            "wins, recognition never runs, and every scan is refused as having no usable "
+            "text. Use 1 to escalate only a page with nothing on it at all."
         )
     return floor
 

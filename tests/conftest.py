@@ -36,8 +36,19 @@ def gate() -> QualityGate:
     real recognition fails loudly here instead of quietly downloading a model.
     """
 
+    class RungWasReached(BaseException):
+        """Deliberately not an `Exception`.
+
+        `_GatedReader._read_pages` wraps `Exception` into `ExtractionError`, and
+        the ingest service turns that into an ordinary "failed" outcome for one
+        document. An `AssertionError` raised here would therefore be swallowed
+        twice and surface as a per-file failure a test could pass straight over
+        — the fixture's stated safety would not hold. Deriving from
+        `BaseException` puts it past both handlers.
+        """
+
     def unreached(path):
-        raise AssertionError(
+        raise RungWasReached(
             f"a rung reader ran for {path}: the suite is not meant to reach recognition"
         )
 
