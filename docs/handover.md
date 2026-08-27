@@ -345,6 +345,22 @@ unchanged; the two new ones are the recognition pair.
 | End-to-end with real embeddings | 2 documents, 2 hits, 2 found by vector search |
 | MCP surface answers with a citation | `note.md (chars 0–62, …)` |
 
+**The vision rung, run once on 2026-08-27 — `--only vlm`, 2 passed.**
+`GRANITEDOCLING_TRANSFORMERS` loaded and read the same scan, returning 136
+characters. It reads Ukrainian **better** than the recognition model does:
+"Правління" came back correct, where `eslav` gives "Правлиння". That is one page
+and not a basis for changing the default, but it is the first directional
+evidence about where the vision rung earns its cost, and it points at
+Ukrainian diacritics rather than at complex layout.
+
+*The first version of this check was vacuous and passed anyway.* It asserted
+`VLM in gate.rungs()` — true from configuration alone, whether or not a model
+ever ran — and read the ladder's result, which was the OCR reading, because with
+a floor nothing clears the richest attempt wins and OCR's output was longer. It
+now reads at the vision rung directly and asserts on the text that came back.
+Worth recording as the fourth instance of this project's recurring lesson: an
+assertion that cannot fail certifies nothing.
+
 Also checked by hand through the shipped CLI, because the script drives the
 service layer rather than the binary: `jackryan status` returns immediately and
 loads no engine, `jackryan ingest` logs RapidOCR building
@@ -355,13 +371,13 @@ process startup — and reading it out of the database is the only way to see it
 
 **Weaker guarantees, stated rather than glossed:**
 
-- **The vision rung is verified by name only.** `QualityGate.verify()` builds the
-  recognition engine — really builds it, via `initialize_pipeline`, because a
-  `DocumentConverter` constructed with a nonsense language returns quite happily
-  and fails on the first scan. It only *resolves* the vision model's spec name,
-  because its weights are gigabytes and the rung is reached rarely. A vision
-  model that resolves but cannot run therefore fails on the first document that
-  needs it.
+- **At startup the vision rung is verified by name only.** `QualityGate.verify()`
+  builds the recognition engine — really builds it, via `initialize_pipeline`,
+  because a `DocumentConverter` constructed with a nonsense language returns
+  quite happily and fails on the first scan. It only *resolves* the vision
+  model's spec name, because its weights are gigabytes and the rung is reached
+  rarely. A vision model that resolves but cannot run therefore fails on the
+  first document that needs it, not at the start of the run.
 - **`text_source` is a disclosure, not a guarantee.** It reaches the agent as
   `read_as` on every payload carrying corpus text. It says a quotation came from
   recognition; it does not make that quotation right. Recognition renders a word
@@ -382,10 +398,10 @@ process startup — and reading it out of the database is the only way to see it
 
 - **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real
   embedder are now exercised — see the verification section above. Recognition
-  joined them on 2026-08-27 with the extraction quality gate. **Rerank and
-  statistical NER remain unexercised**, because no code for them exists yet.
-  **The vision rung exists but has only been driven by `--only vlm`**, which is
-  not part of a default verification run.
+  joined them on 2026-08-27 with the extraction quality gate, and the vision
+  rung was driven once by `--only vlm`. **Rerank and statistical NER remain
+  unexercised**, because no code for them exists yet. The vision rung is not
+  part of a default verification run and has been driven on exactly one page.
 - **No LLM endpoint.** Nothing that calls one has ever been run.
 - **~~No Docker.~~ Compose settled 2026-08-26 — M0 task 7.4 is done.** The image
   was built and `docker compose up -d` run for the first time. Evidence, in the

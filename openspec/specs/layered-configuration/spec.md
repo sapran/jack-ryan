@@ -35,6 +35,15 @@ would. It remains in the profile layer because it is a deployment choice, and
 corpus identity accounts for it separately rather than by duplicating it into
 the contract, where two copies could disagree.
 
+Extraction settings — the recognition engine, its language, the escalation
+floor, and whether the vision rung is enabled — SHALL live in the profile. They
+change the text a document yields, but only for documents ingested after the
+change, and the difference they produce is visible in the text itself rather
+than hidden in vectors of the correct width. That is the same reasoning that
+keeps the extraction engine out of the contract, and it is why a document
+records which rung produced its text: what the fingerprint does not guard, the
+per-document record makes findable.
+
 Precedence SHALL be: a real environment variable, then `config.yaml`, then the
 built-in default. `config.yaml` SHALL be read only when `JACKRYAN_CONFIG` is
 set, so a bare checkout runs on built-in defaults with no file present.
@@ -64,6 +73,11 @@ set, so a bare checkout runs on built-in defaults with no file present.
 - **WHEN** the contract is inspected
 - **THEN** it declares the embedding library and the exact version the corpus was built under
 
+#### Scenario: Extraction settings do not change corpus identity
+
+- **WHEN** the recognition engine or its language is changed
+- **THEN** corpus identity is unchanged and an existing corpus still opens
+
 ### Requirement: Configuration fails loudly rather than substituting a default
 
 An unknown profile name, an unknown `contract` key, or an unresolvable `${VAR}`
@@ -78,6 +92,18 @@ corpus would record a pooling strategy it was not built with.
 
 A contract typo SHALL NOT be tolerated, because an ignored key would leave the
 instance running under different corpus rules than the operator wrote down.
+
+A profile key the loader does not recognise SHALL be fatal at load, naming the
+key. A profile setting that is quietly ignored costs more than a rejected one:
+the instance runs, every document ingests, and only the text is wrong. A
+mistyped recognition language is exactly that failure, and it is indistinguishable
+from any other mistyped profile key at the point the file is read.
+
+A recognition language the configured engine cannot serve SHALL be fatal when
+the engine is constructed, before any document is read, naming the setting and
+what the engine accepts. It is checked there rather than at load because only
+the engine can answer authoritatively, and building it costs seconds that every
+other use of the configuration should not pay.
 
 #### Scenario: Unknown profile is fatal and names the alternatives
 
@@ -98,6 +124,16 @@ instance running under different corpus rules than the operator wrote down.
 
 - **WHEN** the contract declares an embedding library version other than the one installed
 - **THEN** loading fails, naming both the declared version and the installed one
+
+#### Scenario: An unknown profile key is fatal
+
+- **WHEN** a profile block contains a key the loader does not recognise
+- **THEN** loading fails, naming the unknown key
+
+#### Scenario: An unserviceable recognition language is fatal
+
+- **WHEN** a profile names a recognition language the configured engine cannot serve
+- **THEN** the ingest fails before reading any document, naming the setting and what the engine accepts
 
 ### Requirement: The contract has a fingerprint that changes with any value
 

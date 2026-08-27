@@ -276,7 +276,7 @@ def check_vision_rung(workspace: Path) -> None:
     Not run by default: it downloads model weights measured in hundreds of
     megabytes. `--only vlm` asks for it deliberately.
     """
-    from jackryan.ingestion.quality_gate import VLM, QualityGate
+    from jackryan.ingestion.quality_gate import VLM, QualityGate, build_converter
 
     font_path = _find_cyrillic_font()
     if font_path is None:
@@ -285,30 +285,58 @@ def check_vision_rung(workspace: Path) -> None:
 
     path = workspace / "vision.pdf"
     _scan_pdf(path, font_path)
-    # A floor nothing can clear, so the ladder is forced all the way down and
-    # the vision rung is genuinely exercised rather than skipped over.
-    gate = QualityGate(
-        ocr_engine="rapidocr",
-        ocr_language="eslav",
-        min_chars_per_page=10_000,
-        vlm_model="GRANITEDOCLING_TRANSFORMERS",
-    )
+
+    # Read at the vision rung directly. Going through the ladder cannot answer
+    # this: with a floor nothing clears, the richest attempt wins, and OCR's
+    # output beat the vision model's — so a check on the ladder's result would
+    # have passed without the vision model producing anything at all. What
+    # needs proving here is narrower and real: that a vision model loads and
+    # reads a page. Which rung the ladder then prefers is policy, covered
+    # offline by the unit tests.
+    model = "GRANITEDOCLING_TRANSFORMERS"
     try:
-        gate.verify()
-        reading = gate.read(path)
+        converter = build_converter(
+            VLM, engine="rapidocr", language="eslav", vlm_model=model
+        )
+        document = converter.convert(str(path)).document
+        text = document.export_to_markdown().strip()
     except Exception as exc:
-        record("Vision rung", FAIL, f"{type(exc).__name__}: {exc}")
+        record("Vision rung", FAIL, f"{model}: {type(exc).__name__}: {exc}")
         return
 
-    attempted = VLM in gate.rungs()
-    if not attempted:
-        record("Vision rung", FAIL, "the vision rung was not among the configured rungs")
+    if not text:
+        record(
+            "Vision rung",
+            FAIL,
+            f"{model} loaded and ran but returned no text for a page with legible content",
+        )
         return
     record(
         "Vision rung",
         PASS,
-        f"the ladder reached the vision model and returned {len(reading.text.strip())} "
-        f"chars as {reading.source!r}",
+        f"{model} loaded and read the page, returning {len(text)} chars: "
+        f"{' '.join(text.split())[:90]!r}",
+    )
+
+    # And that the ladder does place it last, reached only after the two rungs
+    # above it have failed to clear the floor.
+    gate = QualityGate(
+        ocr_engine="rapidocr",
+        ocr_language="eslav",
+        min_chars_per_page=100,
+        vlm_model=model,
+    )
+    if gate.rungs()[-1] != VLM:
+        record(
+            "Vision rung is last",
+            FAIL,
+            f"configured rungs are {gate.rungs()}, so the vision model is not the last resort",
+        )
+        return
+    record(
+        "Vision rung is last",
+        PASS,
+        f"configured rungs are {gate.rungs()}",
     )
 
 
