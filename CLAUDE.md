@@ -25,18 +25,23 @@ with resolvable citations. Depth (OCR, hard formats, retrieval quality,
 summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
-Current state: **M3 slice 1 shipped, and the prototype's verification debt is
-cleared.** Six changes are archived — M0, M1 and M2, then
-`hard-formats-and-containers`, `contract-covers-embedding-library` and
-`corpus-identity-covers-the-embedder` — and thirteen capabilities are published
-in `openspec/specs/`. No change is in flight and no archived task is left
-unticked: compose wiring and the two-vendor agent test both ran, and corpus
-identity now covers the embedding library, the module actually imported, and
-which embedder produced the vectors.
+Current state: **M3 slice 2 shipped — extraction now reads scans in all three
+working languages.** Seven changes are archived — M0, M1 and M2, then
+`hard-formats-and-containers`, `contract-covers-embedding-library`,
+`corpus-identity-covers-the-embedder` and `extraction-quality-gate` — and
+fourteen capabilities are published in `openspec/specs/`. No change is in flight
+and no archived task is left unticked.
 
-The model-dependent M3 legs (OCR/VLM, rerank, summaries, statistical NER) are
-next; the assistant writing back is M4. Retrieval quality has never been
-measured, which matters most for the rerank leg — see `docs/handover.md`.
+Recognition was already running before slice 2 and had never been configured: a
+Ukrainian scan ingested as nine characters of punctuation, which passed the
+empty-document guard. It is now deliberate — engine and language named in the
+profile, `auto` refused, a three-rung escalation ladder, and `text_source`
+recorded per document and shown to the agent.
+
+The remaining M3 legs are rerank, section-window expansion, summaries and
+statistical NER; the assistant writing back is M4. **Retrieval quality has never
+been measured**, which matters most for the rerank leg and is now the largest
+unaddressed gap — see `docs/handover.md`.
 
 What remains unverified is recorded in `docs/handover.md`, and what is known
 but deliberately unfixed is in `docs/implementation-notes.md` — read both before
