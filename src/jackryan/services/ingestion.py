@@ -22,6 +22,7 @@ from ..errors import ValidationError
 from ..ingestion.budget import ExpansionBudget
 from ..ingestion.chunker import chunk_text
 from ..ingestion.extractors import ExtractionError
+from ..ingestion.quality_gate import QualityGate
 from ..ingestion.router import FormatRouter
 from ..storage.port import Chunk, Document, StorePort
 from .casefiles import CasefileService
@@ -97,12 +98,18 @@ class IngestionService:
         contract: Contract,
         router: FormatRouter | None = None,
         budget: ExpansionBudget | None = None,
+        gate: QualityGate | None = None,
     ) -> None:
         self._store = store
         self._casefiles = casefiles
         self._embedder = embedder
         self._contract = contract
-        self._router = router or FormatRouter()
+        self._router = router or FormatRouter(gate=gate)
+        # The same gate the router's extractors hold. Kept here too so a run can
+        # verify the recognition engine before it reads anything: a run that
+        # discovers a misconfigured engine half way through has already stored
+        # documents, and which ones depends on the order the files were walked.
+        self._gate = gate
         # Held as limits rather than as a live budget: each ingest spends its
         # own. Injectable so a deployment can tune a ceiling without editing
         # code, and so a test can reach one without building a hostile archive
@@ -147,6 +154,13 @@ class IngestionService:
         path = Path(target).expanduser()
         if not path.exists():
             raise ValidationError(f"{path} does not exist")
+
+        # Before anything is read. A recognition engine that cannot be built is
+        # never worked around: an instance that quietly reads scans without it
+        # stores them as empty documents, which is unrecoverable without
+        # noticing and reingesting.
+        if self._gate is not None:
+            self._gate.verify()
 
         depth, descendants, extracted = self._limits
         budget = ExpansionBudget(

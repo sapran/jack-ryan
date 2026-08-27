@@ -77,6 +77,7 @@ class QualityGate:
         self._vlm_model = vlm_model
         self._readers = readers
         self._converters: dict[str, Any] = {}
+        self._verified = False
 
     @classmethod
     def from_profile(cls, profile, readers: dict[str, RungReader] | None = None) -> QualityGate:
@@ -100,6 +101,31 @@ class QualityGate:
         if self._vlm_model:
             return (TEXT_LAYER, OCR, VLM)
         return (TEXT_LAYER, OCR)
+
+    def verify(self) -> None:
+        """Build the configured engine, once, before any document is read.
+
+        Called at the start of an ingest run rather than at process startup: an
+        instance that only searches never needs a recognition engine, and making
+        every `jackryan status` load one would cost seconds and a model download
+        for nothing. A run is the unit that matters, because a run that stops
+        part way has already stored documents, and which ones depends on the
+        order the files happened to be walked.
+
+        The vision rung is checked more weakly, and deliberately: its spec name
+        is resolved, but its weights are not loaded. They are gigabytes, and the
+        rung is reached only by documents that defeated the two above it. So a
+        vision model that resolves but cannot run fails on the first document
+        that needs it, not here — stated plainly because the recognition engine
+        below makes the stronger promise and the difference matters.
+        """
+        if self._verified:
+            return
+        if self._readers is None:
+            check_engine(self._engine, self._language)
+            if self._vlm_model:
+                resolve_vlm_spec(self._vlm_model)
+        self._verified = True
 
     def clears_floor(self, reading: Reading) -> bool:
         return reading.chars_per_page >= self._floor
@@ -212,6 +238,25 @@ def ocr_options_for(engine: str, language: str):
     return classes[engine](lang=[language])
 
 
+def resolve_vlm_spec(vlm_model: str):
+    """The docling model spec a `vlm_model` name refers to.
+
+    Resolving the name is cheap and loads no weights, which is why `verify` can
+    afford it at the start of every ingest run.
+    """
+    from docling.datamodel import vlm_model_specs
+
+    spec = getattr(vlm_model_specs, vlm_model, None)
+    if spec is None:
+        raise RecognitionError(
+            f"vlm_model names {vlm_model!r}, which is not a docling model spec. "
+            "Set vlm_model to a name from docling.datamodel.vlm_model_specs, for "
+            "example GRANITEDOCLING_TRANSFORMERS, or leave it empty to switch the "
+            "vision rung off."
+        )
+    return spec
+
+
 def build_converter(source: str, *, engine: str, language: str, vlm_model: str = ""):
     """A docling converter configured for one rung.
 
@@ -220,24 +265,18 @@ def build_converter(source: str, *, engine: str, language: str, vlm_model: str =
     """
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions, VlmPipelineOptions
-    from docling.document_converter import DocumentConverter, PdfFormatOption
+    from docling.document_converter import (
+        DocumentConverter,
+        ImageFormatOption,
+        PdfFormatOption,
+    )
 
     if source == VLM:
-        from docling.datamodel import vlm_model_specs
         from docling.pipeline.vlm_pipeline import VlmPipeline
 
-        spec = getattr(vlm_model_specs, vlm_model, None)
-        if spec is None:
-            raise RecognitionError(
-                f"vlm_model names {vlm_model!r}, which is not a docling model spec. "
-                "Set vlm_model to a name from docling.datamodel.vlm_model_specs, for "
-                "example GRANITEDOCLING_TRANSFORMERS, or leave it empty to switch the "
-                "vision rung off."
-            )
-        option = PdfFormatOption(
-            pipeline_cls=VlmPipeline,
-            pipeline_options=VlmPipelineOptions(vlm_options=spec),
-        )
+        spec = resolve_vlm_spec(vlm_model)
+        pipeline_cls = VlmPipeline
+        pipeline_options = VlmPipelineOptions(vlm_options=spec)
     else:
         options = PdfPipelineOptions()
         # Rung one turns recognition off. docling's own default is do_ocr=True,
@@ -247,10 +286,25 @@ def build_converter(source: str, *, engine: str, language: str, vlm_model: str =
         options.do_ocr = source == OCR
         if options.do_ocr:
             options.ocr_options = ocr_options_for(engine, language)
-        option = PdfFormatOption(pipeline_options=options)
+        pipeline_cls = None
+        pipeline_options = options
 
+    pdf_option = (
+        PdfFormatOption(pipeline_cls=pipeline_cls, pipeline_options=pipeline_options)
+        if pipeline_cls is not None
+        else PdfFormatOption(pipeline_options=pipeline_options)
+    )
+    # An image needs its own format option, not the PDF one. Both run the same
+    # pipeline, but a PdfFormatOption carries a PDF backend, and handing that to
+    # an image is deprecated — docling corrects it and warns, which is a
+    # correction to stop relying on.
+    image_option = (
+        ImageFormatOption(pipeline_cls=pipeline_cls, pipeline_options=pipeline_options)
+        if pipeline_cls is not None
+        else ImageFormatOption(pipeline_options=pipeline_options)
+    )
     return DocumentConverter(
-        format_options={InputFormat.PDF: option, InputFormat.IMAGE: option}
+        format_options={InputFormat.PDF: pdf_option, InputFormat.IMAGE: image_option}
     )
 
 

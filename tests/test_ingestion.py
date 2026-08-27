@@ -19,6 +19,37 @@ def test_ingesting_a_folder_reports_each_document(context, casefile, corpus):
     assert all(o.chunks > 0 for o in report.outcomes)
 
 
+def test_a_run_stops_before_reading_anything_when_the_engine_cannot_be_built(config, corpus):
+    """A misconfigured recognition engine must stop the run, not degrade it.
+
+    Checked at the start of the run rather than on the first scan: a run that
+    stops part way has already stored documents, and which ones it stored
+    depends on the order the files happened to be walked. The assertion that
+    matters is therefore that the casefile is still empty afterwards.
+    """
+    from jackryan.app import build_context
+    from jackryan.embedding.deterministic import DeterministicEmbedder
+    from conftest import TEST_DIMENSIONS
+    from jackryan.ingestion.quality_gate import QualityGate, RecognitionError
+
+    broken = QualityGate(
+        ocr_engine="nosuchengine", ocr_language="eslav", min_chars_per_page=100
+    )
+    ctx = build_context(
+        config, embedder=DeterministicEmbedder(TEST_DIMENSIONS), gate=broken
+    )
+    try:
+        case = ctx.casefiles.create("Harbour Inquiry")
+        with pytest.raises(RecognitionError) as exc:
+            ctx.ingestion.ingest(case.short_id, corpus)
+        assert "nosuchengine" in str(exc.value)
+        # Nothing was read, so nothing was stored — and recognition was not
+        # silently switched off to let the run continue.
+        assert ctx.store.list_documents(case.id) == []
+    finally:
+        ctx.close()
+
+
 def test_unsupported_files_in_a_folder_are_skipped_quietly(context, casefile, corpus):
     (corpus / "photo.raw").write_bytes(b"\x00\x01\x02")
     report = context.ingestion.ingest(casefile.short_id, corpus)

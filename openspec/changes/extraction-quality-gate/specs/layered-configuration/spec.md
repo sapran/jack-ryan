@@ -91,9 +91,10 @@ mistyped recognition language is exactly that failure, and it is indistinguishab
 from any other mistyped profile key at the point the file is read.
 
 A recognition language the configured engine cannot serve SHALL be fatal when
-the engine is constructed at startup, naming the setting and what the engine
-accepts. It is checked there rather than at load because only the engine can
-answer authoritatively, and startup is still before any document is read.
+the engine is constructed, before any document is read, naming the setting and
+what the engine accepts. It is checked there rather than at load because only
+the engine can answer authoritatively, and building it costs seconds that every
+other use of the configuration should not pay.
 
 #### Scenario: Unknown profile is fatal and names the alternatives
 
@@ -123,4 +124,4 @@ answer authoritatively, and startup is still before any document is read.
 #### Scenario: An unserviceable recognition language is fatal
 
 - **WHEN** a profile names a recognition language the configured engine cannot serve
-- **THEN** startup fails, naming the setting and what the engine accepts
+- **THEN** the ingest fails before reading any document, naming the setting and what the engine accepts

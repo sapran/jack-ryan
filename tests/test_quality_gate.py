@@ -8,6 +8,7 @@ offline in milliseconds. What only a real model can settle is verified by
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -204,3 +205,86 @@ def test_the_gate_is_importable_without_loading_a_model():
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True
     )
     assert result.stdout.strip() == "False", result.stdout + result.stderr
+
+
+# --- Verification, before an ingest reads anything ----------------------------
+
+# Two of the checks below build a real recognition pipeline, which fetches model
+# weights on a machine that has none. This suite is required to run offline, so
+# they are opt-in. `scripts/verify_model_paths.py` runs the same ground for real
+# and its result is recorded in docs/handover.md — the same split this repository
+# already uses for the embedder.
+needs_models = pytest.mark.skipif(
+    os.environ.get("JACKRYAN_MODEL_TESTS", "") != "1",
+    reason="builds a real recognition pipeline; set JACKRYAN_MODEL_TESTS=1 to run",
+)
+
+
+@needs_models
+def test_verify_refuses_a_language_the_engine_cannot_serve():
+    # Against the real engine, because that is the only thing that can answer.
+    # `initialize_pipeline` is what makes it work: constructing the converter
+    # alone returns an object quite happily for any language string, so a check
+    # that stopped there would report a misconfigured instance as healthy.
+    gate = QualityGate(ocr_engine="rapidocr", ocr_language="klingon", min_chars_per_page=100)
+    with pytest.raises(RecognitionError) as exc:
+        gate.verify()
+    message = str(exc.value)
+    assert "ocr_language" in message and "klingon" in message
+    # And it says what it will accept, so the operator can fix it from the error.
+    assert "cyrillic" in message
+
+
+@needs_models
+def test_verify_passes_for_the_shipped_default():
+    QualityGate(ocr_engine="rapidocr", ocr_language="eslav", min_chars_per_page=100).verify()
+
+
+def test_verify_does_not_look_for_an_engine_when_the_rungs_are_stand_ins():
+    # The suite's own gate injects readers, so there is no engine to build and
+    # verification must not go looking for one.
+    readers, _ = recording_readers(**{TEXT_LAYER: ("x" * 500, 1), OCR: ("", 1)})
+    QualityGate(
+        ocr_engine="nosuchengine",
+        ocr_language="nosuchlanguage",
+        min_chars_per_page=100,
+        readers=readers,
+    ).verify()
+
+
+def test_an_unknown_vision_model_is_refused_without_loading_weights(monkeypatch):
+    # Resolving the name is all `verify` does for the vision rung, deliberately:
+    # the weights are gigabytes and the rung is reached rarely. This asserts the
+    # name check happens, and that it does not reach a pipeline build.
+    from jackryan.ingestion import quality_gate as module
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("verify must not build a vision pipeline")
+
+    monkeypatch.setattr(module, "build_converter", refuse)
+    monkeypatch.setattr(module, "check_engine", lambda engine, language: None)
+    gate = QualityGate(
+        ocr_engine="rapidocr",
+        ocr_language="eslav",
+        min_chars_per_page=100,
+        vlm_model="NOT_A_REAL_SPEC",
+    )
+    with pytest.raises(RecognitionError) as exc:
+        gate.verify()
+    assert "NOT_A_REAL_SPEC" in str(exc.value)
+
+
+def test_the_engine_is_built_once_however_many_runs_verify(monkeypatch):
+    from jackryan.ingestion import quality_gate as module
+
+    built: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        module, "check_engine", lambda engine, language: built.append((engine, language))
+    )
+    gate = QualityGate(ocr_engine="rapidocr", ocr_language="eslav", min_chars_per_page=100)
+    gate.verify()
+    gate.verify()
+    gate.verify()
+    # A workbench ingests repeatedly against one long-lived instance; reloading
+    # the recognition models on every run would be seconds each time.
+    assert built == [("rapidocr", "eslav")]

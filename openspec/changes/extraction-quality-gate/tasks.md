@@ -17,16 +17,16 @@
 
 ## 3. The extractors
 
-- [ ] 3.1 Route `DoclingExtractor` through the gate for PDF only, leaving DOCX, PPTX, HTML and Markdown on a single direct parse; verify a test asserts a Markdown file is never escalated whatever its length
-- [ ] 3.2 Add image suffixes — `.png`, `.jpg`, `.jpeg`, `.tif`, `.tiff`, `.bmp`, `.webp` — as an extractor that reads through the same gate; verify a test asserts an image is accepted rather than refused as unsupported, and that `supported_suffixes()` reports them
-- [ ] 3.3 Carry the rung on `Extraction` as `text_source`, set to `native` by every extractor that does not use the gate; verify a test asserts each existing extractor reports `native`
-- [ ] 3.4 Tighten `FormatRouter.extract`'s usable-text refusal to require a letter or digit in some script; verify a test asserts `'.\n\n:    .'` is refused, and that Cyrillic-only and digit-only text are both accepted
+- [x] 3.1 Route `DoclingExtractor` through the gate for PDF only, leaving DOCX, PPTX, HTML and Markdown on a single direct parse; verify a test asserts a Markdown file is never escalated whatever its length
+- [x] 3.2 Add image suffixes — `.png`, `.jpg`, `.jpeg`, `.tif`, `.tiff`, `.bmp`, `.webp` — as an extractor that reads through the same gate; verify a test asserts an image is accepted rather than refused as unsupported, and that `supported_suffixes()` reports them
+- [x] 3.3 Carry the rung on `Extraction` as `text_source`, set to `native` by every extractor that does not use the gate; verify a test asserts each existing extractor reports `native`
+- [x] 3.4 Tighten `FormatRouter.extract`'s usable-text refusal to require a letter or digit in some script; verify a test asserts `'.\n\n:    .'` is refused, and that Cyrillic-only and digit-only text are both accepted
 
 ## 4. Startup
 
-- [ ] 4.1 Construct the configured recognition engine in `build_context` before the store is opened, and let failure propagate with a message naming the setting and how to proceed without it; verify a test asserts an unconstructable engine and an unserviceable language both stop startup
-- [ ] 4.2 Verify the failed engine does not degrade: a test asserts the instance does not start with recognition silently disabled, and that no store connection is left open when startup fails
-- [ ] 4.3 Skip engine construction when the profile's embedder is `deterministic`, so the test suite and a stopped-instance CLI do not load models; verify the existing suite still runs with no network
+- [x] 4.1 Verify the configured engine once at the start of an ingest run, before the first document, with a message naming the setting and how to proceed without it; verify a test asserts an unserviceable language stops the run before anything is stored
+- [x] 4.2 Verify the failed engine does not degrade: a test asserts the run fails rather than continuing with recognition disabled, and that nothing was stored
+- [x] 4.3 Accept an injected gate in `build_context`, exactly as it accepts an injected embedder, so the suite wires a real instance without loading models; verify searching and reading construct no engine and the suite still runs with no network
 
 ## 5. Storage and surface
 

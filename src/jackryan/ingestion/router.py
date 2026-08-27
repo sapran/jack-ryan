@@ -17,11 +17,33 @@ from .extractors import (
     Extractor,
     default_extractors,
 )
+from .quality_gate import QualityGate
+
+
+def has_usable_text(text: str) -> bool:
+    """Whether `text` carries anything a reader could use.
+
+    At least one letter or digit, in any script — so Cyrillic-only text and a
+    page of figures both count, and whitespace with punctuation does not.
+
+    The punctuation case is not hypothetical: an unconfigured recognition engine
+    returns exactly that for a scan it cannot read. Nine characters of `.` and
+    `:` pass an emptiness check, store, chunk and embed, and leave a document an
+    analyst can list and can never find — which is worse than the extraction
+    having failed outright.
+    """
+    return any(character.isalnum() for character in text)
 
 
 class FormatRouter:
-    def __init__(self, extractors: list[Extractor] | None = None) -> None:
-        self._extractors = extractors if extractors is not None else default_extractors()
+    def __init__(
+        self,
+        extractors: list[Extractor] | None = None,
+        gate: QualityGate | None = None,
+    ) -> None:
+        self._extractors = (
+            extractors if extractors is not None else default_extractors(gate)
+        )
 
     def extractor_for(self, path: Path) -> Extractor | None:
         for extractor in self._extractors:
@@ -55,7 +77,7 @@ class FormatRouter:
                 f"no extractor accepts {path.name}: nothing handles {suffix}"
             )
         extraction = extractor.extract(path)
-        if not extraction.text.strip() and not extraction.is_container:
+        if not has_usable_text(extraction.text) and not extraction.is_container:
             # A container is exempt: an archive's value is in its entries, and
             # refusing it would leave those entries with no parent to hang from.
             # Everything else with no text is an empty document, which is worse

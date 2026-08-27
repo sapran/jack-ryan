@@ -127,27 +127,50 @@ drift from it.
 - **WHEN** the configured engine is constructed with a language it does not serve
 - **THEN** construction fails, naming the setting and what the engine accepts
 
-### Requirement: An extraction engine that cannot be built stops the instance
+### Requirement: An extraction engine that cannot be built stops the ingest
 
 An engine or vision model named in the profile and not constructible SHALL be
-fatal when the instance starts. The error SHALL name the setting that selected
-it and how to proceed without it.
+fatal before any document of an ingest is read. The error SHALL name the setting
+that selected it and how to proceed without it.
 
 It SHALL NOT fall back to another engine, and it SHALL NOT fall back to reading
 pages without recognition. Both would leave an instance quietly ingesting scans
 as empty or near-empty documents, which is unrecoverable without noticing and
 reingesting.
 
-The check SHALL happen at startup rather than on the first document that needs
-it, so a misconfiguration is found before an ingest is underway rather than part
-way through one.
+The check SHALL be made once per ingest run, before the first document, rather
+than on the first document that happens to need recognition. A run that stops
+part way has already stored documents, and which ones it stored depends on the
+order the files were walked.
 
-#### Scenario: A configured engine that cannot load is fatal at startup
+The engine SHALL be built to check it, not looked up. A converter that holds an
+engine's settings can be constructed without the engine existing, so anything
+short of building it reports that a misconfigured instance is healthy.
 
-- **WHEN** an instance starts with a recognition engine it cannot construct
-- **THEN** startup fails, naming the setting and how to proceed without it
+The vision model is checked more weakly: its name SHALL be resolved, and its
+weights SHALL NOT be loaded. They are gigabytes, and the rung is reached only by
+documents that defeated both rungs above it, so loading them at the start of
+every run would charge every ingest for a rung it will almost never use. A
+vision model that resolves but cannot run therefore fails on the first document
+that needs it. This is a weaker guarantee than the one made for the recognition
+engine, and it is stated rather than glossed.
+
+#### Scenario: A configured engine that cannot load stops the ingest
+
+- **WHEN** an ingest begins with a recognition engine that cannot be constructed
+- **THEN** it fails before reading any document, naming the setting and how to proceed without it
 
 #### Scenario: A failed engine does not silently disable recognition
 
 - **WHEN** the configured engine cannot be constructed
-- **THEN** the instance does not start with recognition disabled
+- **THEN** the ingest fails rather than proceeding with recognition disabled
+
+#### Scenario: Reading the corpus does not require a recognition engine
+
+- **WHEN** an instance searches or reads without ingesting
+- **THEN** no recognition engine is constructed
+
+#### Scenario: A vision model that is not a real model spec stops the ingest
+
+- **WHEN** an ingest begins with a configured vision model that names no known spec
+- **THEN** it fails before reading any document, without loading any weights
