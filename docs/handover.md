@@ -14,7 +14,7 @@ verified, what is not, and why.
 ## Where things stand
 
 `main` is at the merge of M3 slice 2. The prototype (M0–M2) and both M3 slices
-are archived, fourteen capabilities are published in `openspec/specs/`, and 291
+are archived, fourteen capabilities are published in `openspec/specs/`, and 308
 tests pass with 2 skipped behind `JACKRYAN_MODEL_TESTS=1`.
 
 Built and merged, and — since 2026-08-26 — exercised against real model
@@ -330,15 +330,18 @@ suite itself, the gate's escalation policy is tested with injected rung readers
 and never loads a model; the two checks that build a real pipeline are behind
 `JACKRYAN_MODEL_TESTS=1`, so `pytest` still runs offline.
 
-**Run on 2026-08-27: 8 passed, 0 failed, exit 0.** macOS on Apple silicon,
-Python 3.12, weights fetched on first use. The six earlier checks still pass
-unchanged; the two new ones are the recognition pair.
+**Run on 2026-08-27: 8 passed, 0 failed, exit 0**, and the recognition checks
+re-run on 2026-08-28 after the review fixes: **4 passed** for `--only pdf --only
+ocr`, now including a third recognition check that the review asked for. macOS
+on Apple silicon, Python 3.12, weights fetched on first use. The six earlier
+checks still pass unchanged.
 
 | Check | Result |
 |---|---|
 | PDF extraction (Docling layout models) | `docling` recovered 44 chars including the expected phrase |
 | **Recognition of a scan** | escalated to `ocr` from a page with no text layer — uk=0.86 ru=0.87 en=1.00 |
 | **Recognition language matters** | forced to `en`, the same page scores uk=0.11 ru=0.11 |
+| **A misconfigured engine is refused** | constructing the converter *succeeded* for a nonsense language and initialising the pipeline refused it — the fail-open the check exists to close, demonstrated rather than asserted |
 | Real embedder loads | `intfloat/multilingual-e5-large` |
 | Contract width matches the model | 1024 dimensions, as declared |
 | Query and passage widths agree | both 1024 |
