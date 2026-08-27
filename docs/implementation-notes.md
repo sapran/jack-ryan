@@ -6,6 +6,30 @@ and why it was parked.
 
 ## Parked
 
+- **The container pulls the whole NVIDIA CUDA stack onto arm64, where nothing
+  can use it.** Observed building the image on Apple silicon: `torch` 427 MB,
+  `nvidia_cudnn_cu13` 444 MB, `nvidia_cusparselt_cu13` 221 MB, plus
+  `cuda_toolkit` — none of which an arm64 Linux container without an NVIDIA GPU
+  will ever execute. It comes from the `docling==2.122.0` pin, which resolves to
+  `docling-slim` with the `models-vlm-inline` extra. Pre-existing, not introduced
+  by the quality gate — that change touched no dependency — but it is gigabytes
+  of dead weight in an image whose whole promise is "one container, runs
+  locally", and it is worth knowing before anyone measures the image and blames
+  the model prefetch. Parked: fixing it means choosing narrower `docling-slim`
+  extras or a CPU-only torch index, which changes what the vision rung can do
+  and so belongs with a decision about whether the image should carry it at all.
+
+- **`text_source` reaches the agent but not the human.** The MCP surface reports
+  it as `read_as` on every payload carrying corpus text, and the store holds it,
+  but `jackryan document list`, the REST document endpoints and
+  `case_list_documents` do not show it. So an analyst cannot ask "which
+  documents in this casefile were read by OCR?" without querying SQLite. The
+  spec requires it only where corpus text is returned, which is why this is a
+  gap rather than a defect — but the human is arguably the audience that needs
+  it most, since they are the one who decides whether to re-scan a document.
+  Parked: it is a display change across three adapters, and the change that
+  introduced the value was already large.
+
 - **Every ingest now prints RapidOCR's own log lines and a progress bar.**
   Verifying the recognition engine at the start of a run builds it, and the
   library logs at INFO and draws a `Loading weights:` bar straight to the
