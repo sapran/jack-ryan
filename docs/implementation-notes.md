@@ -6,6 +6,31 @@ and why it was parked.
 
 ## Parked
 
+- **Nothing bounds how long an ingest may spend, and recognition makes that
+  matter.** `ExpansionBudget` bounds nesting depth, descendant count and
+  extracted bytes — not time. `docs/design.md` § 5 names "a per-document time
+  budget" as part of the Finalize step; no such thing exists in
+  `src/jackryan/`. Recognition raises the cost of a page from milliseconds to
+  seconds, and the `extraction-quality-gate` change makes image files ingestable
+  for the first time, so an archive of five hundred small photographs sits well
+  inside the byte ceiling and costs roughly a quarter-hour of CPU. Not
+  introduced by that change — the shipped extractor already ran recognition on
+  every PDF by docling's default, and the change makes born-digital PDFs
+  *cheaper* — but it widens the input surface that reaches it. Parked: a time or
+  work budget is its own design (per document? per run? what happens to what was
+  already stored when it expires?) and belongs with the retry ledger, not inside
+  a change about extraction quality. docling's own `document_timeout` pipeline
+  option is the likely lever.
+
+- **The store has no migration path, and `text_source` spent the last of the
+  free schema changes.** `_SCHEMA` is `CREATE TABLE IF NOT EXISTS`, there is no
+  `ALTER TABLE` anywhere, and `_verify_meta` refuses a store whose recorded
+  `schema_version` differs from the running one. So every schema change so far
+  has meant "recreate the corpus", which has been free only because no corpus
+  exists outside development. The next one will not be. Parked: writing a
+  migration mechanism is a change of its own, and doing it speculatively before
+  the first real corpus would be building against a guess.
+
 - **The embedder's width is never checked against the contract's, though the
   composition root now has both.** `build_context` constructs the embedder
   before sizing the store, so `chosen.dimensions` and

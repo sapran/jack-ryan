@@ -44,9 +44,9 @@
 
 ## 7. Prove the tests can fail
 
-- [ ] 7.1 Reintroduce the punctuation-only acceptance and verify the new refusal test goes red with the reported symptom, then restore
-- [ ] 7.2 Force the gate to stop at rung one and verify the escalation test goes red, then restore
-- [ ] 7.3 Make the startup engine check non-fatal and verify the startup test goes red, then restore
+- [x] 7.1 Reintroduce the punctuation-only acceptance and verify the new refusal test goes red with the reported symptom, then restore
+- [x] 7.2 Force the gate to stop at rung one and verify the escalation test goes red, then restore
+- [x] 7.3 Make the startup engine check non-fatal and verify the startup test goes red, then restore
 
 ## 8. Documentation
 

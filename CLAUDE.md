@@ -129,6 +129,30 @@ same width, which nothing downstream can detect.
 - **Docling PDF extraction needs models on first use.** Markdown, HTML, DOCX and
   PPTX parse offline. Build the image with `--build-arg PREFETCH_MODELS=true`
   for a container that is offline from its first run.
+- **Never set `ocr_engine: auto`, and never re-admit it.** docling's `auto`
+  picks the engine by host operating system, forwards only `mode` to what it
+  picked — dropping the configured language — and, finding no engine, logs a
+  warning and yields the pages unchanged. It is refused at configuration load.
+  Extracted text becomes the corpus, so an engine chosen by the host makes the
+  corpus a property of the machine that ingested it.
+- **A recognition engine that cannot be built stops the ingest.** It never falls
+  back to another engine and never falls back to reading pages without
+  recognition: a scan read without recognition is an empty document, which looks
+  ingested. The check runs once at the start of an ingest run — not at process
+  start, which would charge every `jackryan status` seconds and a model download.
+- **Constructing a `DocumentConverter` verifies nothing.** It builds its
+  pipelines lazily, so one made with a nonsense recognition language returns
+  quite happily and fails on the first scan. `check_engine` calls
+  `initialize_pipeline`, which builds the model. Do not "simplify" it back.
+- **`text_source` is a disclosure, not a guarantee.** It says which rung produced
+  a document's text so an analyst can weigh an OCR'd quotation differently. It
+  does not make that text correct — recognition renders a word as a plausible
+  different word, and nothing downstream detects it.
+- **Extraction settings are profile, not contract, and that is a deliberate
+  trade.** Changing the recognition engine or language does not invalidate a
+  corpus, so nothing refuses a corpus built under different settings. The
+  per-document `text_source` is what makes a later re-extraction targetable, and
+  it is the whole compensation for that gap.
 - **A container extractor never routes what it holds.** It yields entries and
   stops; the pipeline routes them. That is what makes a format supported inside
   an archive exactly when it is supported outside one.

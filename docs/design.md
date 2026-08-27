@@ -143,4 +143,33 @@ That is the whole prototype: three milestones, no writes, no mentions, no OCR, n
 
 **Still open** (each has a decide-by milestone; none blocks review):
 - **PST extraction library** (by M3): a dedicated parsing library vs a subprocess tool — licensing and robustness check.
-- **Extraction spike specifics** (M1): docling OCR engine choice/config for eng+ukr+rus, where the VLM pipeline earns its cost, and what the offline-fallback floor guarantees.
+
+**Resolved at M3** — *extraction spike specifics.* Settled on measurement by the
+`extraction-quality-gate` change, not by argument; its `proposal.md` carries the
+numbers.
+
+- **Engine and language: RapidOCR with the `eslav` recognition model.** One
+  model reads Ukrainian, Russian and English off the same page, so no
+  per-language routing is needed. Against an image-only PDF of all three, scored
+  by similarity to the ground truth: `eslav` 0.86 / 0.87 / 1.00, `cyrillic`
+  0.88 / 0.74 / 1.00, and the shipped `auto` 0.11 / 0.11 / 1.00 — English
+  perfect, Cyrillic entirely lost. RapidOCR is also already installed by the
+  `docling` pin, so this adds no dependency where EasyOCR — named as the
+  intended default in § 5 — would have. The engine stays pluggable and EasyOCR
+  remains selectable.
+- **`auto` is refused outright.** It picks by host operating system, drops the
+  configured language on the way to the engine it picks, and silently yields
+  pages unchanged when it finds no engine — which would make extracted text, and
+  therefore the corpus, a property of the machine that ingested it.
+- **Where the VLM earns its cost: below a per-page character floor that
+  recognition also failed to clear.** It is the third rung of the gate, off
+  unless a model is named in the profile, because it costs model weights and
+  time that the two rungs above it almost always make unnecessary.
+- **The offline-fallback floor guarantees nothing on its own, and is not
+  relied on.** A misconfigured or unbuildable engine stops the ingest rather
+  than falling back to reading pages without recognition: the fallback's output
+  for a scan is an empty document, which looks ingested and is unrecoverable
+  without noticing.
+- **Still unmeasured:** recognition quality on real scans. The figures above come
+  from one synthetic fixture, one font, a clean render. They settle which model
+  can read which script; they are not a benchmark.

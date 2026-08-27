@@ -2,14 +2,16 @@
 """Exercise the paths that need model weights, which CI cannot reach.
 
 Every automated test in this repository runs against the deterministic
-embedder and never opens a PDF. That is not a gap in coverage so much as a
-boundary: the environment the suite runs in cannot download model weights, so
-three claims have never been checked against anything real.
+embedder, never opens a PDF, and never builds a recognition engine. That is not
+a gap in coverage so much as a boundary: the environment the suite runs in
+cannot download model weights, so several claims have never been checked
+against anything real.
 
 This script checks them. Run it on a machine with network access to the model
 host, or inside an image built with `--build-arg PREFETCH_MODELS=true`.
 
     python scripts/verify_model_paths.py
+    python scripts/verify_model_paths.py --only vlm   # downloads a vision model
 
 It writes to a temporary directory and removes it. It touches no corpus of
 yours, and it prints what it proved rather than a bare "ok" — a green run here
@@ -94,6 +96,219 @@ def check_pdf_extraction(workspace: Path) -> None:
         "PDF extraction",
         PASS,
         f"{extraction.extractor} recovered {len(text)} chars including the expected phrase",
+    )
+
+
+# Recognition is checked against a page that carries no text layer at all, in
+# the three languages this workbench is for. The fixture is drawn rather than
+# typeset, because a PDF with a text layer would prove nothing here: the first
+# rung would read it and recognition would never run.
+CYRILLIC_FONTS = (
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+)
+SCAN_UK = "Правління передало оренду компанії Нортгейт"
+SCAN_RU = "Аренда передана компании Нортгейт советом"
+SCAN_EN = "The board awarded the harbour lease to Northgate"
+
+
+def _find_cyrillic_font() -> str | None:
+    for candidate in CYRILLIC_FONTS:
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _scan_pdf(path: Path, font_path: str) -> None:
+    """An image-only PDF: three lines drawn as pixels, with no text layer."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.new("RGB", (2200, 700), "white")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.truetype(font_path, 46)
+    y = 80
+    for line in (SCAN_UK, SCAN_RU, SCAN_EN):
+        draw.text((80, y), line, fill="black", font=font)
+        y += 130
+    image.save(path, "PDF", resolution=200.0)
+
+
+def _similarity(expected: str, text: str) -> float:
+    """How closely `text` contains `expected`, as a ratio in 0..1.
+
+    Similarity rather than exact match, because recognition is not letter
+    perfect and pretending otherwise makes a brittle check that fails for the
+    wrong reason. The `eslav` model reads "Правління" as "Правлиння" — a real
+    limitation, recorded in the change's design, and not the thing this is
+    testing. What separates a working configuration from a broken one here is
+    not one character: it is 0.85 against 0.11.
+    """
+    import difflib
+
+    want = " ".join(expected.split()).lower()
+    flat = " ".join(text.split()).lower()
+    if not flat:
+        return 0.0
+    window = len(want) + 12
+    return max(
+        (
+            difflib.SequenceMatcher(None, want, flat[start : start + window]).ratio()
+            for start in range(0, max(1, len(flat) - len(want) + 12))
+        ),
+        default=0.0,
+    )
+
+
+# Comfortably below what a correct configuration scores and far above what a
+# Latin-only model does. The gap measured on this fixture is 0.85 versus 0.11,
+# so this is not a threshold that needs tuning.
+RECOGNISED = 0.75
+
+
+def check_recognition(workspace: Path) -> None:
+    """The quality gate escalating a scan, in English, Ukrainian and Russian.
+
+    This is the check the whole extraction-quality-gate change exists for. What
+    it must establish is not "OCR ran" but "OCR ran with the configured language
+    and recovered Cyrillic", because the defect being fixed was an engine that
+    recovered English perfectly and dropped Ukrainian and Russian entirely.
+
+    So it runs twice. Once with the shipped `eslav` default, which must recover
+    all three; once forced to `en`, which must not recover the Cyrillic. Without
+    the second run the first cannot fail for the reason it claims to test.
+    """
+    from jackryan.ingestion.quality_gate import OCR, QualityGate
+
+    font_path = _find_cyrillic_font()
+    if font_path is None:
+        record(
+            "Recognition of a scan",
+            SKIP,
+            "no font with Cyrillic coverage found; tried " + ", ".join(CYRILLIC_FONTS),
+        )
+        return
+
+    path = workspace / "scan.pdf"
+    _scan_pdf(path, font_path)
+    if b"BT" in path.read_bytes():
+        record(
+            "Recognition of a scan",
+            FAIL,
+            "the fixture grew a text layer, so it would not exercise recognition",
+        )
+        return
+
+    try:
+        reading = QualityGate(
+            ocr_engine="rapidocr", ocr_language="eslav", min_chars_per_page=100
+        ).read(path)
+    except Exception as exc:
+        record("Recognition of a scan", FAIL, f"{type(exc).__name__}: {exc}")
+        return
+
+    if reading.source != OCR:
+        record(
+            "Recognition of a scan",
+            FAIL,
+            f"a page with no text layer was read as {reading.source!r}, not by recognition",
+        )
+        return
+
+    scores = {
+        "uk": _similarity(SCAN_UK, reading.text),
+        "ru": _similarity(SCAN_RU, reading.text),
+        "en": _similarity(SCAN_EN, reading.text),
+    }
+    shown = " ".join(f"{code}={score:.2f}" for code, score in scores.items())
+    if min(scores.values()) < RECOGNISED:
+        record(
+            "Recognition of a scan",
+            FAIL,
+            f"recovered {shown} against a floor of {RECOGNISED}; "
+            f"got {reading.text[:160]!r}",
+        )
+        return
+    record(
+        "Recognition of a scan",
+        PASS,
+        f"escalated to {reading.source} and recovered all three languages from a page "
+        f"with no text layer ({shown})",
+    )
+
+    # The negative. Forcing a Latin-only recognition model must lose the
+    # Cyrillic — which is exactly what the shipped configuration used to do to
+    # every Ukrainian and Russian scan. Without this, the check above could pass
+    # on an engine that ignored the language setting entirely.
+    try:
+        latin_only = QualityGate(
+            ocr_engine="rapidocr", ocr_language="en", min_chars_per_page=100
+        ).read(path)
+    except Exception as exc:
+        record("Recognition language matters", FAIL, f"{type(exc).__name__}: {exc}")
+        return
+
+    lost = {
+        "uk": _similarity(SCAN_UK, latin_only.text),
+        "ru": _similarity(SCAN_RU, latin_only.text),
+    }
+    if max(lost.values()) >= RECOGNISED:
+        record(
+            "Recognition language matters",
+            FAIL,
+            f"a Latin-only model still scored {lost}, so the check above does not "
+            "establish that the language setting is what recovers the Cyrillic",
+        )
+        return
+    record(
+        "Recognition language matters",
+        PASS,
+        "forced to 'en' the same page scores "
+        + " ".join(f"{code}={score:.2f}" for code, score in lost.items())
+        + f" — below {RECOGNISED}, so the language setting is what recovers them",
+    )
+
+
+def check_vision_rung(workspace: Path) -> None:
+    """The third rung, against a real vision model.
+
+    Not run by default: it downloads model weights measured in hundreds of
+    megabytes. `--only vlm` asks for it deliberately.
+    """
+    from jackryan.ingestion.quality_gate import VLM, QualityGate
+
+    font_path = _find_cyrillic_font()
+    if font_path is None:
+        record("Vision rung", SKIP, "no font with Cyrillic coverage found")
+        return
+
+    path = workspace / "vision.pdf"
+    _scan_pdf(path, font_path)
+    # A floor nothing can clear, so the ladder is forced all the way down and
+    # the vision rung is genuinely exercised rather than skipped over.
+    gate = QualityGate(
+        ocr_engine="rapidocr",
+        ocr_language="eslav",
+        min_chars_per_page=10_000,
+        vlm_model="GRANITEDOCLING_TRANSFORMERS",
+    )
+    try:
+        gate.verify()
+        reading = gate.read(path)
+    except Exception as exc:
+        record("Vision rung", FAIL, f"{type(exc).__name__}: {exc}")
+        return
+
+    attempted = VLM in gate.rungs()
+    if not attempted:
+        record("Vision rung", FAIL, "the vision rung was not among the configured rungs")
+        return
+    record(
+        "Vision rung",
+        PASS,
+        f"the ladder reached the vision model and returned {len(reading.text.strip())} "
+        f"chars as {reading.source!r}",
     )
 
 
@@ -266,10 +481,16 @@ def check_mcp_surface(workspace: Path) -> None:
 
 CHECKS = {
     "pdf": ("PDF extraction (Docling layout models)", check_pdf_extraction),
+    "ocr": ("Recognition of a scan in three languages", check_recognition),
     "embedder": ("The real embedder and the contract width", check_real_embedder),
     "end-to-end": ("A real ingest, searched with real vectors", check_end_to_end),
     "mcp": ("The MCP surface, driven in process", check_mcp_surface),
+    "vlm": ("The vision rung, against a real model", check_vision_rung),
 }
+
+# Left out of a default run because it downloads hundreds of megabytes of model
+# weights for a rung most documents never reach. Ask for it with `--only vlm`.
+BY_REQUEST_ONLY = ("vlm",)
 
 
 def main() -> int:
@@ -283,7 +504,7 @@ def main() -> int:
     parser.add_argument("--keep", action="store_true", help="leave the temporary directory in place")
     args = parser.parse_args()
 
-    selected = args.only or list(CHECKS)
+    selected = args.only or [key for key in CHECKS if key not in BY_REQUEST_ONLY]
     workspace = Path(tempfile.mkdtemp(prefix="jackryan-verify-"))
     print(f"Workspace: {workspace}\n")
 
@@ -317,8 +538,8 @@ def main() -> int:
         )
         return 1
     print(
-        "\nThese four claims now rest on something that ran, rather than on a "
-        "deterministic stand-in. Record the result in docs/handover.md."
+        "\nThese claims now rest on something that ran, rather than on a deterministic "
+        "stand-in. Record the result in docs/handover.md."
     )
     return 0
 
