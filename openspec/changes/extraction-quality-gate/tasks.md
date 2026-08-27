@@ -37,8 +37,8 @@
 
 ## 6. Verification that needs a model
 
-- [ ] 6.1 Extend `scripts/verify_model_paths.py` with a check that an image-only PDF of Ukrainian, Russian and English escalates to recognition and recovers all three; verify it fails when the language is forced to `en`
-- [ ] 6.2 Run the extended script and record the result in `docs/handover.md`, stating what it settles and what it does not
+- [x] 6.1 Extend `scripts/verify_model_paths.py` with a check that an image-only PDF of Ukrainian, Russian and English escalates to recognition and recovers all three; verify it fails when the language is forced to `en`
+- [x] 6.2 Run the extended script and record the result in `docs/handover.md`, stating what it settles and what it does not
 - [ ] 6.3 Run the vision rung once against `GRANITEDOCLING_TRANSFORMERS` and record what happened in `docs/handover.md`; if it cannot be run, record that instead rather than leaving it implied
 - [ ] 6.4 Add the recognition weights to the Dockerfile's `PREFETCH_MODELS` path; verify by building with the argument and running an OCR extraction inside the container with networking disabled
 
@@ -50,7 +50,7 @@
 
 ## 8. Documentation
 
-- [ ] 8.1 Record the resolved engine and language decision in `docs/design.md` § 11, moving it out of "still open"
-- [ ] 8.2 Update `CLAUDE.md`'s pitfalls with the gate's invariants: recognition is never inferred from the host, a failed engine is fatal, and `text_source` is a disclosure rather than a guarantee
-- [ ] 8.3 Update `docs/handover.md` with what this change verified and what it did not, including that recognition quality on real scans is unmeasured
-- [ ] 8.4 Record in `docs/implementation-notes.md` anything found and deliberately not fixed
+- [x] 8.1 Record the resolved engine and language decision in `docs/design.md` § 11, moving it out of "still open"
+- [x] 8.2 Update `CLAUDE.md`'s pitfalls with the gate's invariants: recognition is never inferred from the host, a failed engine is fatal, and `text_source` is a disclosure rather than a guarantee
+- [x] 8.3 Update `docs/handover.md` with what this change verified and what it did not, including that recognition quality on real scans is unmeasured
+- [x] 8.4 Record in `docs/implementation-notes.md` anything found and deliberately not fixed

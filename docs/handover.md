@@ -330,6 +330,29 @@ suite itself, the gate's escalation policy is tested with injected rung readers
 and never loads a model; the two checks that build a real pipeline are behind
 `JACKRYAN_MODEL_TESTS=1`, so `pytest` still runs offline.
 
+**Run on 2026-08-27: 8 passed, 0 failed, exit 0.** macOS on Apple silicon,
+Python 3.12, weights fetched on first use. The six earlier checks still pass
+unchanged; the two new ones are the recognition pair.
+
+| Check | Result |
+|---|---|
+| PDF extraction (Docling layout models) | `docling` recovered 44 chars including the expected phrase |
+| **Recognition of a scan** | escalated to `ocr` from a page with no text layer — uk=0.86 ru=0.87 en=1.00 |
+| **Recognition language matters** | forced to `en`, the same page scores uk=0.11 ru=0.11 |
+| Real embedder loads | `intfloat/multilingual-e5-large` |
+| Contract width matches the model | 1024 dimensions, as declared |
+| Query and passage widths agree | both 1024 |
+| End-to-end with real embeddings | 2 documents, 2 hits, 2 found by vector search |
+| MCP surface answers with a citation | `note.md (chars 0–62, …)` |
+
+Also checked by hand through the shipped CLI, because the script drives the
+service layer rather than the binary: `jackryan status` returns immediately and
+loads no engine, `jackryan ingest` logs RapidOCR building
+`eslav_PP-OCRv5_rec_mobile.onnx` **before** reading any document, and the stored
+row carries `text_source='native'` under `schema_version=5`. That is the
+distinction the design turns on — verification belongs to an ingest run, not to
+process startup — and reading it out of the database is the only way to see it.
+
 **Weaker guarantees, stated rather than glossed:**
 
 - **The vision rung is verified by name only.** `QualityGate.verify()` builds the
