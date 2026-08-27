@@ -6,6 +6,19 @@ and why it was parked.
 
 ## Parked
 
+- **The vision rung runs on an unpinned `transformers`, and it produces corpus
+  text.** Observed during the same image build: the container resolved
+  `transformers 5.16.1` where the development venv holds 5.8.1. It reaches the
+  project only transitively, through `docling-slim[models-vlm-inline]`, so
+  nothing pins it — yet when `vlm_model` is set it is the library that reads the
+  page, and what it returns becomes the chunks. That is the same class of gap
+  `fastembed` and `docling` are pinned exactly to close. Lower severity than the
+  `fastembed` case for the same reason `docling` is kept out of the fingerprint:
+  a change here produces visibly different *text*, not invisibly incomparable
+  *vectors*. Parked: pinning a transitive dependency of a pinned package is
+  worth doing deliberately, alongside the decision about whether the image
+  should carry the vision stack at all.
+
 - **The container pulls the whole NVIDIA CUDA stack onto arm64, where nothing
   can use it.** Observed building the image on Apple silicon: `torch` 427 MB,
   `nvidia_cudnn_cu13` 444 MB, `nvidia_cusparselt_cu13` 221 MB, plus
