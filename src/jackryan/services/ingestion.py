@@ -328,6 +328,7 @@ class IngestionService:
                 byte_size=len(raw),
                 extracted_text=extraction.text,
                 extractor=extraction.extractor,
+                text_source=extraction.text_source,
                 created_at=existing.created_at if existing else now,
                 updated_at=now,
                 parent_id=work.parent_id,

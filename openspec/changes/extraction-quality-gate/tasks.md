@@ -30,10 +30,10 @@
 
 ## 5. Storage and surface
 
-- [ ] 5.1 Add a `text_source` column to `documents` with an additive schema step defaulting to the empty string; verify a test opens a store created before the column and asserts it still reads
-- [ ] 5.2 Persist and return `text_source` through the document row and the service layer; verify a test asserts it survives reingest and reflects the rung of that ingest
-- [ ] 5.3 Report `text_source` on passage and citation payloads through the MCP shapes; verify a test asserts both carry it and that the value is fenced like every other corpus-derived value
-- [ ] 5.4 Verify the sanitisation seam: a test asserts a `text_source` value cannot break the fence, by the same assertion pattern used for `found_at`
+- [x] 5.1 Add a `text_source` column to `documents` with an additive schema step defaulting to the empty string; verify a test opens a store created before the column and asserts it still reads
+- [x] 5.2 Persist and return `text_source` through the document row and the service layer; verify a test asserts it survives reingest and reflects the rung of that ingest
+- [x] 5.3 Report `text_source` on passage and citation payloads through the MCP shapes; verify a test asserts both carry it and that the value is fenced like every other corpus-derived value
+- [x] 5.4 Verify the sanitisation seam: a test asserts a `text_source` value cannot break the fence, by the same assertion pattern used for `found_at`
 
 ## 6. Verification that needs a model
 

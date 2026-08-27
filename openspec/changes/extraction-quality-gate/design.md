@@ -199,11 +199,23 @@ which is where this repository already keeps that distinction.
 
 ## Migration Plan
 
-One additive schema step adds `text_source` to `documents`, defaulting to the
-empty string so existing rows remain readable. No backfill: a document ingested
-before this change has no honest value to backfill, and inventing one would put a
-false provenance on evidence. Rollback is removing the profile settings; the
-column is inert without them.
+`documents` gains a `text_source` column and `SCHEMA_VERSION` goes from 4 to 5.
+
+There is no in-place migration, because this store has never had one: `_SCHEMA`
+is `CREATE TABLE IF NOT EXISTS`, there is no `ALTER TABLE` anywhere, and
+`_verify_meta` refuses a store whose recorded `schema_version` differs from the
+running one. So an existing store is **refused until it is recreated**, which is
+the same outcome the two fingerprint changes already produced, and it is stated
+plainly rather than described as an additive step.
+
+That is acceptable for exactly one reason, and it is worth being precise about
+it: no corpus exists outside development. Once one does, this store will need a
+real migration path, and that is a larger piece of work than any single change
+should smuggle in.
+
+No backfill would have been possible anyway: a document ingested before this
+change has no honest value to record, and inventing one would put a false
+provenance on evidence.
 
 ## Open Questions
 
