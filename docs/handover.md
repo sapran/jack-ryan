@@ -413,6 +413,19 @@ weights are fetched. The set was determined by installing candidates into the
 built image and importing `cv2`: `libgl1` alone still leaves
 `libgthread-2.0.so.0` missing.
 
+**With that fixed, the offline image was built and driven.** `docker build
+--build-arg PREFETCH_MODELS=true` completed, and the image read the same
+three-language scan under `--network none`, scoring uk=0.86 ru=0.87 en=1.00 —
+identical to the host. The RapidOCR log lines name the weights it loaded from
+inside the image (`File exists and is valid: …/eslav_PP-OCRv5_rec_mobile.onnx`),
+which with no network it could not have fetched. That is the first time an
+offline-from-first-run image has been built *or* exercised in this project.
+
+Sizes, measured rather than assumed: **5.81GB without the prefetch, 10.2GB with**
+— so the weights add about 4.4GB, where the Dockerfile comment used to claim
+2.5GB. It is corrected in place. Most of the 5.81GB base is the CUDA stack that
+`docling` pulls in through torch and that an arm64 container cannot use.
+
 **CI could not have caught it, and still cannot.** `.github/workflows/docker.yml`
 builds with `PREFETCH_MODELS=false` and then runs `jackryan --version`. That
 proves the image builds and the binary starts; it touches no document, so no

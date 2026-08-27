@@ -25,7 +25,12 @@ RUN pip install --no-cache-dir .
 
 # Pre-fetch the extraction and embedding weights so a container is offline from
 # its first run rather than downloading models mid-ingest. This is what makes
-# the local-first promise true for a fresh container, and it adds roughly 2.5GB.
+# the local-first promise true for a fresh container.
+#
+# Measured on arm64, 2026-08-27: 5.81GB without, 10.2GB with — so the weights
+# add about 4.4GB, not the 2.5GB this comment used to claim. Most of the 5.81GB
+# base is the CUDA stack that `docling` pulls in through torch and that an arm64
+# container cannot use; see docs/implementation-notes.md.
 #
 # Off by default so the CI gate can prove the image builds without pulling
 # gigabytes of weights it never uses. A released image is built with it on:

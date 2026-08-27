@@ -40,7 +40,7 @@
 - [x] 6.1 Extend `scripts/verify_model_paths.py` with a check that an image-only PDF of Ukrainian, Russian and English escalates to recognition and recovers all three; verify it fails when the language is forced to `en`
 - [x] 6.2 Run the extended script and record the result in `docs/handover.md`, stating what it settles and what it does not
 - [x] 6.3 Run the vision rung once against `GRANITEDOCLING_TRANSFORMERS` and record what happened in `docs/handover.md`; if it cannot be run, record that instead rather than leaving it implied
-- [ ] 6.4 Add the recognition weights to the Dockerfile's `PREFETCH_MODELS` path; verify by building with the argument and running an OCR extraction inside the container with networking disabled
+- [x] 6.4 Add the recognition weights to the Dockerfile's `PREFETCH_MODELS` path; verify by building with the argument and running an OCR extraction inside the container with networking disabled
 
 ## 7. Prove the tests can fail
 
