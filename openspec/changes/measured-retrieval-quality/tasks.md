@@ -159,17 +159,17 @@
 
 ## 6. Documentation
 
-- [ ] 6.1 Add the three profile keys to `config.yaml.example` with the comment
+- [x] 6.1 Add the three profile keys to `config.yaml.example` with the comment
       explaining that they are profile, not contract, and that no reranker is named
       by default; verify a test asserts the example file loads.
-- [ ] 6.2 Add the reranker prefetch line to the `Dockerfile` under the existing
+- [x] 6.2 Add the reranker prefetch line to the `Dockerfile` under the existing
       `PREFETCH_MODELS` build arg, taking effect only when a model is named; verify
       the default build is unchanged in size.
-- [ ] 6.3 Record in `docs/handover.md` what the measurement settles and what it does
+- [x] 6.3 Record in `docs/handover.md` what the measurement settles and what it does
       not, with the baseline figures, the machine and the date, in the shape of the
       existing verification tables.
-- [ ] 6.4 Update `CLAUDE.md` — retrieval quality is now measured; the reranker's
+- [x] 6.4 Update `CLAUDE.md` — retrieval quality is now measured; the reranker's
       two failure modes; that retrieval settings are profile and leave no residue;
       and that a rerank score is not a confidence.
-- [ ] 6.5 Park anything found and not fixed in `docs/implementation-notes.md`, one
+- [x] 6.5 Park anything found and not fixed in `docs/implementation-notes.md`, one
       line each: what, where, why parked.

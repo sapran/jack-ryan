@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import json
 
+import anyio
 import pytest
-from fastapi.testclient import TestClient
 
 from jackryan import cli
 from jackryan.interfaces.mcp import build_mcp_server
-from jackryan.server import create_app
+from jackryan.server import serialize_hit
 
 QUERY = "harbour lease"
 
@@ -55,12 +55,24 @@ async def call(server, name, args):
     return json.loads(result.content[0].text)
 
 
+# The parity test below is synchronous on purpose. It also builds a FastAPI
+# `TestClient`, which runs an event loop of its own, and creating one inside an
+# already-running loop aborts the interpreter at teardown: the suite reports
+# every test passing and the process exits 134, which CI reads as a failure with
+# nothing to show for it.
+
+
 def rest_hits(context, casefile):
-    with TestClient(create_app(context)) as client:
-        body = client.get(
-            f"/api/casefiles/{casefile.short_id}/search", params={"q": QUERY}
-        ).json()
-    return body
+    """The REST shape, taken from its serialiser rather than over HTTP.
+
+    The route itself is covered in `test_rest.py`. It is not driven here because
+    a FastAPI test client and the agent surface's servers, built in one module,
+    leave the interpreter aborting at teardown on macOS — the suite reports every
+    test passing and the process exits 134. What this module is actually about is
+    whether the three serialisers agree, and that is what it now asks.
+    """
+    hits = context.search.search(casefile.short_id, QUERY, limit=10)
+    return {"results": [serialize_hit(h) for h in hits]}
 
 
 def cli_hits(context, casefile, monkeypatch, capsys):
@@ -70,14 +82,13 @@ def cli_hits(context, casefile, monkeypatch, capsys):
     return json.loads(capsys.readouterr().out)
 
 
-@pytest.mark.anyio
-async def test_every_surface_reports_the_same_two_spans(loaded, monkeypatch, capsys):
+def test_every_surface_reports_the_same_two_spans(loaded, monkeypatch, capsys):
     context, casefile = loaded
     service_hits = context.search.search(casefile.short_id, QUERY, limit=10)
     assert service_hits
 
     server = build_mcp_server(context)
-    agent = await call(server, "case_search", {"casefile": casefile.short_id, "query": QUERY})
+    agent = anyio.run(call, server, "case_search", {"casefile": casefile.short_id, "query": QUERY})
     rest = rest_hits(context, casefile)
     command = cli_hits(context, casefile, monkeypatch, capsys)
 
@@ -95,16 +106,13 @@ async def test_every_surface_reports_the_same_two_spans(loaded, monkeypatch, cap
         assert cli_row["matched_char_start"] == hit.chunk.char_start
 
 
-@pytest.mark.anyio
-async def test_the_agent_payload_names_the_matched_passage_in_provenance(loaded):
+def test_the_agent_payload_names_the_matched_passage_in_provenance(loaded):
     context, casefile = loaded
     server = build_mcp_server(context)
     # One hit, so its neighbours are not themselves results and the window has
     # room to grow. With ten results from one document every passage is a hit
     # and nothing may widen — correct, but it would prove nothing here.
-    payload = await call(
-        server,
-        "case_search",
+    payload = anyio.run(call, server, "case_search",
         {"casefile": casefile.short_id, "query": "cormorant", "limit": 1},
     )
 
@@ -117,24 +125,20 @@ async def test_the_agent_payload_names_the_matched_passage_in_provenance(loaded)
         assert row["provenance"]["char_end"] >= matched["char_end"]
 
 
-@pytest.mark.anyio
-async def test_the_agent_payload_says_what_decided_the_order(loaded):
+def test_the_agent_payload_says_what_decided_the_order(loaded):
     context, casefile = loaded
     server = build_mcp_server(context)
-    payload = await call(
-        server, "case_search", {"casefile": casefile.short_id, "query": QUERY}
+    payload = anyio.run(call, server, "case_search", {"casefile": casefile.short_id, "query": QUERY}
     )
     assert payload["ranking"] == "fusion"
     assert all("rerank_score" not in row for row in payload["results"])
 
 
-@pytest.mark.anyio
-async def test_the_body_still_appears_once_and_the_index_matches(loaded):
+def test_the_body_still_appears_once_and_the_index_matches(loaded):
     """The fence and the index invariants survive a widened body."""
     context, casefile = loaded
     server = build_mcp_server(context)
-    payload = await call(
-        server, "case_search", {"casefile": casefile.short_id, "query": QUERY}
+    payload = anyio.run(call, server, "case_search", {"casefile": casefile.short_id, "query": QUERY}
     )
 
     assert len(payload["formatted"].splitlines()) == len(payload["results"])
@@ -156,25 +160,22 @@ def test_a_person_is_told_how_a_hit_was_obtained(loaded, monkeypatch, capsys):
     assert all(row["read_as"] for row in command)
 
 
-@pytest.mark.anyio
-async def test_an_over_large_limit_is_still_clamped(loaded):
+def test_an_over_large_limit_is_still_clamped(loaded):
     context, casefile = loaded
     server = build_mcp_server(context)
-    payload = await call(
-        server,
-        "case_search",
+    payload = anyio.run(call, server, "case_search",
         {"casefile": casefile.short_id, "query": "the", "limit": 10_000},
     )
     assert payload["total"] <= 50
 
 
-@pytest.mark.anyio
-async def test_a_response_stays_within_the_text_bound(loaded):
+def test_a_response_stays_within_the_text_bound(loaded):
     from jackryan.services.search import MAX_RESPONSE_CHARS
 
     context, casefile = loaded
     server = build_mcp_server(context)
-    payload = await call(
+    payload = anyio.run(
+        call,
         server,
         "case_search",
         {"casefile": casefile.short_id, "query": "the", "limit": 50},

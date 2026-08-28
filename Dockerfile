@@ -43,13 +43,21 @@ RUN pip install --no-cache-dir .
 # and building the engine is the only thing that proves the image can. It warms
 # the profile defaults, so an instance configured for another recognition
 # language still downloads on its first ingest.
+#
+# A reranker is fetched only when one is named. No reranker ships by default —
+# see `config.yaml.example` — so this adds nothing to the ordinary image, and an
+# operator who names one gets its weights here rather than mid-query.
 ARG PREFETCH_MODELS=false
+ARG PREFETCH_RERANKER=""
 ENV JACKRYAN_MODEL_CACHE=/opt/jackryan-models
 RUN mkdir -p "$JACKRYAN_MODEL_CACHE" && \
     if [ "$PREFETCH_MODELS" = "true" ]; then \
       python -c "from docling.utils.model_downloader import download_models; download_models()" && \
       python -c "import os; from fastembed import TextEmbedding; TextEmbedding(model_name='intfloat/multilingual-e5-large', cache_dir=os.environ['JACKRYAN_MODEL_CACHE'])" && \
       python -c "from jackryan.config import Profile; from jackryan.ingestion.quality_gate import check_engine; check_engine(Profile.ocr_engine, Profile.ocr_language)"; \
+    fi && \
+    if [ -n "$PREFETCH_RERANKER" ]; then \
+      python -c "import os,sys; from fastembed.rerank.cross_encoder import TextCrossEncoder; TextCrossEncoder(model_name=sys.argv[1], cache_dir=os.environ['JACKRYAN_MODEL_CACHE'])" "$PREFETCH_RERANKER"; \
     fi
 
 RUN mkdir -p /data

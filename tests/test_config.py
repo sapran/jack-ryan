@@ -468,3 +468,23 @@ def test_a_newline_in_a_value_cannot_forge_a_line():
 
     identity = corpus_fingerprint(Contract(embed_model="a\nembedder=other"), "model")
     assert "\n" not in identity
+
+
+def test_the_shipped_example_config_loads(monkeypatch):
+    """The template an operator copies must be one the loader accepts.
+
+    Every key in it is fatal if the loader does not recognise it, so a template
+    that has drifted from the code fails at the worst moment — on someone else's
+    first run, with a message about a key they did not write.
+    """
+    import pathlib
+
+    example = pathlib.Path(__file__).resolve().parent.parent / "config.yaml.example"
+    monkeypatch.setenv("JACKRYAN_CONFIG", str(example))
+    monkeypatch.setenv("JACKRYAN_PROFILE", "local")
+    config = load_config()
+    assert config.profile.name == "local"
+    # The retrieval settings the template documents, as the template sets them.
+    assert config.profile.reranker_model == ""
+    assert config.profile.rerank_depth == 50
+    assert config.profile.window_max_chars == 3000

@@ -57,6 +57,30 @@ profiles:
     # model weights and is much slower. Example: GRANITEDOCLING_TRANSFORMERS
     vlm_model: ""
 
+    # Retrieval. These are read at query time and write nothing — no vector, no
+    # chunk, no stored text — so changing one changes the next search and leaves
+    # the corpus untouched. No store is ever refused for them.
+    #
+    # A cross-encoder that reorders results after fusion, or empty for none.
+    # Empty is the default, and it was measured rather than assumed: on the
+    # project's own evaluation set both models the library registers made
+    # retrieval worse, and both took Ukrainian to zero — for a Ukrainian query a
+    # cross-encoder ranks English passages above the Ukrainian one that answers
+    # it. See `docs/handover.md` for the figures before you name one.
+    #
+    # Naming a model the instance cannot build is fatal when the first search
+    # needs it. A model that fails while scoring one response is not: the fused
+    # order stands and the response says `rerank-unavailable`.
+    reranker_model: ""
+    # How many fused candidates the reranker sees. Larger than a caller's usual
+    # limit on purpose: a reranker shown only what was asked for cannot improve
+    # anything.
+    rerank_depth: 50
+    # How wide a result's text may be. A result carries a window around the
+    # passage that matched, so a quotation arrives with the sentences that give
+    # it meaning. Set at or below chunk_max_chars to switch widening off.
+    window_max_chars: 3000
+
   remote:
     # Point at your own OpenAI-compatible endpoints. Comma-separated for
     # round-robin. Secrets come from the environment, never from this file.

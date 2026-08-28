@@ -134,3 +134,23 @@ def test_fetching_a_document_by_short_id(client, corpus):
     )
     assert fetched.status_code == 200
     assert fetched.json()["id"] == document["id"]
+
+
+def test_search_reports_both_spans_and_what_ranked_it(client, context, corpus):
+    casefile = context.casefiles.create("Spans Over Http")
+    context.ingestion.ingest(casefile.short_id, corpus)
+
+    body = client.get(
+        f"/api/casefiles/{casefile.short_id}/search", params={"q": "harbour lease"}
+    ).json()
+
+    assert body["ranking"] == "fusion"
+    assert body["results"]
+    for row in body["results"]:
+        # The span of what was returned, and the passage inside it that matched.
+        assert row["char_start"] <= row["matched_char_start"]
+        assert row["char_end"] >= row["matched_char_end"]
+        # A person reading a hit is told how its text was obtained, exactly as
+        # the agent surface is.
+        assert row["read_as"]
+        assert row["rerank_score"] is None
