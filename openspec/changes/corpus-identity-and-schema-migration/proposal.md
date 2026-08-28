@@ -32,9 +32,11 @@ the day a third embedder is added, because `EmbedderPort.name` is an unvalidated
 **The composition root holds two vector widths and never compares them.**
 `build_context` constructs the embedder, then sizes the vector index from the
 contract, with `chosen.dimensions` and `contract.embed_dimensions` in scope one
-line apart. A mismatch opens cleanly, records a valid identity, creates the
-vector table at the wrong width, and then fails on every chunk part-way through
-an ingest.
+line apart and uncompared. Stated precisely, because the parked note implied
+more than is true: an embedder built from configuration takes its width from the
+contract, so those two cannot disagree by that route. What is uncompared is the
+seam where an embedder is supplied directly — which today is the test suite, and
+tomorrow is any embedder that reports a width it was not handed.
 
 **`text_source` reaches the assistant but not the analyst.** The MCP surface
 reports it wherever it returns corpus text, and the store holds it, but no

@@ -97,6 +97,34 @@ def test_a_baseline_store_is_carried_forward_rather_than_refused(tmp_path):
         store.close()
 
 
+def test_the_migration_survives_closing_the_store(tmp_path):
+    """Read it back off disk, through a connection that never saw the migration.
+
+    Every other assertion here reads through the connection that applied the
+    steps, inside its still-open transaction, so an uncommitted migration looks
+    exactly like a committed one. A fresh store cannot catch it either:
+    `_verify_meta` commits the fingerprint insert straight afterwards and
+    incidentally flushes the pending migration. Only a store that already
+    carries a fingerprint depends on the migration's own commit — which is this
+    one.
+    """
+    path = build_baseline_store(tmp_path / "old.db")
+    store = SqliteStore(path)
+    store.initialize(IDENTITY, DIMENSIONS)
+    store.close()
+
+    conn = sqlite3.connect(path)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(documents)")]
+        assert "text_source" in cols, "the migration was not committed to disk"
+        stamped = conn.execute(
+            "SELECT value FROM store_meta WHERE key='schema_version'"
+        ).fetchone()[0]
+        assert stamped == str(SCHEMA_VERSION)
+    finally:
+        conn.close()
+
+
 def test_documents_written_before_the_column_still_read(tmp_path):
     # A document ingested before text_source existed has no honest value, so it
     # gets the empty default and discloses itself as unrecorded downstream.
@@ -209,6 +237,60 @@ def test_a_store_is_backed_up_before_it_is_migrated(tmp_path):
         conn.close()
 
 
+def test_the_backup_captures_commits_still_living_in_the_wal(tmp_path):
+    """A file copy would lose them, and the spec forbids a file copy.
+
+    This store runs in WAL mode, so a committed row can be in the -wal and not
+    yet in the main file. `shutil.copyfile` here passes every other assertion in
+    this module while silently dropping such rows — and the backup is the
+    operator's only way back from a bad migration.
+
+    Holding a second connection open with a committed row is what makes the WAL
+    hot; the fixture closes its build connection, which checkpoints, so nothing
+    else in this file can expose the difference.
+    """
+    import sqlite_vec
+
+    path = build_baseline_store(tmp_path / "old.db")
+
+    writer = sqlite3.connect(path)
+    writer.enable_load_extension(True)
+    sqlite_vec.load(writer)
+    writer.enable_load_extension(False)
+    writer.execute(
+        "INSERT INTO documents (id, casefile_id, content_hash, filename, media_type,"
+        " byte_size, extracted_text, extractor, created_at, updated_at, parent_id,"
+        " containment_path, identity_path)"
+        " VALUES ('d2', 'c1', 'hash2', 'minutes.md', 'text/markdown', 10, 'minutes',"
+        " 'plaintext', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', NULL,"
+        " 'minutes.md', '')"
+    )
+    writer.commit()
+
+    try:
+        store = SqliteStore(path)
+        try:
+            store.initialize(IDENTITY, DIMENSIONS)
+        finally:
+            store.close()
+
+        backup = tmp_path / f"old.db.v{_BASELINE_VERSION}.bak"
+        conn = sqlite3.connect(backup)
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        try:
+            ids = sorted(r[0] for r in conn.execute("SELECT id FROM documents"))
+            assert ids == ["d1", "d2"], (
+                f"the backup holds {ids}; a commit living in the -wal was lost, which "
+                "is what a file copy does and what the backup API exists to avoid"
+            )
+        finally:
+            conn.close()
+    finally:
+        writer.close()
+
+
 def test_a_store_that_cannot_be_backed_up_is_not_migrated(tmp_path):
     path = build_baseline_store(tmp_path / "old.db")
 
@@ -301,6 +383,49 @@ def test_the_ladder_and_the_baseline_produce_the_same_schema(tmp_path):
         fresh.close()
 
 
+BASELINE_DOCUMENT_COLUMNS = (
+    "id",
+    "casefile_id",
+    "content_hash",
+    "filename",
+    "media_type",
+    "byte_size",
+    "extracted_text",
+    "extractor",
+    "created_at",
+    "updated_at",
+    "parent_id",
+    "containment_path",
+    "identity_path",
+)
+
+
+def test_the_frozen_baseline_is_frozen(tmp_path):
+    """Pin the baseline literally, because nothing else can.
+
+    The parity test compares a migrated store against a fresh one, but both are
+    built from the live `_SCHEMA` object — so adding a column there instead of
+    to `_STEPS` leaves it green. That edit is silently wrong in the worst way:
+    every statement in the script is IF NOT EXISTS, so a store already on disk
+    never gains the column while every store created afterwards has it, both
+    stamped with the same version.
+
+    Written out rather than derived, so that changing the baseline requires
+    changing this list too — which is the point at which someone has to ask
+    whether it should have been a step.
+    """
+    path = build_baseline_store(tmp_path / "baseline.db", rows=False)
+    conn = sqlite3.connect(path)
+    try:
+        cols = tuple(r[1] for r in conn.execute("PRAGMA table_info(documents)"))
+    finally:
+        conn.close()
+    assert cols == BASELINE_DOCUMENT_COLUMNS, (
+        "the frozen baseline changed. If this is a new column, it belongs in "
+        "_STEPS, not in _SCHEMA — a store already on disk would never receive it."
+    )
+
+
 def test_the_fts_trigger_covers_every_fts_column(tmp_path):
     """The trigger must name every column the FTS table has.
 
@@ -325,3 +450,42 @@ def test_the_fts_trigger_covers_every_fts_column(tmp_path):
             )
     finally:
         store.close()
+
+
+def test_a_second_process_does_not_overwrite_the_pre_migration_copy(tmp_path):
+    """The backup is the way back, and the older copy is the valuable one.
+
+    Two processes can open the same store on the first run after an upgrade —
+    `docker compose up` and `docker compose run cli` share a data directory —
+    and both read the old version before either commits. If the loser writes its
+    backup after the winner has migrated, the only pre-migration copy is
+    replaced by a post-migration one, under a name still claiming the old
+    version.
+    """
+    path = build_baseline_store(tmp_path / "old.db")
+    backup = tmp_path / f"old.db.v{_BASELINE_VERSION}.bak"
+
+    first = SqliteStore(path)
+    first.initialize(IDENTITY, DIMENSIONS)
+    first.close()
+    assert backup.exists()
+
+    conn = sqlite3.connect(backup)
+    try:
+        before = [r[1] for r in conn.execute("PRAGMA table_info(documents)")]
+    finally:
+        conn.close()
+
+    # A second process now runs the same migration path against a store that is
+    # already carried forward. Nothing it does may touch the existing copy.
+    second = SqliteStore(path)
+    second.initialize(IDENTITY, DIMENSIONS)
+    second.close()
+
+    conn = sqlite3.connect(backup)
+    try:
+        after = [r[1] for r in conn.execute("PRAGMA table_info(documents)")]
+    finally:
+        conn.close()
+    assert before == after, "the pre-migration copy was overwritten"
+    assert "text_source" not in after, "the backup now holds post-migration content"

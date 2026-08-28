@@ -66,12 +66,22 @@ def build_context(
     # the composition root rather than later.
     chosen = embedder or build_embedder(resolved)
     # Both widths are in hand here and nowhere else: the store is told a width
-    # and never sees the embedder, and `build_embedder` builds from the contract
-    # so it can never disagree with it. Compared before the store is constructed
-    # rather than after, because `initialize` would already have created the
-    # vector table at the contract's width and recorded a valid identity —
-    # leaving a wrongly sized store on disk that opens cleanly and then refuses
-    # every chunk part-way through an ingest.
+    # and never sees the embedder.
+    #
+    # Be clear about what this catches, because it reads like more than it is.
+    # `build_embedder` constructs either implementation with the contract's
+    # width, and both hand that value straight back, so configuration alone
+    # cannot make these disagree. What this guards is the seam just above —
+    # an embedder passed in directly — and it becomes the guard it looks like
+    # on the day one reports a width it was not given, having learnt it from
+    # the model it loaded. A contract that declares a width the real model does
+    # not produce is a different failure, and `ModelEmbedder` already raises on
+    # it when it loads.
+    #
+    # Compared before the store is constructed rather than after: once
+    # `initialize` has run, the vector table exists at the contract's width and
+    # a valid identity is recorded, leaving a wrongly sized store on disk that
+    # opens cleanly.
     if chosen.dimensions != resolved.contract.embed_dimensions:
         raise ConfigError(
             f"embedder {chosen.name!r} produces {chosen.dimensions}-wide vectors but the "

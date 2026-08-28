@@ -375,10 +375,19 @@ class SqliteStore:
             conn.commit()
         except Exception as exc:
             conn.rollback()
+            # Only promise the copy when one was actually taken. A new store is
+            # not backed up — it holds nothing to lose — and telling an operator
+            # to look for a file that was deliberately never written is worse
+            # than saying nothing.
+            reassurance = (
+                " Nothing was changed, and a copy of the store as it was is beside it."
+                if not is_new
+                else " Nothing was changed. The store was new, so no backup was taken."
+            )
             raise ConfigError(
                 f"store at {self._path} could not be carried from schema_version="
-                f"{recorded} to {SCHEMA_VERSION}: {type(exc).__name__}: {exc}. Nothing "
-                "was changed, and a copy of the store as it was is beside it."
+                f"{recorded} to {SCHEMA_VERSION}: {type(exc).__name__}: {exc}."
+                + reassurance
             ) from exc
 
     def _backup_before_migrating(self, conn: sqlite3.Connection, recorded: int) -> None:
@@ -394,6 +403,18 @@ class SqliteStore:
         originals have left the analyst's hands.
         """
         destination = self._path.with_suffix(self._path.suffix + f".v{recorded}.bak")
+        if destination.is_file():
+            # Someone got here first. Two processes can open the same store on
+            # the first run after an upgrade — `docker compose up` and
+            # `docker compose run cli` share a data directory — and both read
+            # the old version before either commits. Overwriting would replace
+            # the genuine pre-migration copy with an already-migrated one, under
+            # a name still claiming the old version. The existing file is the
+            # older and therefore the more valuable of the two.
+            #
+            # `is_file`, not `exists`: something at this path that is not a file
+            # is an obstruction, not a backup, and must still be reported.
+            return
         try:
             with sqlite3.connect(destination) as copy:
                 conn.backup(copy)
