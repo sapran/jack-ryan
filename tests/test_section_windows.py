@@ -148,16 +148,22 @@ def test_the_window_is_a_slice_of_the_document(sectioned):
         assert hit.text == source
 
 
-def test_the_window_does_not_cross_into_the_next_section(sectioned):
-    context, casefile = sectioned
-    hits = context.search.search(casefile.short_id, "dredging survey sentence", limit=5)
-    for hit in hits:
-        if hit.document.filename != "report.md" or not hit.is_widened:
-            continue
-        if "Alpha" in hit.chunk.heading_path:
-            assert "Beta sentence" not in hit.text
-        if "Beta" in hit.chunk.heading_path:
-            assert "Alpha sentence" not in hit.text
+def test_the_window_does_not_cross_into_the_next_section(context, sectioned_corpus):
+    """One hit, so its neighbours are not results and the window has room.
+
+    Asked with a wider limit this examined nothing: every passage of the document
+    was itself a result, so none could widen, and the loop skipped them all while
+    the test reported success.
+    """
+    casefile = context.casefiles.create("Boundary")
+    assert not context.ingestion.ingest(casefile.short_id, sectioned_corpus).failed
+
+    hits = context.search.search(casefile.short_id, "cormorant", limit=1)
+    assert hits and hits[0].document.filename == "sections.md"
+    hit = hits[0]
+    assert hit.is_widened, "nothing widened, so this test says nothing"
+    assert "Beta" in hit.chunk.heading_path
+    assert "Alpha sentence" not in hit.text
 
 
 def test_the_matched_chunk_keeps_its_own_span(sectioned):

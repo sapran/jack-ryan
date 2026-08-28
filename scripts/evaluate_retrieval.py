@@ -745,6 +745,14 @@ def load_judgements(path: Path) -> tuple[Judgement, ...]:
                 language=str(entry.get("language", "en")),
                 filename=str(entry["filename"]),
                 phrase=str(entry["phrase"]),
+                # An operator's corpus has near-duplicates too — a draft, the
+                # signed version, an amendment — so their judgements need the
+                # same escape the built-in set uses. Without this the harness
+                # would score their correct results as wrong.
+                also=tuple(
+                    (str(alternative["filename"]), str(alternative["phrase"]))
+                    for alternative in entry.get("also", ())
+                ),
             )
         )
     return tuple(out)
@@ -790,14 +798,20 @@ def build_evaluation_context(
     corpus: Path | None,
     window_max_chars: int | None = None,
     chunk_max_chars: int | None = None,
+    recognition: bool = True,
 ):
     """A real instance, wired the way the composition root wires one.
 
     When the built-in corpus is used the quality gate's rungs are stand-ins, and
     they must never run: every document here is text, so recognition is not part
     of what is being measured, and building the engine would download a model to
-    read nothing. An operator's own corpus may contain scans, so it gets the real
-    gate from the profile.
+    read nothing.
+
+    An operator's own corpus may contain scans, so it gets the real gate — and
+    that gate is built before the first document is read, so a text-only corpus
+    on a machine with no model weights would otherwise fail for a reason that has
+    nothing to do with retrieval. `--no-recognition` is the way to say the corpus
+    needs none.
     """
     from jackryan.app import build_context
     from jackryan.config import Config, Contract, Profile
@@ -818,7 +832,7 @@ def build_evaluation_context(
     )
 
     gate = None
-    if corpus is None:
+    if corpus is None or not recognition:
 
         class RungWasReached(BaseException):
             """Not an `Exception`: the ingest service would fold that into a
@@ -826,7 +840,7 @@ def build_evaluation_context(
 
         def unreached(path):
             raise RungWasReached(
-                f"a rung reader ran for {path}: the built-in evaluation corpus is text only"
+                f"a rung reader ran for {path}: this corpus was declared text only"
             )
 
         gate = QualityGate(
@@ -867,6 +881,15 @@ def main() -> int:
         ),
     )
     parser.add_argument("--corpus", type=Path, help="measure your own corpus instead")
+    parser.add_argument(
+        "--no-recognition",
+        action="store_true",
+        help=(
+            "declare your corpus text-only, so no recognition engine is built. "
+            "The engine is built before the first document is read, so without "
+            "this a text-only corpus still needs model weights on disk"
+        ),
+    )
     parser.add_argument("--queries", type=Path, help="your own judgements, as JSON")
     parser.add_argument("--baseline", type=Path, default=BASELINE_PATH)
     parser.add_argument(
@@ -900,6 +923,7 @@ def main() -> int:
             args.corpus,
             args.window_max_chars,
             args.chunk_max_chars,
+            recognition=not args.no_recognition,
         )
         try:
             casefile = context.casefiles.create("Retrieval Evaluation")

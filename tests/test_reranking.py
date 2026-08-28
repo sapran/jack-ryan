@@ -302,3 +302,35 @@ def test_a_store_opens_under_changed_retrieval_settings(config, gate, corpus):
         assert changed.search.search(casefile.short_id, "dredging survey", limit=3)
     finally:
         changed.close()
+
+
+def test_an_unbuildable_reranker_names_the_setting_and_the_alternatives():
+    """The message is the whole remedy, so it is asserted rather than assumed.
+
+    No network: an unregistered model is refused when the encoder is constructed,
+    before anything is fetched.
+    """
+    from jackryan.reranking.model import CrossEncoderReranker
+    from jackryan.reranking.port import RerankerUnavailable
+
+    reranker = CrossEncoderReranker(model_name="not-a-real/reranker")
+
+    with pytest.raises(RerankerUnavailable) as exc:
+        reranker.check()
+
+    message = str(exc.value)
+    assert "reranker_model='not-a-real/reranker'" in message
+    # The usual cause is a typo, and the list of registered models is the answer.
+    assert "Xenova/ms-marco-MiniLM-L-6-v2" in message
+
+
+def test_a_reranker_that_returns_the_wrong_number_of_scores_is_refused():
+    """A short list would silently pair scores with the wrong passages."""
+    from jackryan.reranking.model import CrossEncoderReranker
+    from jackryan.reranking.port import RerankError
+
+    reranker = CrossEncoderReranker(model_name="stub")
+    reranker._model = type("M", (), {"rerank": staticmethod(lambda q, d: [1.0])})()
+
+    with pytest.raises(RerankError, match="returned 1 scores for 2 passages"):
+        reranker.score("q", ["one", "two"])

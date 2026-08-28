@@ -263,3 +263,43 @@ async def test_a_passage_body_appears_once(loaded):
     )
     assert "neighbours" not in passage
     assert passage["text"].count("<<<UNTRUSTED") == 1
+
+
+@pytest.mark.anyio
+async def test_a_citation_of_a_widened_result_still_quotes_the_passage(
+    context, sectioned_corpus
+):
+    """Widening what is read must not widen what is quoted.
+
+    Every other citation test runs on results that were never widened, where a
+    citation of the window and a citation of the passage are the same string.
+    """
+    casefile = context.casefiles.create("Cited")
+    context.ingestion.ingest(casefile.short_id, sectioned_corpus)
+    server = build_mcp_server(context)
+
+    hits = await call(
+        server,
+        "case_search",
+        {"casefile": casefile.short_id, "query": "cormorant", "limit": 1},
+    )
+    result = hits["results"][0]
+    assert "matched" in result["provenance"], "the result was not widened"
+    matched = result["provenance"]["matched"]
+
+    citation = await call(
+        server,
+        "case_cite",
+        {"casefile": casefile.short_id, "chunk_id": result["chunk_id"]},
+    )
+
+    # The citation names the passage's span, not the wider one that was read.
+    assert citation["char_start"] == matched["char_start"]
+    assert citation["char_end"] == matched["char_end"]
+    assert (citation["char_start"], citation["char_end"]) != (
+        result["char_start"],
+        result["char_end"],
+    )
+    quoted = citation["quote"].split("\n", 1)[1].rsplit("\n", 1)[0]
+    body = result["text"].split("\n", 1)[1].rsplit("\n", 1)[0]
+    assert quoted in body and quoted != body

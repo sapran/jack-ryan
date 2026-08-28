@@ -4,10 +4,13 @@
 
 A list-shaped result SHALL carry a compact `formatted` index for scanning and a
 `results` array holding the entries. A passage body SHALL appear exactly once in
-a payload, so that reading the index costs nothing beyond the index. Where result
-bodies are widened beyond the matched passage, no part of one body SHALL be
-repeated in another: the same text under two identifiers is the same cost paid
-twice, and invites one passage to be counted as two pieces of evidence.
+a payload, so that reading the index costs nothing beyond the index. Where a body
+is widened beyond the matched passage, the widening SHALL NOT repeat text another
+body already carries: the same text under two identifiers is the same cost paid
+twice, and invites one passage to be counted as two pieces of evidence. Two
+matched passages may still share the overlap the corpus contract gives adjacent
+chunks, which is a property of how the corpus was divided rather than of this
+payload.
 
 Every result entry SHALL carry `chunk_id` and `document_id`. An identifier a
 tool returns SHALL be accepted by the tools that address that kind of object, so
@@ -34,10 +37,10 @@ score, and described as comparable only within that response.
 - **WHEN** a search returns results
 - **THEN** a `formatted` index is present, and each passage body appears exactly once under `results`
 
-#### Scenario: Widened bodies do not repeat each other's text
+#### Scenario: Widening does not repeat another body's text
 
-- **WHEN** two results are widened and their spans would overlap
-- **THEN** the payload carries that text once, and the later entry is narrowed
+- **WHEN** widening one result would reach into the span another result carries
+- **THEN** the later entry is narrowed, and the payload repeats no text beyond the overlap the contract gives adjacent chunks
 
 #### Scenario: Identifiers chain between tools
 
@@ -86,10 +89,10 @@ the source by hand.
 - **WHEN** a search is asked for more results than the surface permits
 - **THEN** it returns the permitted maximum rather than an error
 
-#### Scenario: A response that would exceed the text bound is narrowed and says so
+#### Scenario: Widening stops when the response bound is reached
 
-- **WHEN** the results of one search would together carry more corpus text than permitted
-- **THEN** the response stays within the bound and states that it was narrowed
+- **WHEN** widening the results of one search would take the response past its text bound
+- **THEN** later results carry their matched passage alone and state that they were narrowed, and no result is dropped
 
 #### Scenario: A passage returned with its surroundings declares the whole span
 

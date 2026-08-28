@@ -102,9 +102,15 @@ other scores exactly what a chunk ranked second and first scores — and they we
 being broken by `chunk_id`, which is a fresh `uuid4` after every reingest.
 
 *Consequence:* the candidate chunks are now fetched before the ordering rather
-than after it, so the sort can fall back to the matched chunk's document and
-ordinal, both of which survive a rebuild. Phase 3 needs those texts in hand at
-the same point anyway, to score them.
+than after it, so the sort can fall back to properties of the corpus. Phase 3
+needs those texts in hand at the same point anyway, to score them.
+
+*Corrected once during implementation:* falling back to the document and the
+ordinal fixed a reingest and not a rebuild — a document's id is fresh in a store
+built from scratch, so two runs of the harness still disagreed. The order is
+settled by the ordinal and the passage text, and by the chunk id only where two
+passages are identical in both, which is the one case where the order does not
+matter.
 
 *Why it is not a drive-by:* a measurement that cannot be reproduced cannot
 detect a regression, and the baseline gate would report failures that are noise.
@@ -294,8 +300,16 @@ set to a chunk's width to switch expansion off entirely.
 
 None that change the specs, the approach or the tasks.
 
-One decision is deliberately left to the measurement rather than to this document:
-which reranker model, if any, this project should recommend. The licence and
-packaging facts that constrain that choice are recorded under Decisions so the
-answer can be made on evidence once there is a figure to read. Anything else found
-while building goes to `docs/implementation-notes.md`.
+One decision was deliberately left to the measurement rather than to this
+document: which reranker model, if any, this project should recommend. **The
+measurement answered it: none of the ones available.** Both cross-encoders the
+embedding library registers were run against the harness, and both made retrieval
+worse — `Xenova/ms-marco-MiniLM-L-6-v2` took fused recall@1 from 0.882 to 0.176,
+`jinaai/jina-reranker-v2-base-multilingual` to 0.529, and both took Ukrainian to
+0.000, because for a Ukrainian query the cross-encoder ranks English passages
+above the Ukrainian one that answers it. The wiring was verified before that
+conclusion was drawn. So the licence question recorded under Decisions is moot
+for now: the model that would have raised it does not earn its place.
+
+The figures, their conditions and their limits are in `docs/handover.md`.
+Anything else found while building went to `docs/implementation-notes.md`.

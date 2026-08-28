@@ -36,7 +36,7 @@ destroy the evidence that fusion ran and invite an analyst to read it as certain
 #### Scenario: An instance with no reranker configured searches as before
 
 - **WHEN** a search runs on an instance that names no reranker
-- **THEN** results are returned in the fused order and the response reports that it was not reranked
+- **THEN** results are returned in the fused order, and the response reports that the ordering is the fused one and that no reranker was configured
 
 #### Scenario: Reranking reorders only what fusion returned
 
@@ -51,7 +51,7 @@ destroy the evidence that fusion ran and invite an analyst to read it as certain
 #### Scenario: A reranker failing on one response degrades to the fused order
 
 - **WHEN** the reranker raises while scoring a response
-- **THEN** the search returns the fused ordering and the response reports that it was not reranked
+- **THEN** the search returns the fused ordering, and the response reports that a reranker was configured and did not run — which is a different report from the one an instance without a reranker gives
 
 #### Scenario: The fusion score survives reranking
 
@@ -79,11 +79,17 @@ what is read SHALL NOT widen what is quoted: identifiers, the passage tool and
 the citation tool SHALL continue to resolve the chunk, and a citation's span
 SHALL continue to be the chunk's span.
 
-Within one response, two results SHALL NOT return overlapping windows. A result
-whose window would overlap one already returned SHALL be narrowed until it does
-not, to its matched chunk if necessary. The same text arriving twice under two
-identifiers costs the caller its budget twice and invites double-counting of one
-passage as two pieces of evidence.
+Widening SHALL NOT repeat text another result in the same response already
+carries. A window that would reach into another result's span SHALL be pulled
+back, and where it cannot be pulled back without cutting into the matched chunk
+it SHALL be given up in favour of the chunk alone.
+
+Two matched chunks may still share text with each other, and that is not this
+stage's doing: chunks overlap by the width the contract declares, so two adjacent
+passages returned as two results carry that overlap however narrow they are made.
+What SHALL NOT happen is a widened window carrying a stretch of text another
+result already carried, which costs the caller its budget twice and invites one
+passage to be counted as two pieces of evidence.
 
 #### Scenario: A result's text extends beyond the matched chunk
 
@@ -100,10 +106,10 @@ passage as two pieces of evidence.
 - **WHEN** a citation is requested for a result whose text was widened
 - **THEN** the citation names the matched chunk's span, and quotes the chunk
 
-#### Scenario: Two results in one response do not repeat text
+#### Scenario: Widening does not repeat what another result carries
 
-- **WHEN** two results match chunks close enough that their windows would overlap
-- **THEN** the later result is narrowed so no text appears twice in the response
+- **WHEN** two results match chunks close enough that widening one would reach into the other
+- **THEN** the later result is narrowed, and no text beyond the overlap the contract gives adjacent chunks appears twice in the response
 
 ## MODIFIED Requirements
 
@@ -135,6 +141,11 @@ corpus differently after a rebuild, and ranks two stores holding identical
 material differently from each other. A retrieval figure measured under one
 cannot then be compared with a figure measured under the other, which is to say
 it cannot be compared with anything.
+
+Two candidates identical in both position and text are the one exception, and
+only because there is nothing left to decide: whichever is returned first, the
+caller is reading the same words at the same place. Their order MAY be settled by
+any stable value.
 
 #### Scenario: A tie is broken the same way in a store built afresh
 

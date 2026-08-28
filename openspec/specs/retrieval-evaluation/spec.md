@@ -1,3 +1,5 @@
+# retrieval-evaluation Specification
+
 ## Purpose
 
 Defines how retrieval quality is measured in this project: a fixed query set with
@@ -5,7 +7,7 @@ recorded judgements, named metrics computed through the service layer, a baselin
 a later change must beat, and the rule that a quality claim names the conditions
 it was measured under.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Retrieval quality is measured against a fixed query set with recorded judgements
 

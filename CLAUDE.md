@@ -141,8 +141,9 @@ same width, which nothing downstream can detect.
   afresh on every reingest while document ids differ between two stores built
   from the same documents. Ordering by either makes an unchanged corpus rank
   differently between runs — which it did, by 0.058 recall@1, until ties were
-  broken by the passage's ordinal and text. Nothing else can be reproduced if
-  this is not.
+  broken by the passage's ordinal and text. An identifier decides only between
+  two passages identical in both, where the order does not matter. Nothing else
+  can be reproduced if this is not.
 - **Retrieval settings are profile and leave no residue.** `reranker_model`,
   `rerank_depth` and `window_max_chars` are read at query time and write nothing
   — no vector, no chunk, no stored text — so no store is ever refused for them.
@@ -277,7 +278,6 @@ docker compose run --rm cli casefile list
 - `src/jackryan/embedding/` — embedder port, the real model, and the test double
 - `src/jackryan/reranking/` — reranker port and the cross-encoder behind it
 - `scripts/evaluate_retrieval.py` — the retrieval measurement and its baseline
-- `src/jackryan/reranking/` — reranker port and the cross-encoder behind it
 - `src/jackryan/services/` — all business logic
 - `src/jackryan/server.py`, `cli.py` — thin adapters
 - `src/jackryan/interfaces/mcp/` — the agent surface: tools, shapes, fencing,

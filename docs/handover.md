@@ -290,7 +290,10 @@ PST stays last, as `docs/design.md` § 10 has it.
 temporary directory, runs seventeen queries with recorded judgements through the
 shipped `SearchService`, and reports recall@1/@5/@10 and MRR@10 for the keyword
 leg, the vector leg and the fused ranking, with a per-language breakdown. It
-compares against `docs/retrieval-baseline.json` and exits non-zero below it.
+compares against `docs/retrieval-baseline.json` and exits non-zero below it, with
+a tolerance of 0.005 — kernels differ between machines and one query is 0.059 of
+recall@1, so a gate that fires on arithmetic noise is one a reader learns to
+ignore.
 
 Judgements are keyed to a filename and a phrase, never to a chunk id — ids are
 minted afresh on every reingest — and a judgement may name alternatives, because

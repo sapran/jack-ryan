@@ -14,6 +14,12 @@ Any corpus-derived text a tool returns SHALL be delimited by a marker generated
 per response, and SHALL carry a provenance block naming the casefile, the
 document, the position it came from, and the document's containment path.
 
+The position SHALL be the position of the text actually returned. Where that text
+is wider than the passage that matched, the provenance SHALL also name the
+matched passage and its own position within the document. A provenance block
+that describes a narrower span than the text beside it is worse than none: it
+reads as a precise reference and cannot be followed back to what was quoted.
+
 The containment path SHALL be present because a document produced by expansion
 does not identify itself: an attachment named `scan.pdf` is evidence only once
 it is known which message carried it and which archive carried that. A citation
@@ -32,6 +38,11 @@ enters a line-oriented block.
 
 - **WHEN** a tool returns text taken from a document
 - **THEN** the text is delimited by a per-response marker and accompanied by provenance naming its casefile, document, position, and containment path
+
+#### Scenario: Provenance covers the text returned, not only the match
+
+- **WHEN** a tool returns text wider than the passage that matched
+- **THEN** the provenance names the span of the text returned and separately names the matched passage and its span
 
 #### Scenario: Two responses do not share a marker
 

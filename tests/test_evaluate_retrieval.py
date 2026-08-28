@@ -379,3 +379,134 @@ def test_a_run_below_its_baseline_exits_non_zero(tmp_path, monkeypatch, capsys):
     )
     assert harness.main() == 1
     assert "below the baseline" in capsys.readouterr().out
+
+
+def test_the_workspace_is_removed_when_the_run_ends(tmp_path, monkeypatch, capsys):
+    """The corpus and store it built must not survive the run.
+
+    A measurement that leaves a corpus behind is a measurement that fills a disk,
+    and this one writes invented case material — it should exist for as long as
+    the figures take to compute and no longer.
+    """
+    import glob
+    import tempfile
+
+    before = set(glob.glob(f"{tempfile.gettempdir()}/jackryan-evaluate-*"))
+    run_harness(
+        monkeypatch, "--embedder", "deterministic", "--baseline", str(tmp_path / "b.json")
+    )
+    capsys.readouterr()
+    after = set(glob.glob(f"{tempfile.gettempdir()}/jackryan-evaluate-*"))
+    assert after == before
+
+
+def test_the_workspace_is_kept_when_asked(tmp_path, monkeypatch, capsys):
+    import glob
+    import shutil
+    import tempfile
+
+    before = set(glob.glob(f"{tempfile.gettempdir()}/jackryan-evaluate-*"))
+    run_harness(
+        monkeypatch,
+        "--embedder",
+        "deterministic",
+        "--baseline",
+        str(tmp_path / "b.json"),
+        "--keep",
+    )
+    capsys.readouterr()
+    kept = set(glob.glob(f"{tempfile.gettempdir()}/jackryan-evaluate-*")) - before
+    try:
+        assert len(kept) == 1
+    finally:
+        for path in kept:
+            shutil.rmtree(path, ignore_errors=True)
+
+
+# --- an operator's own material --------------------------------------------
+
+
+def _operator_set(tmp_path):
+    """A tiny corpus and its judgements, in the shape an operator would supply."""
+    corpus = tmp_path / "mine"
+    corpus.mkdir()
+    (corpus / "award.md").write_text(
+        "# Award\n\nThe berth was awarded to Northgate Holdings in March.\n",
+        encoding="utf-8",
+    )
+    (corpus / "variation.md").write_text(
+        "# Variation\n\nThe berth held by Northgate Holdings gains a weighbridge.\n",
+        encoding="utf-8",
+    )
+    (corpus / "kitchen.txt").write_text(
+        "Notes about baking bread and grinding coffee.\n", encoding="utf-8"
+    )
+    queries = tmp_path / "queries.json"
+    queries.write_text(
+        json.dumps(
+            [
+                {
+                    "query": "Who holds the berth?",
+                    "language": "en",
+                    "filename": "award.md",
+                    "phrase": "awarded to Northgate Holdings",
+                    "also": [
+                        {
+                            "filename": "variation.md",
+                            "phrase": "held by Northgate Holdings",
+                        }
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return corpus, queries
+
+
+def test_an_operator_can_measure_their_own_material(tmp_path, monkeypatch, capsys):
+    """The requirement is that this works without modifying the harness.
+
+    `--no-recognition` is part of that: the recognition engine is built before the
+    first document is read, so a text-only corpus would otherwise need model
+    weights on disk for no reason.
+    """
+    corpus, queries = _operator_set(tmp_path)
+    code = run_harness(
+        monkeypatch,
+        "--embedder",
+        "deterministic",
+        "--baseline",
+        str(tmp_path / "none.json"),
+        "--corpus",
+        str(corpus),
+        "--queries",
+        str(queries),
+        "--no-recognition",
+    )
+    printed = capsys.readouterr().out
+    assert code == 0
+    assert "query_set=operator" in printed
+    assert "queries=1" in printed
+
+
+def test_an_operator_judgement_may_name_alternative_answers(tmp_path):
+    """Near-duplicates are the ordinary case in a real corpus, so an operator's
+    judgements need the same escape the built-in set uses."""
+    _, queries = _operator_set(tmp_path)
+    judgements = harness.load_judgements(queries)
+
+    assert len(judgements) == 1
+    judgement = judgements[0]
+    assert judgement.also == (("variation.md", "held by Northgate Holdings"),)
+    # Either passage answers it.
+    assert harness.is_relevant(judgement, "award.md", "awarded to Northgate Holdings")
+    assert harness.is_relevant(judgement, "variation.md", "held by Northgate Holdings")
+    assert not harness.is_relevant(judgement, "kitchen.txt", "baking bread")
+
+
+def test_a_corpus_without_judgements_is_refused(tmp_path, monkeypatch):
+    """The two go together: someone else's corpus needs someone else's answers."""
+    corpus, _ = _operator_set(tmp_path)
+    with pytest.raises(SystemExit):
+        run_harness(monkeypatch, "--corpus", str(corpus))
