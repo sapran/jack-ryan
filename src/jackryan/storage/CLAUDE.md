@@ -1,8 +1,16 @@
 # Storage — schema and migrations
 
 These rules live here rather than in the root memory file because `_SCHEMA` and
-`_STEPS` appear in exactly one source file, `sqlite.py`. A session that cannot
-cause the failure does not need to carry the warning.
+`_STEPS` are defined in one file, `sqlite.py`, and adding a column or a step
+means editing it — which is what loads this file. A session that cannot cause
+the failure does not need to carry the warning.
+
+`tests/test_migrations.py` names both from outside this directory, so it does
+not load these rules. The additive-only rule and the FTS-trigger rule are
+enforced there by `test_no_step_is_destructive` and
+`test_the_fts_trigger_covers_every_fts_column`. The frozen-`_SCHEMA` rule is the
+one no test can catch, which is why its one-line form stays in the root
+`CLAUDE.md`.
 
 - **`_SCHEMA` in the store is frozen at schema version 4.** Never add a column,
   table or index to it — add a step to `_STEPS`. Every statement there is
