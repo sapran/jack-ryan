@@ -72,6 +72,18 @@ configured corpus identity. On every later initialisation it SHALL compare the
 recorded values against the configured ones and SHALL refuse to open on a
 mismatch, because a corpus is only appendable under the rules that created it.
 
+The two recorded values SHALL be treated differently, because they fail for
+different reasons. A schema version below the running one SHALL be carried
+forward rather than refused; corpus identity SHALL always be compared and never
+migrated. A schema describes how the same evidence is stored, and can be changed
+without changing what the evidence means; corpus identity describes what the
+stored vectors mean, and nothing can reconcile two answers to that.
+
+The schema SHALL be carried forward before corpus identity is compared. A store
+that is migrated and then refused on identity is left improved and undamaged,
+whereas comparing identity first would refuse a store the running code could have
+read.
+
 Corpus identity SHALL include which embedder produced the vectors, not only the
 contract they were configured by. A store filled by the deterministic embedder
 SHALL be refused by a real-model configuration, and the reverse. Both produce
@@ -84,6 +96,10 @@ reingest under the current one. Two long identity strings differing in one
 component tell an operator what happened but not what to do about it, and this
 refusal is expected during ordinary work — every fingerprint change produces it
 for every existing corpus.
+
+A refusal for the schema version SHALL NOT use the corpus-identity remedy.
+"Restore the configuration the recorded value names" cannot be acted on for a
+schema the running code no longer contains.
 
 #### Scenario: Reopening under the same contract succeeds
 
@@ -104,6 +120,16 @@ for every existing corpus.
 
 - **WHEN** a store refuses to open under a different corpus identity
 - **THEN** the message states that the configuration can be restored or the casefiles reingested
+
+#### Scenario: An older schema is migrated where an older identity is refused
+
+- **WHEN** a store recorded at an older schema version but a matching corpus identity is opened
+- **THEN** it is carried forward and opens, rather than being refused
+
+#### Scenario: The schema is carried forward before identity is compared
+
+- **WHEN** a store has both an older schema version and a different corpus identity
+- **THEN** the schema is migrated and the store is then refused on identity
 
 ### Requirement: Shared state is guarded for threads, not just coroutines
 

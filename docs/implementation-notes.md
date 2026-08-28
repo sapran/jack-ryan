@@ -6,6 +6,30 @@ and why it was parked.
 
 ## Parked
 
+- **Originals are never archived, though `docs/design.md` § 5 says they are.**
+  The Finalize step of the ingestion pipeline is documented as "originals
+  archived content-addressed within the casefile". Nothing in
+  `src/jackryan/services/ingestion.py` does that: a file ingested from disk is
+  read at the analyst's own path and never copied, and a document expanded out
+  of a container is written to a `mkdtemp` workspace that is `rmtree`'d in a
+  `finally`. The consequence reaches further than the missing feature — every
+  document that says "reingest" as its remedy, including the corpus-identity
+  refusal and the schema-migration floor, assumes the operator still holds the
+  originals, which is precisely what the design said the workbench would hold
+  for them. Found while designing the migration ladder, where "reingest is the
+  migration path" was one of the three candidate approaches and was weakened by
+  exactly this. Parked: archiving originals is a capability with its own storage
+  and identity questions, not a line in a migration change.
+
+- **A reingest does not reproduce a document's identifiers, and nothing records
+  where a casefile was ingested from.** Both surfaced while judging migration
+  approaches. Recording an ingest root would make "reingest" an actionable
+  instruction rather than a hopeful one, and deriving document identifiers from
+  content plus containment path would let a rebuild reproduce the citations an
+  analyst has already written down. Together they are the natural next change
+  after this one, and both alter what identity means, so they belong in a change
+  with its own delta spec rather than grafted onto this one.
+
 - **`read_as: text-layer` is the strongest provenance the surface offers, and
   nothing checks the page it claims to come from.** Rung one reads the PDF's
   content stream. Text an adversary rendered invisibly — white on white, behind
@@ -53,17 +77,6 @@ and why it was parked.
   extras or a CPU-only torch index, which changes what the vision rung can do
   and so belongs with a decision about whether the image should carry it at all.
 
-- **`text_source` reaches the agent but not the human.** The MCP surface reports
-  it as `read_as` on every payload carrying corpus text, and the store holds it,
-  but `jackryan document list`, the REST document endpoints and
-  `case_list_documents` do not show it. So an analyst cannot ask "which
-  documents in this casefile were read by OCR?" without querying SQLite. The
-  spec requires it only where corpus text is returned, which is why this is a
-  gap rather than a defect — but the human is arguably the audience that needs
-  it most, since they are the one who decides whether to re-scan a document.
-  Parked: it is a display change across three adapters, and the change that
-  introduced the value was already large.
-
 - **Every ingest now prints RapidOCR's own log lines and a progress bar.**
   Verifying the recognition engine at the start of a run builds it, and the
   library logs at INFO and draws a `Loading weights:` bar straight to the
@@ -90,34 +103,6 @@ and why it was parked.
   already stored when it expires?) and belongs with the retry ledger, not inside
   a change about extraction quality. docling's own `document_timeout` pipeline
   option is the likely lever.
-
-- **The store has no migration path, and `text_source` spent the last of the
-  free schema changes.** `_SCHEMA` is `CREATE TABLE IF NOT EXISTS`, there is no
-  `ALTER TABLE` anywhere, and `_verify_meta` refuses a store whose recorded
-  `schema_version` differs from the running one. So every schema change so far
-  has meant "recreate the corpus", which has been free only because no corpus
-  exists outside development. The next one will not be. Parked: writing a
-  migration mechanism is a change of its own, and doing it speculatively before
-  the first real corpus would be building against a guess.
-
-- **The embedder's width is never checked against the contract's, though the
-  composition root now has both.** `build_context` constructs the embedder
-  before sizing the store, so `chosen.dimensions` and
-  `contract.embed_dimensions` are both in hand one line apart — and are not
-  compared. `build_context(config, embedder=DeterministicEmbedder(64))` against
-  a 1024-wide contract creates the vector table at 1024, records a valid
-  identity, opens cleanly, and then fails on every chunk deep inside an ingest.
-  One line would turn that into a boot-time refusal at the same depth as the
-  identity guard. Parked: found by review of the change that created the
-  adjacency; it is a different guard from the one that change is about.
-
-- **Corpus identity is an unescaped `|`-joined string over operator-supplied
-  values.** `Contract.fingerprint()` and `corpus_fingerprint` both join with `|`
-  and `=` without escaping, so an `embed_model` containing `|embedder=` produces
-  an identity that cannot be parsed back unambiguously. No two-corpora collision
-  was demonstrated and the shape pre-dates both fingerprint changes, but this is
-  the one string whose entire job is that two different corpora never share an
-  identity. Fix by escaping separators in values, or by hashing the components.
 
 - **Naming drift: the store still calls corpus identity `contract`.**
   `initialize(contract_fingerprint=...)`, the `store_meta` key, the refusal text
@@ -153,6 +138,35 @@ and why it was parked.
   guard by weakening the one in `ModelEmbedder`.
 
 ## Fixed
+
+- **~~The store has no migration path.~~** Fixed by
+  `corpus-identity-and-schema-migration` on 2026-08-28. The baseline is frozen
+  at schema version 4 and an ordered ladder of additive steps carries a store
+  forward, with `text_source` as the first rung so a brand-new store climbs the
+  same step an old one does — a runner exercised only by a fixture rots between
+  the day it is written and the day it is needed. A backup is taken through
+  SQLite's own backup API first, and three mechanical tests enforce the
+  additive rule, the frozen baseline and the FTS trigger's column list.
+
+- **~~Corpus identity is an unescaped `|`-joined string.~~** Fixed by the same
+  change: each component escapes backslash, pipe and control characters, and
+  deliberately not `=`, since `embed_library` contains `==`. Every reachable
+  identity is byte-identical afterwards, so no store was invalidated. The parked
+  note overstated the reach — no collision is constructible through a config
+  file, because only `embed_model` is free text; what was reachable was a
+  deceptive identity naming an embedder the instance was not running.
+
+- **~~The embedder's width is never checked against the contract's.~~** Compared
+  now at the composition root before the store is constructed. Read the guard
+  narrowly: `build_embedder` builds both implementations from the contract, so
+  configuration cannot make them disagree. It covers the seam where an embedder
+  is supplied directly, and becomes the guard it reads like the day one learns
+  its width from the model it loaded.
+
+- **~~`text_source` reaches the agent but not the human.~~** Now on the CLI, both
+  REST document endpoints and `case_list_documents`, under the same key and
+  vocabulary the agent sees, with an unrecognised value collapsing to
+  `unrecorded` on all four alike.
 
 - **~~The contract fingerprint does not cover the embedding library version.~~**
   Fixed by the `contract-covers-embedding-library` change on 2026-08-26: the

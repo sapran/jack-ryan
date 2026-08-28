@@ -489,3 +489,84 @@ def test_a_second_process_does_not_overwrite_the_pre_migration_copy(tmp_path):
         conn.close()
     assert before == after, "the pre-migration copy was overwritten"
     assert "text_source" not in after, "the backup now holds post-migration content"
+
+
+def test_a_failing_step_leaves_the_store_at_its_recorded_version(tmp_path, monkeypatch):
+    """A step that raises must roll back, not half-apply.
+
+    Every step runs inside one transaction with one commit, so an interrupted
+    migration leaves the store exactly as it was — which is what makes it safe
+    to retry, and what makes the backup a second line of defence rather than the
+    only one.
+    """
+    from jackryan.storage import sqlite as mod
+
+    broken = mod._Step(
+        to_version=SCHEMA_VERSION + 1,
+        reason="a step that cannot succeed",
+        statements=(
+            "ALTER TABLE documents ADD COLUMN added_first TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE documents ADD COLUMN added_first TEXT NOT NULL DEFAULT ''",
+        ),
+    )
+    monkeypatch.setattr(mod, "_STEPS", mod._STEPS + (broken,))
+    monkeypatch.setattr(mod, "SCHEMA_VERSION", SCHEMA_VERSION + 1)
+
+    path = build_baseline_store(tmp_path / "old.db")
+    store = SqliteStore(path)
+    try:
+        with pytest.raises(ConfigError) as exc:
+            store.initialize(IDENTITY, DIMENSIONS)
+        assert "could not be carried" in str(exc.value)
+    finally:
+        store.close()
+
+    # Nothing half-applied, and the version is untouched: a retry starts from a
+    # known place rather than from wherever the failure happened to land.
+    conn = sqlite3.connect(path)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(documents)")]
+        assert "added_first" not in cols
+        assert "text_source" not in cols
+        stamped = conn.execute(
+            "SELECT value FROM store_meta WHERE key='schema_version'"
+        ).fetchone()[0]
+        assert stamped == str(_BASELINE_VERSION)
+    finally:
+        conn.close()
+
+
+def test_the_version_is_re_read_under_the_write_lock(tmp_path):
+    """The unlocked first read is only safe because of the re-read.
+
+    The version is read once without a lock so the backup can be taken — SQLite's
+    backup API cannot run inside a write transaction — and then again inside the
+    transaction that applies the steps. If another process migrated the file in
+    between, applying the steps a second time is what ADD COLUMN cannot survive.
+
+    Simulated by migrating the store out from under an in-flight open, which is
+    what the re-read exists to notice.
+    """
+    from jackryan.storage import sqlite as mod
+
+    path = build_baseline_store(tmp_path / "old.db")
+
+    store = SqliteStore(path)
+    original = store._backup_before_migrating
+    raced = []
+
+    def migrate_underneath(conn, recorded):
+        original(conn, recorded)
+        # Another process finishes the whole migration while we hold no lock.
+        other = SqliteStore(path)
+        other.initialize(IDENTITY, DIMENSIONS)
+        other.close()
+        raced.append(True)
+
+    store._backup_before_migrating = migrate_underneath
+    try:
+        store.initialize(IDENTITY, DIMENSIONS)
+        assert raced, "the race was never triggered"
+        assert "text_source" in columns_of(store)
+    finally:
+        store.close()
