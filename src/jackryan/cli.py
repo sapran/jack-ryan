@@ -13,6 +13,7 @@ import sys
 from typing import Any, Sequence
 
 from . import __version__
+from .ingestion.quality_gate import read_as
 from .app import build_context
 from .errors import JackRyanError
 from .storage.port import Casefile, Document, SearchHit
@@ -38,6 +39,10 @@ def _render_document(document: Document) -> dict[str, Any]:
         "media_type": document.media_type,
         "byte_size": document.byte_size,
         "extractor": document.extractor,
+        # How the text was obtained. The analyst is the one who decides whether
+        # a document is worth re-scanning, so they need this at least as much as
+        # the assistant does — and under the same name the assistant sees.
+        "read_as": read_as(document.text_source),
         "characters": len(document.extracted_text),
         "created_at": document.created_at.isoformat(),
     }
@@ -77,7 +82,10 @@ def _print(payload: Any, as_json: bool, empty_message: str = "Nothing to show.")
             if "slug" in item:
                 print(f"{item['short_id']}  {item['slug']:<28}  {item['title']}")
             elif "filename" in item:
-                print(f"{item['short_id']}  {item['filename']:<38}  {item['characters']:>8} chars")
+                print(
+                    f"{item['short_id']}  {item['filename']:<38}  "
+                    f"{item['characters']:>8} chars  {item['read_as']}"
+                )
             else:
                 print(item)
         return

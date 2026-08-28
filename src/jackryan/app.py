@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from .config import Config, corpus_fingerprint, load_config
 from .embedding import build_embedder
 from .embedding.port import EmbedderPort
+from .errors import ConfigError
 from .ingestion.quality_gate import QualityGate
 from .services.casefiles import CasefileService
 from .services.ingestion import IngestionService
@@ -64,6 +65,23 @@ def build_context(
     # rejects a non-positive width at construction, and that now surfaces from
     # the composition root rather than later.
     chosen = embedder or build_embedder(resolved)
+    # Both widths are in hand here and nowhere else: the store is told a width
+    # and never sees the embedder, and `build_embedder` builds from the contract
+    # so it can never disagree with it. Compared before the store is constructed
+    # rather than after, because `initialize` would already have created the
+    # vector table at the contract's width and recorded a valid identity —
+    # leaving a wrongly sized store on disk that opens cleanly and then refuses
+    # every chunk part-way through an ingest.
+    if chosen.dimensions != resolved.contract.embed_dimensions:
+        raise ConfigError(
+            f"embedder {chosen.name!r} produces {chosen.dimensions}-wide vectors but the "
+            f"contract declares embed_dimensions={resolved.contract.embed_dimensions}. "
+            "The vector index is sized from the contract, so this instance would open "
+            "cleanly and then refuse every chunk part-way through an ingest. Select an "
+            "embedder that matches, or change embed_dimensions — but that value is "
+            "corpus-coupled, so changing it is a new corpus identity and forces a "
+            "reingest of every casefile."
+        )
     identity = corpus_fingerprint(resolved.contract, chosen.name)
     store = SqliteStore(resolved.db_path)
     try:

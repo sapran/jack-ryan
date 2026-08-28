@@ -245,3 +245,42 @@ async def test_search_results_report_how_each_hit_was_read(context, casefile, co
     )
     assert payload["results"]
     assert all(r["provenance"]["read_as"] == NATIVE for r in payload["results"])
+
+
+# --- One vocabulary, on every surface a person or an assistant reads ----------
+
+
+def test_every_document_surface_reports_how_the_text_was_read(context, casefile, corpus):
+    """Four renderers, one key, one vocabulary.
+
+    The analyst is the audience with the most use for this — they decide whether
+    a document is worth re-scanning — and before this change they were the only
+    audience who could not see it.
+    """
+    from jackryan.cli import _render_document as cli_render
+    from jackryan.interfaces.mcp.server import _render_document as mcp_render
+    from jackryan.server import serialize_document as rest_render
+
+    context.ingestion.ingest(casefile.short_id, corpus)
+    document = context.store.list_documents(casefile.id)[0]
+
+    for render in (cli_render, rest_render, mcp_render):
+        row = render(document)
+        assert row["read_as"] == NATIVE, f"{render.__module__} does not report it"
+
+
+def test_an_unrecognised_rung_collapses_on_every_surface(context, casefile, corpus):
+    # A value this codebase did not write must never be shown as though it meant
+    # something — and must collapse the same way wherever it is shown.
+    from dataclasses import replace
+
+    from jackryan.cli import _render_document as cli_render
+    from jackryan.interfaces.mcp.server import _render_document as mcp_render
+    from jackryan.server import serialize_document as rest_render
+
+    context.ingestion.ingest(casefile.short_id, corpus)
+    document = context.store.list_documents(casefile.id)[0]
+    tampered = replace(document, text_source="definitely-a-text-layer")
+
+    for render in (cli_render, rest_render, mcp_render):
+        assert render(tampered)["read_as"] == "unrecorded"
