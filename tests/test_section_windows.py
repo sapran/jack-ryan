@@ -270,3 +270,48 @@ def test_a_window_never_runs_past_a_heading_it_would_cross(context, sectioned_co
     assert beyond, "the window did not extend past the passage, so nothing is tested"
     assert not any(line.startswith("#") for line in beyond.splitlines()), beyond
     assert "pelican" not in hit.text
+
+
+def test_a_result_clipped_by_another_result_says_it_was_narrowed(context, sectioned_corpus):
+    """A result cut back to leave room for a neighbour must not look like one
+    that had no more context to give — that is the confusion the flag exists to
+    prevent, and it applies to the top-ranked result as much as to any other."""
+    casefile = context.casefiles.create("Clipped")
+    assert not context.ingestion.ingest(casefile.short_id, sectioned_corpus).failed
+
+    hits = context.search.search(casefile.short_id, "Alpha sentence concerns", limit=10)
+    same_document = [h for h in hits if h.document.filename == "sections.md"]
+    assert len(same_document) > 1, "need two results in one document to contest a window"
+
+    for hit in same_document:
+        alone, _ = context.search._window_for(
+            hit.chunk, hit.document, context.search._window_max_chars
+        )
+        if alone is not None and not hit.is_widened:
+            assert hit.narrowed, (
+                "a result whose window was given up for a neighbour reported "
+                "narrowed=False"
+            )
+
+
+def test_a_stale_offset_is_not_widened(context, sectioned_corpus):
+    """Ingestion writes a document and its chunks in two transactions, so a run
+    that fails between them leaves new text against old offsets. Widening on
+    those would return a passage from elsewhere in the document as evidence,
+    under provenance naming a span it never occupied."""
+    from dataclasses import replace as replace_fields
+
+    casefile = context.casefiles.create("Stale")
+    assert not context.ingestion.ingest(casefile.short_id, sectioned_corpus).failed
+    hit = context.search.search(casefile.short_id, "cormorant", limit=1)[0]
+    assert hit.is_widened, "this passage must widen normally, or nothing is tested"
+
+    # The document's text moves on; the chunk's offsets do not. Same length, so
+    # the span is still in range — the offsets simply describe other words now.
+    text = hit.document.extracted_text
+    shifted = replace_fields(hit.document, extracted_text="x" * len(text))
+
+    window, _ = context.search._window_for(
+        hit.chunk, shifted, context.search._window_max_chars
+    )
+    assert window is None, "widened a span the stored passage no longer occupies"

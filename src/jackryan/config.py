@@ -198,7 +198,12 @@ class Profile:
 
     A result's text is a window around the matched passage rather than the
     passage alone, so a quotation arrives with the sentences that give it
-    meaning. Set at or below the chunk size to switch widening off.
+    meaning.
+
+    Compared against the matched passage's own length, not against the contract's
+    chunk size: the chunker snaps to paragraph boundaries, so most passages are
+    shorter than `chunk_max_chars` and a budget equal to it still widens them.
+    Set this to 1 to switch widening off outright.
 
     Retrieval settings live here rather than in the contract because they write
     nothing: no vector, no chunk, no stored text. Changing one changes what the

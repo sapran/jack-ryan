@@ -334,3 +334,59 @@ def test_a_reranker_that_returns_the_wrong_number_of_scores_is_refused():
 
     with pytest.raises(RerankError, match="returned 1 scores for 2 passages"):
         reranker.score("q", ["one", "two"])
+
+
+def test_reranking_never_returns_fewer_results_than_fusion_found(reranked):
+    """Reranking reorders what was found; it must not decide how much is found.
+
+    The pool is bounded by rerank_depth, so a caller asking for more than the
+    pool holds would otherwise be silently served a shorter list — with the
+    response still reporting a clean `rerank`.
+    """
+    plain, casefile = reranked(None)
+    without = plain.search(casefile.short_id, "sentence", limit=20)
+    assert len(without) > 3, "the fixture must return enough passages to cut"
+
+    shallow, _ = reranked(StubReranker(), rerank_depth=2)
+    with_rerank = shallow.search(casefile.short_id, "sentence", limit=20)
+
+    assert len(with_rerank) == len(without)
+    assert {h.chunk.id for h in with_rerank} == {h.chunk.id for h in without}
+    # And every one of them was actually scored: a pool bounded by rerank_depth
+    # alone would return the rest in fused order with no score, which is a
+    # quieter version of the same defect.
+    assert all(hit.rerank_score is not None for hit in with_rerank)
+
+
+def test_a_short_score_list_degrades_rather_than_raising(reranked):
+    """A reranker returning the wrong number of scores would otherwise pair
+    scores with the wrong passages, or raise an untyped error out of the
+    service and become a bare 500."""
+
+    class ShortReranker(StubReranker):
+        def score(self, query, passages):
+            super().score(query, passages)
+            return [1.0]
+
+    plain, casefile = reranked(None)
+    fused = [h.chunk.id for h in plain.search(casefile.short_id, "sentence", limit=5)]
+
+    search, _ = reranked(ShortReranker())
+    hits = search.search(casefile.short_id, "sentence", limit=5)
+
+    assert [h.chunk.id for h in hits] == fused
+    assert all(h.ranking == RANKED_BY_RERANK_UNAVAILABLE for h in hits)
+
+
+def test_a_misconfiguration_raised_while_scoring_is_still_fatal(reranked):
+    """The split between fatal and transient holds by type, not by which call
+    happened to come first — a reranker that defers its build to first use is
+    the natural implementation that would otherwise slip through."""
+
+    class LateBuildReranker(StubReranker):
+        def score(self, query, passages):
+            raise ConfigError("model could not be built")
+
+    search, casefile = reranked(LateBuildReranker())
+    with pytest.raises(ConfigError):
+        search.search(casefile.short_id, "sentence", limit=5)

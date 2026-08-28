@@ -6,8 +6,8 @@ import re
 from dataclasses import replace
 
 from ..embedding.port import EmbedderPort
-from ..errors import AmbiguousReferenceError, NotFoundError, ValidationError
-from ..reranking.port import RerankerPort
+from ..errors import AmbiguousReferenceError, ConfigError, NotFoundError, ValidationError
+from ..reranking.port import RerankError, RerankerPort
 from ..storage.port import Chunk, Document, SearchHit, StorePort, Window
 from .casefiles import CasefileService
 
@@ -342,12 +342,34 @@ class SearchService:
         # the fused order as though nothing were wrong.
         self._reranker.check()
 
-        pool = [chunk_id for chunk_id in fused[: self._rerank_depth] if chunk_id in chunks]
+        # Never shallower than the caller asked for. A pool of `rerank_depth`
+        # alone would withhold results fusion had found whenever the caller
+        # wanted more than the pool holds — reranking reorders what was found,
+        # and must not decide how much is found.
+        depth = max(limit, self._rerank_depth)
+        pool = [chunk_id for chunk_id in fused[:depth] if chunk_id in chunks]
         if not pool:
             return fused[:limit], {}, RANKED_BY_RERANK
 
         try:
-            values = self._reranker.score(query, [chunks[cid].text for cid in pool])
+            values = list(self._reranker.score(query, [chunks[cid].text for cid in pool]))
+            if len(values) != len(pool):
+                # Checked here rather than trusted: a short list would pair
+                # scores with the wrong passages, and zip() would hide it.
+                raise RerankError(
+                    f"reranker returned {len(values)} scores for {len(pool)} passages"
+                )
+            scored = dict(zip(pool, values))
+            # The fused order breaks ties, so two passages the reranker cannot
+            # separate stay in the order the retrievers put them — and that
+            # order is already stable across rebuilds.
+            position = {chunk_id: index for index, chunk_id in enumerate(pool)}
+            ordered = sorted(pool, key=lambda cid: (-scored[cid], position[cid]))
+        except ConfigError:
+            # A misconfiguration, whichever method raised it. Re-raised rather
+            # than degraded: the split between fatal and transient has to hold
+            # by type, not by which call happened to come first.
+            raise
         except Exception:
             # Transient. The search still has a ranking — the fused one — and
             # refusing to answer would make retrieval quality a condition of
@@ -355,13 +377,12 @@ class SearchService:
             # no logger, and a payload an agent reads is the stronger record.
             return fused[:limit], {}, RANKED_BY_RERANK_UNAVAILABLE
 
-        scored = dict(zip(pool, values))
-        # The fused order breaks ties, so two passages the reranker cannot
-        # separate stay in the order the retrievers put them — and that order is
-        # already stable across rebuilds.
-        position = {chunk_id: index for index, chunk_id in enumerate(pool)}
-        ordered = sorted(pool, key=lambda cid: (-scored[cid], position[cid]))
-        return ordered[:limit], scored, RANKED_BY_RERANK
+        # Anything deeper than the pool keeps its fused position behind the
+        # reranked ones, so a caller asking for more than the pool holds still
+        # receives everything fusion found.
+        seen = set(pool)
+        rest = [chunk_id for chunk_id in fused if chunk_id not in seen]
+        return (ordered + rest)[:limit], scored, RANKED_BY_RERANK
 
     # -- windows -----------------------------------------------------------
 
@@ -372,7 +393,8 @@ class SearchService:
         surrounds this passage". A retrieval rule living in an adapter is the
         divergent definition the service layer exists to prevent.
         """
-        return self._window_for(chunk, document, self._window_max_chars)
+        window, _ = self._window_for(chunk, document, self._window_max_chars)
+        return window
 
     def _window_for(
         self,
@@ -380,17 +402,33 @@ class SearchService:
         document: Document,
         budget: int,
         blocked: list[tuple[int, int]] | None = None,
-    ) -> Window | None:
+    ) -> tuple[Window | None, bool]:
+        """The window, and whether other results in the response reduced it.
+
+        The second value is what a caller reports as `narrowed`. Without it a
+        result cut back to make room for a neighbour looks exactly like one that
+        had no more context to give, which is the confusion the flag exists to
+        prevent.
+        """
         if budget <= chunk.char_end - chunk.char_start:
-            return None
+            return None, False
+
         neighbours = self._store.get_document_chunks_around(
             chunk.document_id, chunk.ordinal, WINDOW_MAX_CHUNKS_EITHER_SIDE
         )
         low, high = _section_bounds(chunk, neighbours)
-        low, high = _keep_clear(low, high, chunk, blocked or [])
-        span = _widen(chunk, low, high, budget)
-        span = _clip_to_headings(document.extracted_text, span, chunk)
-        return self._slice(document, chunk, span)
+        text = document.extracted_text
+
+        kept_low, kept_high = _keep_clear(low, high, chunk, blocked or [])
+        span = _clip_to_headings(text, _widen(chunk, kept_low, kept_high, budget), chunk)
+        window = self._slice(document, chunk, span)
+
+        if (kept_low, kept_high) == (low, high):
+            return window, False
+        # Cheap because both are pure arithmetic over spans already in hand: ask
+        # what this result would have carried with the response to itself.
+        alone = _clip_to_headings(text, _widen(chunk, low, high, budget), chunk)
+        return window, alone != span
 
     def _slice(
         self, document: Document, chunk: Chunk, span: tuple[int, int]
@@ -400,8 +438,18 @@ class SearchService:
         Nothing when the span is the chunk's own: a window identical to the
         passage is not a window, and saying so keeps "was this widened" a
         question with an answer.
+
+        Nothing, too, when the stored offsets no longer select the stored
+        passage. Ingestion writes a document and its chunks in two transactions
+        with a fallible embedding call between them, so a run that fails in the
+        middle leaves new text against old offsets. Widening on those would
+        return a passage from elsewhere in the document as the result's body,
+        fenced as evidence, under provenance naming a span it never occupied.
+        The chunk's own text is still right, so the result falls back to it.
         """
         text = document.extracted_text
+        if text[chunk.char_start : chunk.char_end].strip() != chunk.text:
+            return None
         start = max(0, span[0])
         end = min(len(text), span[1])
         if start >= end or (start, end) == (chunk.char_start, chunk.char_end):
@@ -427,13 +475,14 @@ class SearchService:
             )
 
         for hit in hits:
-            narrowed = False
             others = [
                 span
                 for span in matched.get(hit.document.id, [])
                 if span != (hit.chunk.char_start, hit.chunk.char_end)
             ]
-            window = self._window_for(
+            # `narrowed` starts from whether another result's passage already
+            # cost this one context — not only from the two checks below.
+            window, narrowed = self._window_for(
                 hit.chunk, hit.document, self._window_max_chars, blocked=others
             )
 

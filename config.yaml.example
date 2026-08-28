@@ -78,7 +78,10 @@ profiles:
     rerank_depth: 50
     # How wide a result's text may be. A result carries a window around the
     # passage that matched, so a quotation arrives with the sentences that give
-    # it meaning. Set at or below chunk_max_chars to switch widening off.
+    # it meaning. The budget is compared against the matched passage's own
+    # length, and the chunker snaps to paragraph boundaries, so most passages
+    # are shorter than chunk_max_chars — a budget equal to it still widens.
+    # Set it to 1 to switch widening off outright.
     window_max_chars: 3000
 
   remote:

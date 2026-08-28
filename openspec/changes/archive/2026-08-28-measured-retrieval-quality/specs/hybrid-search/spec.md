@@ -7,10 +7,12 @@ against the query and reorders them before the result is bounded to the caller's
 limit. Reranking SHALL only reorder what fusion produced: it SHALL NOT introduce
 a chunk neither retriever returned, and SHALL NOT reach outside the casefile.
 
-The number of candidates a reranker sees SHALL be configurable and bounded,
-independently of how many results the caller asked for. A reranker that sees only
-as many candidates as the caller wants cannot improve anything — the ordering it
-is given is already the answer.
+The number of candidates a reranker sees SHALL be configurable, and SHALL be at
+least the greater of that setting and the caller's limit. A reranker shown only as
+many candidates as the caller wants cannot improve anything — the ordering it is
+given is already the answer. One shown fewer than the caller asked for is worse
+still: it would decide how many results come back, and reranking reorders what
+was found rather than deciding what is found.
 
 An instance that names no reranker SHALL search exactly as it did before,
 including offline with no endpoint configured. Reranking SHALL NOT become a
@@ -37,6 +39,11 @@ destroy the evidence that fusion ran and invite an analyst to read it as certain
 
 - **WHEN** a search runs on an instance that names no reranker
 - **THEN** results are returned in the fused order, and the response reports that the ordering is the fused one and that no reranker was configured
+
+#### Scenario: Reranking returns everything fusion found
+
+- **WHEN** a caller asks for more results than the configured rerank depth
+- **THEN** it receives as many as fusion found, each of them scored by the reranker
 
 #### Scenario: Reranking reorders only what fusion returned
 

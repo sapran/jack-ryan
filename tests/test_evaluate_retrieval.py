@@ -510,3 +510,48 @@ def test_a_corpus_without_judgements_is_refused(tmp_path, monkeypatch):
     corpus, _ = _operator_set(tmp_path)
     with pytest.raises(SystemExit):
         run_harness(monkeypatch, "--corpus", str(corpus))
+
+
+def test_a_baseline_with_no_metrics_is_refused(tmp_path, monkeypatch, capsys):
+    """An empty metrics block would compare against nothing and report success
+    on a run that scored zero everywhere."""
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({"conditions": _conditions()}), encoding="utf-8")
+
+    code = run_harness(
+        monkeypatch, "--embedder", "deterministic", "--baseline", str(baseline)
+    )
+    printed = capsys.readouterr().out
+
+    assert code == 1
+    assert "records no metrics" in printed
+
+
+@pytest.mark.parametrize("field", ["query", "filename", "phrase"])
+def test_a_judgement_with_an_empty_field_is_refused(tmp_path, field):
+    """An empty phrase is a substring of every passage, so the query would score
+    a perfect hit against any ranking and carry a regressed run over the bar."""
+    entry = {"query": "q", "language": "en", "filename": "a.md", "phrase": "something"}
+    entry[field] = ""
+    path = tmp_path / "queries.json"
+    path.write_text(json.dumps([entry]), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"empty '{field}'"):
+        harness.load_judgements(path)
+
+
+def test_the_report_records_what_the_search_actually_did(evaluated):
+    """A reranker that loads and then fails on every response would otherwise be
+    recorded as having produced these figures."""
+    context, casefile, _ = evaluated
+    measured = harness.measure(
+        context,
+        casefile.short_id,
+        harness.JUDGEMENTS[:2],
+        limit=10,
+        conditions=_conditions(reranker="some-model"),
+    )
+    # No reranker is wired into this context, so the search reports fusion —
+    # whatever the conditions were asked to say.
+    assert measured.conditions["ranked_by"] == "fusion"
+    assert measured.conditions["reranker"] == "some-model"

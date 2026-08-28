@@ -646,8 +646,10 @@ def measure(
     languages: dict[str, list[list[bool]]] = {}
     per_query: list[dict[str, Any]] = []
 
+    rankings: set[str] = set()
     for judgement in judgements:
         hits = context.search.search(casefile_reference, judgement.query, limit=limit)
+        rankings.update(hit.ranking for hit in hits)
         fused = [
             is_relevant(judgement, hit.document.filename, hit.chunk.text) for hit in hits
         ]
@@ -673,6 +675,12 @@ def measure(
                 "vector_rank": next((i for i, r in enumerate(vector, 1) if r), None),
             }
         )
+
+    # What the search reported, not what the command line asked for. A reranker
+    # that loads and then fails on every response would otherwise be recorded as
+    # having produced these figures.
+    conditions = dict(conditions)
+    conditions["ranked_by"] = ", ".join(sorted(rankings)) if rankings else "no results"
 
     return Measurement(
         conditions=conditions,
@@ -739,6 +747,15 @@ def load_judgements(path: Path) -> tuple[Judgement, ...]:
         missing = {"query", "filename", "phrase"} - set(entry)
         if missing:
             raise ValueError(f"{path}: a judgement is missing {', '.join(sorted(missing))}")
+        # An empty phrase is a substring of every passage, so the query would
+        # score a perfect hit against any ranking and quietly carry a regressed
+        # run over the baseline. A half-finished judgement is refused, not scored.
+        for field_name in ("query", "filename", "phrase"):
+            if not str(entry[field_name] or "").strip():
+                raise ValueError(
+                    f"{path}: a judgement has an empty {field_name!r}; "
+                    "an empty phrase matches every passage"
+                )
         out.append(
             Judgement(
                 query=str(entry["query"]),
@@ -976,6 +993,15 @@ def main() -> int:
         return 0
 
     baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
+    if not baseline.get("metrics"):
+        # An empty or absent metrics block would compare against nothing and
+        # report success on a run that scored zero everywhere. This is the one
+        # thing here that can see retrieval regress; it must not pass by default.
+        print(
+            f"\nThe baseline at {_display(args.baseline)} records no metrics, so there "
+            "is nothing to compare against. Re-record it with --record, or restore it."
+        )
+        return 1
     differing = conditions_match(measured, baseline)
     if differing:
         print("\nNot compared against the baseline — it was recorded under other conditions:")
