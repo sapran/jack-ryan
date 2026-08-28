@@ -43,6 +43,35 @@ DEFAULT_CONTRACT: dict[str, Any] = {
 }
 
 
+def _escaped(value: Any) -> str:
+    """One component's value, made unable to read as another component.
+
+    Corpus identity is `key=value` parts joined with `|`, and it is the one
+    string whose entire job is that two different corpora never share it. A
+    value carrying a separator would otherwise produce an identity asserting
+    something the instance is not configured for: an `embed_model` containing
+    `|embedder=model` makes `/health` and the refusal message name an embedder
+    that is not in use.
+
+    `=` is deliberately NOT escaped. `embed_library` legitimately contains `==`,
+    and since the component keys are fixed identifiers containing no `=`,
+    splitting on unescaped `|` and then on the first `=` still round-trips. That
+    choice is also what keeps this change from invalidating anything: no value
+    that is currently reachable contains `|` or a backslash, so every corpus
+    identity recorded before this escaping existed is byte-identical after it.
+
+    Control characters are escaped because an identity is printed by `/health`
+    and `jackryan status`, and a value carrying a newline would forge a line in
+    output an operator reads to decide what refused them.
+    """
+    text = str(value)
+    text = text.replace("\\", "\\\\").replace("|", "\\|")
+    return "".join(
+        character if character.isprintable() else f"\\x{ord(character):02x}"
+        for character in text
+    )
+
+
 @dataclass(frozen=True)
 class Contract:
     """Corpus-coupled settings. Changing any of these forces a reingest."""
@@ -70,11 +99,11 @@ class Contract:
         store records.
         """
         parts = (
-            f"chunk_max_chars={self.chunk_max_chars}",
-            f"chunk_overlap_chars={self.chunk_overlap_chars}",
-            f"embed_model={self.embed_model}",
-            f"embed_dimensions={self.embed_dimensions}",
-            f"embed_library={self.embed_library}",
+            f"chunk_max_chars={_escaped(self.chunk_max_chars)}",
+            f"chunk_overlap_chars={_escaped(self.chunk_overlap_chars)}",
+            f"embed_model={_escaped(self.embed_model)}",
+            f"embed_dimensions={_escaped(self.embed_dimensions)}",
+            f"embed_library={_escaped(self.embed_library)}",
         )
         return "|".join(parts)
 
@@ -176,7 +205,12 @@ def corpus_fingerprint(contract: Contract, embedder_name: str) -> str:
     copies of one setting can disagree with each other, which is the shape of
     the bug this closes.
     """
-    return f"{contract.fingerprint()}|embedder={embedder_name}"
+    # The contract's fingerprint is already escaped component by component, so
+    # it is joined raw; only the embedder's own name needs escaping here.
+    # `EmbedderPort.name` is an unvalidated `str`, and a third embedder whose
+    # name carried a separator is exactly how the unreachable collision becomes
+    # reachable.
+    return f"{contract.fingerprint()}|embedder={_escaped(embedder_name)}"
 
 
 def canonical_embed_library(declared: str) -> tuple[str, str] | None:
