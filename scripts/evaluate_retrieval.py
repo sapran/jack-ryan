@@ -366,6 +366,13 @@ class Judgement:
     language: str
     filename: str
     phrase: str
+    # Other passages that answer the query just as well. Near-duplicate
+    # documents are the ordinary case in a real corpus — a draft, the operative
+    # version, an amendment — and several of them can carry the answer. A
+    # judgement admitting only one would score a correct result as wrong, and
+    # would punish exactly the component whose job is to choose between close
+    # candidates.
+    also: tuple[tuple[str, str], ...] = ()
 
 
 # Three documents cover the lease in each language — a withdrawn draft, the
@@ -378,6 +385,9 @@ JUDGEMENTS: tuple[Judgement, ...] = (
         language="en",
         filename="lease-award-2021.md",
         phrase="awarded the harbour lease to Northgate Holdings",
+        # The amendment names the holder just as plainly. Measured, not assumed:
+        # a reranker put that passage first, and it is not wrong to.
+        also=(("lease-amendment-2022.md", "harbour lease held by Northgate Holdings"),),
     ),
     Judgement(
         query="What did the tenant pay each year before the increase?",
@@ -450,6 +460,7 @@ JUDGEMENTS: tuple[Judgement, ...] = (
         language="ru",
         filename="dogovor-arendy-2021.md",
         phrase="передал аренду гавани компании «Нортгейт»",
+        also=(("dopolnenie-2022.md", "договор аренды, заключённый с компанией «Нортгейт»"),),
     ),
     Judgement(
         query="С какого месяца действует новая сумма?",
@@ -577,9 +588,14 @@ def is_relevant(judgement: Judgement, filename: str, text: str) -> bool:
     answer. A document-level judgement alone would be blind to which passage
     came back, which is exactly what the window and rerank legs change.
     """
-    if filename != judgement.filename:
-        return False
-    return _normalise(judgement.phrase) in _normalise(text)
+    body = _normalise(text)
+    for expected_file, expected_phrase in (
+        (judgement.filename, judgement.phrase),
+        *judgement.also,
+    ):
+        if filename == expected_file and _normalise(expected_phrase) in body:
+            return True
+    return False
 
 
 def _normalise(text: str) -> str:
@@ -773,6 +789,7 @@ def build_evaluation_context(
     reranker: str,
     corpus: Path | None,
     window_max_chars: int | None = None,
+    chunk_max_chars: int | None = None,
 ):
     """A real instance, wired the way the composition root wires one.
 
@@ -791,8 +808,11 @@ def build_evaluation_context(
         profile_kwargs["reranker_model"] = reranker
     if window_max_chars is not None:
         profile_kwargs["window_max_chars"] = window_max_chars
+    contract = (
+        Contract(chunk_max_chars=chunk_max_chars) if chunk_max_chars else Contract()
+    )
     config = Config(
-        contract=Contract(),
+        contract=contract,
         profile=Profile(**profile_kwargs),
         data_dir=workspace / "data",
     )
@@ -837,6 +857,15 @@ def main() -> int:
         type=int,
         help="widen results to this many characters; 1 switches widening off",
     )
+    parser.add_argument(
+        "--chunk-max-chars",
+        type=int,
+        help=(
+            "chunk the corpus at this width instead of the contract's. A corpus "
+            "value, so it builds a different corpus — the workspace is temporary, "
+            "and this is how a passage size can be measured rather than assumed"
+        ),
+    )
     parser.add_argument("--corpus", type=Path, help="measure your own corpus instead")
     parser.add_argument("--queries", type=Path, help="your own judgements, as JSON")
     parser.add_argument("--baseline", type=Path, default=BASELINE_PATH)
@@ -865,7 +894,12 @@ def main() -> int:
             write_corpus(corpus, DOCUMENTS)
 
         context = build_evaluation_context(
-            workspace, args.embedder, args.reranker, args.corpus, args.window_max_chars
+            workspace,
+            args.embedder,
+            args.reranker,
+            args.corpus,
+            args.window_max_chars,
+            args.chunk_max_chars,
         )
         try:
             casefile = context.casefiles.create("Retrieval Evaluation")

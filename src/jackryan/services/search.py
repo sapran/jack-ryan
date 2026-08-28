@@ -7,12 +7,22 @@ from dataclasses import replace
 
 from ..embedding.port import EmbedderPort
 from ..errors import AmbiguousReferenceError, NotFoundError, ValidationError
+from ..reranking.port import RerankerPort
 from ..storage.port import Chunk, Document, SearchHit, StorePort, Window
 from .casefiles import CasefileService
 
 MAX_LIMIT = 100
 DEFAULT_LIMIT = 10
 MAX_QUERY_CHARS = 500
+DEFAULT_RERANK_DEPTH = 50
+
+# What a response says decided its ordering.
+RANKED_BY_FUSION = "fusion"
+RANKED_BY_RERANK = "rerank"
+# A reranker was configured and could not score this response. Distinct from
+# `fusion`, which means none was configured: the same ordering, but one of them
+# is a promise that was not kept.
+RANKED_BY_RERANK_UNAVAILABLE = "rerank-unavailable"
 
 # The conventional reciprocal-rank-fusion constant. It damps the influence of
 # the very top ranks so that one retriever's confident first result cannot
@@ -167,11 +177,15 @@ class SearchService:
         casefiles: CasefileService,
         embedder: EmbedderPort,
         window_max_chars: int = DEFAULT_WINDOW_MAX_CHARS,
+        reranker: RerankerPort | None = None,
+        rerank_depth: int = DEFAULT_RERANK_DEPTH,
     ) -> None:
         self._store = store
         self._casefiles = casefiles
         self._embedder = embedder
         self._window_max_chars = int(window_max_chars)
+        self._reranker = reranker
+        self._rerank_depth = int(rerank_depth)
 
     def resolve_passage(
         self, casefile_reference: str, reference: str
@@ -232,7 +246,12 @@ class SearchService:
         # Clamp rather than reject: an agent surface has no validation layer of
         # its own, and an over-large limit is a harmless mistake.
         limit = max(1, min(int(limit), MAX_LIMIT))
+        # Deep enough to fill the reranker's pool when there is one. A reranker
+        # shown only as many candidates as the caller asked for cannot improve
+        # anything: the ordering it is handed is already the answer.
         depth = limit * 5
+        if self._reranker is not None:
+            depth = max(depth, self._rerank_depth)
 
         keyword_ids = self._store.search_keyword(casefile.id, cleaned, depth)
         vector_ids = self._store.search_vector(
@@ -271,7 +290,9 @@ class SearchService:
                 chunk_id,
             )
 
-        ordered = sorted(scores, key=ordering)[:limit]
+        fused = sorted(scores, key=ordering)
+        ordered, rerank_scores, ranking = self._reranked(cleaned, fused, chunks, limit)
+
         documents = {}
         hits: list[SearchHit] = []
         for chunk_id in ordered:
@@ -290,9 +311,57 @@ class SearchService:
                     score=scores[chunk_id],
                     keyword_rank=keyword_rank.get(chunk_id),
                     vector_rank=vector_rank.get(chunk_id),
+                    rerank_score=rerank_scores.get(chunk_id),
+                    ranking=ranking,
                 )
             )
         return self._widened(hits)
+
+    # -- reranking ---------------------------------------------------------
+
+    def _reranked(
+        self,
+        query: str,
+        fused: list[str],
+        chunks: dict[str, Chunk],
+        limit: int,
+    ) -> tuple[list[str], dict[str, float], str]:
+        """Reorder the fused candidates, or leave them alone and say so.
+
+        Scored on the matched passage's own text, never on a widened window: the
+        cross-encoder truncates the query-and-passage pair at its own limit with
+        no way to ask for more, so handing it a window means a silent cut inside
+        the library and a score describing a fragment nobody chose. A chunk is
+        already bounded by the corpus contract.
+        """
+        if self._reranker is None:
+            return fused[:limit], {}, RANKED_BY_FUSION
+
+        # Raises if the named model cannot be built. Not caught: an instance
+        # configured for a reranker it cannot load must say so rather than serve
+        # the fused order as though nothing were wrong.
+        self._reranker.check()
+
+        pool = [chunk_id for chunk_id in fused[: self._rerank_depth] if chunk_id in chunks]
+        if not pool:
+            return fused[:limit], {}, RANKED_BY_RERANK
+
+        try:
+            values = self._reranker.score(query, [chunks[cid].text for cid in pool])
+        except Exception:
+            # Transient. The search still has a ranking — the fused one — and
+            # refusing to answer would make retrieval quality a condition of
+            # retrieval. The response carries the disclosure; this codebase has
+            # no logger, and a payload an agent reads is the stronger record.
+            return fused[:limit], {}, RANKED_BY_RERANK_UNAVAILABLE
+
+        scored = dict(zip(pool, values))
+        # The fused order breaks ties, so two passages the reranker cannot
+        # separate stay in the order the retrievers put them — and that order is
+        # already stable across rebuilds.
+        position = {chunk_id: index for index, chunk_id in enumerate(pool)}
+        ordered = sorted(pool, key=lambda cid: (-scored[cid], position[cid]))
+        return ordered[:limit], scored, RANKED_BY_RERANK
 
     # -- windows -----------------------------------------------------------
 

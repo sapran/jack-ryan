@@ -119,6 +119,13 @@ class SearchHit:
     # reciprocal-rank sum are different quantities, and overwriting one with the
     # other would destroy the evidence that fusion ran at all.
     rerank_score: float | None = None
+    # Which stage decided this result's position: `fusion`, `rerank`, or
+    # `rerank-unavailable` when a reranker was configured and could not score
+    # this response. A fact about the response rather than about one result, and
+    # carried on every result because a search returns a list — but it is the
+    # only way a caller can tell a ranking it was promised from one it was given,
+    # and a degraded response from an instance that was never configured for one.
+    ranking: str = "fusion"
 
     @property
     def text(self) -> str:

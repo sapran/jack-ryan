@@ -171,6 +171,28 @@ class Profile:
     letter and a two-hundred-page report.
     """
 
+    reranker_model: str = ""
+    """A cross-encoder to reorder search results with, or empty for none.
+
+    Empty by default, and that is a licensing decision as much as a technical
+    one: the only multilingual reranker the embedding library registers is
+    published under a non-commercial licence, and this corpus is English,
+    Ukrainian and Russian. An operator names the model that suits their own use;
+    the shipped default fetches no weights and reorders nothing.
+
+    Naming a model the instance cannot build is fatal when the reranker is first
+    needed. Failing to score one response is not: the fused order stands and the
+    response says it was not reranked.
+    """
+
+    rerank_depth: int = 50
+    """How many fused candidates the reranker sees.
+
+    Larger than a caller's usual limit on purpose. A reranker shown only as many
+    candidates as the caller asked for cannot improve anything — the ordering it
+    is given is already the answer.
+    """
+
     window_max_chars: int = 3000
     """How wide a search result's text may be, in characters.
 
@@ -477,6 +499,10 @@ def _select_profile(document: dict[str, Any]) -> Profile:
         ocr_engine=_validated_ocr_engine(settings.get("ocr_engine"), name),
         ocr_language=_validated_ocr_language(settings.get("ocr_language"), name),
         min_chars_per_page=_validated_floor(settings.get("min_chars_per_page"), name),
+        reranker_model=str(_interpolate(settings.get("reranker_model", "")) or "").strip(),
+        rerank_depth=_validated_positive(
+            settings.get("rerank_depth"), name, "rerank_depth", Profile.rerank_depth
+        ),
         window_max_chars=_validated_positive(
             settings.get("window_max_chars"), name, "window_max_chars", Profile.window_max_chars
         ),

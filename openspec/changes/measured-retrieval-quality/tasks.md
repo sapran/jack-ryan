@@ -85,64 +85,75 @@
 
 ## 3. Reranking
 
-- [ ] 3.1 Add `src/jackryan/reranking/` with a `RerankerPort`, a fastembed
+- [x] 3.1 Add `src/jackryan/reranking/` with a `RerankerPort`, a fastembed
       `TextCrossEncoder` implementation and `build_reranker`, mirroring
       `src/jackryan/embedding/`; verify a test with a stub reranker asserts the port
       is called with the query and the candidates' chunk texts.
-- [ ] 3.2 Add the `reranker_model`, `rerank_depth` and `window_max_chars` profile
+- [x] 3.2 Add the `reranker_model`, `rerank_depth` and `window_max_chars` profile
       keys with validation in the shape of `_validated_ocr_engine`; verify tests
       assert an unknown key is fatal, an empty `reranker_model` means off, and a
       non-positive `rerank_depth` is refused.
-- [ ] 3.3 Wire the reranker into `SearchService` at the composition root; verify a
+- [x] 3.3 Wire the reranker into `SearchService` at the composition root; verify a
       test asserts an instance with no reranker configured returns the fused order
       and reports that it was not reranked.
-- [ ] 3.4 Deepen retrieval to `max(limit * 5, rerank_depth)` and move the `[:limit]`
+- [x] 3.4 Deepen retrieval to `max(limit * 5, rerank_depth)` and move the `[:limit]`
       slice after the rerank stage; verify a test asserts the reranker is offered
       more candidates than the caller's limit, and that every returned chunk was
       returned by at least one retriever.
-- [ ] 3.5 Score candidates on chunk text, before windows are computed; verify a
+- [x] 3.5 Score candidates on chunk text, before windows are computed; verify a
       test asserts the text handed to the reranker is the chunk's, not a widened
       window — the library truncates the pair silently and a score for a fragment
       nobody chose is worse than no score.
-- [ ] 3.6 Add `rerank_score` beside `score` and a per-response statement of which
+- [x] 3.6 Add `rerank_score` beside `score` and a per-response statement of which
       stage ordered the results; verify a test asserts the fusion score is unchanged
       by reranking and both values are present.
-- [ ] 3.7 Make a named reranker that cannot be constructed fatal, naming the
+- [x] 3.7 Make a named reranker that cannot be constructed fatal, naming the
       setting; verify a test asserts a profile naming a nonexistent reranker raises
       rather than searching in fused order.
-- [ ] 3.8 Make a reranker that raises while scoring degrade to the fused order with
+- [x] 3.8 Make a reranker that raises while scoring degrade to the fused order with
       the response marked not reranked; verify a test with a reranker that raises
       asserts the search succeeds, the order is the fused one, and the response says
       so.
-- [ ] 3.9 Run the harness with a reranker named and record the result in
+- [x] 3.9 Run the harness with a reranker named and record the result in
       `docs/handover.md` with the model, its licence and the measured deltas; verify
       the per-language figures are reported separately, since a gain in English says
       nothing about Ukrainian.
+      *Both registered candidates were measured and both made retrieval worse.
+      `Xenova/ms-marco-MiniLM-L-6-v2` (apache-2.0, English-only) took fused
+      recall@1 from 0.882 to 0.176 and Ukrainian and Russian to 0.000.
+      `jinaai/jina-reranker-v2-base-multilingual` (cc-by-nc-4.0) took it to 0.529,
+      leaving English unchanged and Ukrainian at 0.000. Traced: for a Ukrainian
+      query the cross-encoder ranks English passages above the Ukrainian passage
+      that answers it. The wiring was checked before the conclusion — the model
+      orders unambiguous pairs correctly in all three languages, the service
+      returns descending rerank order, and recomputed scores match what it
+      recorded. Rerank therefore ships off, as designed, and the gain the leg was
+      meant to deliver does not yet exist to be had.*
 
 ## 4. The adapters
 
-- [ ] 4.1 Carry the returned span, the matched chunk's span, `rerank_score` and the
+- [x] 4.1 Carry the returned span, the matched chunk's span, `rerank_score` and the
       rerank statement into the MCP search payload, and name both spans in
       provenance; verify tests assert the fence still wraps each body exactly once
       and `formatted` still has one line per result.
-- [ ] 4.2 Add the same fields to the REST and CLI JSON shapes, including `read_as`
+- [x] 4.2 Add the same fields to the REST and CLI JSON shapes, including `read_as`
       on a search hit, which both omit today while the agent surface carries it;
       verify tests assert every adapter reports the same spans for one hit.
-- [ ] 4.3 State in the tool description that a rerank score is comparable only
+- [x] 4.3 State in the tool description that a rerank score is comparable only
       within one response and is not a confidence; verify a test asserts the wording
       is present on the search tool.
-- [ ] 4.4 Confirm the MCP result ceiling still holds now that a result may be wider
+- [x] 4.4 Confirm the MCP result ceiling still holds now that a result may be wider
       than a chunk; verify a test asserts an over-large limit is clamped and the
       response stays within the character budget.
 
 ## 5. Prove the tests can fail
 
-- [ ] 5.1 Reintroduce each of these defects in turn, watch the named test go red
+- [x] 5.1 Reintroduce each of these defects in turn, watch the named test go red
       with the reported symptom, and restore: a window assembled by joining chunk
       texts; a window that ignores the heading boundary; overlapping windows in one
       response; a rerank score written over the fusion score; a construction failure
       that degrades instead of raising.
-- [ ] 5.2 Drop one judgement's answering document from the evaluation corpus and
+- [x] 5.2 Drop one judgement's answering document from the evaluation corpus and
       confirm the harness's recall falls and it exits non-zero against the baseline;
       restore, and record in the commit that the gate was seen to fail.
 

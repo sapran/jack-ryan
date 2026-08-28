@@ -224,7 +224,10 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         name="case_search",
         description=(
             "Search one casefile by keyword and meaning together. Returns ranked passages "
-            "with identifiers for reading and citing. Read the formatted index first."
+            "with identifiers for reading and citing. Read the formatted index first. "
+            "`ranking` says what decided the order. A `rerank_score`, where present, is "
+            "an uncalibrated value comparable only within this response — not a "
+            "confidence, and not comparable with another query's."
         ),
         annotations=_annotations_for("case_search"),
     )

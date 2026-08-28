@@ -241,3 +241,26 @@ def test_widening_is_switched_off_by_a_budget_at_the_chunk_size(context, tmp_pat
     assert hits
     assert not any(h.is_widened for h in hits)
     assert all(h.text == h.chunk.text for h in hits)
+
+
+def test_a_window_never_runs_past_a_heading_it_would_cross(context, sectioned_corpus):
+    """A passage that straddles a heading carries the trail of where it began.
+
+    A window built from recorded heading trails alone therefore reaches into the
+    next section: the straddling passage belongs to the first section by its
+    trail, and its own text already runs past the boundary. The heading line in
+    the document is what stops it.
+    """
+    casefile = context.casefiles.create("Straddle")
+    report = context.ingestion.ingest(casefile.short_id, sectioned_corpus)
+    assert not report.failed
+
+    hits = context.search.search(casefile.short_id, "kingfisher", limit=1)
+    assert hits and hits[0].document.filename == "straddle.md"
+    hit = hits[0]
+    assert hit.is_widened, "nothing widened, so this test says nothing"
+
+    beyond = hit.text[hit.chunk.char_end - hit.char_start :]
+    assert beyond, "the window did not extend past the passage, so nothing is tested"
+    assert not any(line.startswith("#") for line in beyond.splitlines()), beyond
+    assert "pelican" not in hit.text

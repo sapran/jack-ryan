@@ -205,7 +205,9 @@ async def test_a_passage_from_another_casefile_is_not_reachable(server, context,
 
 
 @pytest.mark.anyio
-async def test_a_passage_declares_the_span_of_everything_it_returns(loaded):
+async def test_a_passage_declares_the_span_of_everything_it_returns(
+    context, sectioned_corpus
+):
     """The payload's position must cover the text beside it.
 
     This tool used to return a passage together with its neighbouring chunks
@@ -213,10 +215,14 @@ async def test_a_passage_declares_the_span_of_everything_it_returns(loaded):
     covered less than the payload carried, which cannot be checked against the
     source by hand.
     """
-    context, casefile = loaded
+    casefile = context.casefiles.create("Spans")
+    context.ingestion.ingest(casefile.short_id, sectioned_corpus)
     server = build_mcp_server(context)
+    # One hit, so the passage has unmatched neighbours to grow into.
     hits = await call(
-        server, "case_search", {"casefile": casefile.short_id, "query": "harbour lease"}
+        server,
+        "case_search",
+        {"casefile": casefile.short_id, "query": "cormorant", "limit": 1},
     )
     top = hits["results"][0]
 
@@ -232,13 +238,14 @@ async def test_a_passage_declares_the_span_of_everything_it_returns(loaded):
     assert body == declared
 
     matched = passage["provenance"].get("matched")
-    if matched is not None:
-        # Widened: the matched passage is named separately and sits inside.
-        assert matched["chunk_id"] == passage["chunk_id"]
-        assert passage["char_start"] <= matched["char_start"]
-        assert passage["char_end"] >= matched["char_end"]
-    else:
-        assert passage["char_start"] == passage["provenance"]["char_start"]
+    assert matched is not None, "nothing was widened, so this test says nothing"
+    assert matched["chunk_id"] == passage["chunk_id"]
+    assert passage["char_start"] <= matched["char_start"]
+    assert passage["char_end"] >= matched["char_end"]
+    assert (passage["char_start"], passage["char_end"]) != (
+        matched["char_start"],
+        matched["char_end"],
+    )
 
 
 @pytest.mark.anyio
