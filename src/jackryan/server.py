@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .ingestion.quality_gate import read_as
 from .app import Context, build_context
 from .errors import (
     AmbiguousReferenceError,
@@ -71,6 +72,9 @@ def serialize_document(document: Document) -> dict[str, Any]:
         "media_type": document.media_type,
         "byte_size": document.byte_size,
         "extractor": document.extractor,
+        # Same key and same vocabulary as every other surface, so a person and
+        # an assistant are never given two words for one fact.
+        "read_as": read_as(document.text_source),
         "characters": len(document.extracted_text),
         "created_at": document.created_at.isoformat(),
         "updated_at": document.updated_at.isoformat(),

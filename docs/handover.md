@@ -13,9 +13,10 @@ verified, what is not, and why.
 
 ## Where things stand
 
-`main` is at the merge of M3 slice 2. The prototype (M0–M2) and both M3 slices
-are archived, fourteen capabilities are published in `openspec/specs/`, and 308
-tests pass with 2 skipped behind `JACKRYAN_MODEL_TESTS=1`.
+`main` is at the merge of M3 slice 2 plus a deadline-driven cleanup. The
+prototype (M0–M2), both M3 slices and `corpus-identity-and-schema-migration` are
+archived, fifteen capabilities are published in `openspec/specs/`, and 332 tests
+pass with 2 skipped behind `JACKRYAN_MODEL_TESTS=1`.
 
 Built and merged, and — since 2026-08-26 — exercised against real model
 infrastructure for the first time; see the verification sections below:
@@ -280,6 +281,48 @@ is retrieval quality — so it needs something to measure against before it can 
 said to work. That is now the single largest unaddressed gap in the project.
 
 PST stays last, as `docs/design.md` § 10 has it.
+
+## The store can now be carried forward, and identity cannot be impersonated
+
+Four findings were paid down on 2026-08-28 because each stopped being cheap once
+a real corpus exists, and none does yet. What matters for anyone touching the
+store afterwards:
+
+**`_SCHEMA` is frozen at schema version 4 and must not be edited.** Adding a
+column there instead of to `_STEPS` is silently wrong in the worst way: every
+statement is `IF NOT EXISTS`, so a store already on disk never receives it while
+every store created afterwards has it, and both report the same version. A test
+pins the baseline's column list literally, because the parity test cannot catch
+this — its fixture executes the same live `_SCHEMA`.
+
+**The baseline is deliberately one version behind what the code produces**, so a
+brand-new store climbs the ladder's first rung. A migration runner exercised only
+by a fixture rots between the day it is written and the day it is first needed.
+The cost is that `_SCHEMA` no longer shows the schema you get.
+
+**A schema is migrated; corpus identity is compared and never migrated.** The
+ladder runs first, so a store that is carried forward and then refused on
+identity is left improved rather than damaged.
+
+**Identity escapes `\`, `|` and control characters, and deliberately not `=`.**
+`embed_library` contains `==`. Every reachable identity is byte-identical to
+what was recorded before the escaping, which is what let it ship without
+refusing every existing store.
+
+Verified end to end through `build_context`, the path every adapter crosses: a
+v4 store opened, migrated to 5, kept its `.v4.bak`, and its pre-existing
+document still read and reported `unrecorded`.
+
+**What the second adversarial review caught, worth repeating.** The shipped code
+was correct; three of its proofs were not. Dropping the migration's `commit()`
+survived the entire suite, because on a fresh store `_verify_meta` commits
+straight afterwards and flushes the pending migration — so only a store that
+already carries a fingerprint depends on the migration's own commit, and no test
+reopened one. Swapping SQLite's backup API for `shutil.copyfile` also survived,
+losing a committed row that was still living in the WAL. And the width guard
+does less than its spec claimed: `build_embedder` builds both embedders from the
+contract, so configuration cannot make the widths disagree. All three are now
+either fixed or stated honestly.
 
 ## The extraction quality gate: what it fixed, and what it proves
 

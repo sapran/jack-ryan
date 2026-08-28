@@ -93,6 +93,10 @@ def _render_document(document: Document) -> dict[str, Any]:
         # block — a filename or an archive entry name may contain a newline.
         "filename": one_line(document.filename, 200),
         "media_type": document.media_type,
+        # case_list_documents is the one agent surface that lists documents
+        # without returning corpus text, so it needs this explicitly rather
+        # than inheriting it from the provenance block.
+        "read_as": read_as(document.text_source),
         "characters": len(document.extracted_text),
         "byte_size": document.byte_size,
     }

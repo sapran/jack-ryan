@@ -108,3 +108,31 @@ def test_a_refused_store_does_not_stay_open(tmp_path):
         )
     finally:
         reopened.close()
+
+
+def test_a_mis_sized_embedder_is_refused_before_a_store_exists(tmp_path):
+    """Two widths are in scope one line apart and used to go uncompared.
+
+    A 64-wide embedder against a 1024-wide contract opened cleanly, created the
+    vector table at 1024, recorded a valid corpus identity, and then failed on
+    every chunk deep inside an ingest — by which point the store on disk is
+    already wrongly sized.
+    """
+    from jackryan.app import build_context
+    from jackryan.config import Config, Contract, Profile
+    from jackryan.embedding.deterministic import DeterministicEmbedder
+    from jackryan.errors import ConfigError
+
+    config = Config(
+        contract=Contract(embed_dimensions=1024, embed_model="deterministic-test"),
+        profile=Profile(name="test", embedder="deterministic"),
+        data_dir=tmp_path / "data",
+    )
+    with pytest.raises(ConfigError) as exc:
+        build_context(config, embedder=DeterministicEmbedder(64))
+
+    message = str(exc.value)
+    assert "64" in message and "1024" in message
+    # The proof that the check runs ahead of the store rather than behind it: a
+    # refused instance leaves no database file to be wrongly sized.
+    assert not config.db_path.exists()

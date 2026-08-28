@@ -34,6 +34,29 @@ escalated and never carries one of the other three.
 
 TEXT_SOURCES = (TEXT_LAYER, OCR, VLM, NATIVE)
 
+UNRECORDED = "unrecorded"
+"""What a document reports when its rung is not one this codebase wrote.
+
+A document ingested before the rung was recorded has no honest value, and a
+value from anywhere else is not a string to be made safe — it is one that should
+never be shown as though it meant something.
+"""
+
+
+def read_as(text_source: str) -> str:
+    """How the text was obtained, reduced to a value this codebase can vouch for.
+
+    Constrained rather than escaped. A document's other provenance values are
+    corpus strings whose content is arbitrary and must be sanitised; this one has
+    exactly four legitimate values, all written here.
+
+    It lives beside the vocabulary rather than in the agent surface because every
+    surface that shows a document needs it — the CLI and the REST adapter as much
+    as the MCP tools — and a person and an assistant looking at the same document
+    must not be given two different words for one fact.
+    """
+    return text_source if text_source in TEXT_SOURCES else UNRECORDED
+
 # Docling marks a region it read as a picture but recovered no text from with an
 # HTML comment: `<!-- image -->`. It is structure, not content, and a page of
 # photographs comes back as nothing else.

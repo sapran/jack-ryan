@@ -419,3 +419,52 @@ def test_extraction_settings_resolve_environment_placeholders(tmp_path, monkeypa
     monkeypatch.setenv("JR_TEST_LANG", "cyrillic")
     monkeypatch.delenv("JACKRYAN_PROFILE", raising=False)
     assert load_config().profile.ocr_language == "cyrillic"
+
+
+# --- Corpus identity cannot be impersonated -----------------------------------
+
+
+def test_escaping_leaves_every_existing_identity_unchanged():
+    """The fix must not invalidate the corpora it protects.
+
+    No currently reachable value contains `|` or a backslash, so escaping is a
+    no-op on every real identity — which is what lets it ship without refusing
+    every store that exists.
+    """
+    from jackryan.config import Contract, corpus_fingerprint
+
+    assert corpus_fingerprint(Contract(), "model") == (
+        "chunk_max_chars=2000|chunk_overlap_chars=200"
+        "|embed_model=intfloat/multilingual-e5-large|embed_dimensions=1024"
+        "|embed_library=fastembed==0.8.0|embedder=model"
+    )
+
+
+def test_two_different_configurations_cannot_share_one_identity():
+    """The demonstrated collision, not a hypothetical one.
+
+    Unescaped, these two produce the identical string: `embed_model` carries the
+    head of the tail components while the embedder name carries their end, and
+    the two trade text across the separator. One store would then open under the
+    other's configuration, real vectors compared against stand-in ones, with the
+    guard that exists to prevent exactly that reporting a match.
+
+    An earlier version of this test injected a clause into `embed_model` alone
+    and passed with escaping removed, because the components sit at different
+    positions in the string. A collision needs both ends.
+    """
+    from jackryan.config import Contract, corpus_fingerprint
+
+    tail = "embed_dimensions=1024|embed_library=fastembed==0.8.0"
+    first = corpus_fingerprint(Contract(embed_model="m"), f"a|{tail}|embedder=b")
+    second = corpus_fingerprint(Contract(embed_model=f"m|{tail}|embedder=a"), "b")
+    assert first != second
+
+
+def test_a_newline_in_a_value_cannot_forge_a_line():
+    # The identity is printed by /health and `jackryan status`, which an
+    # operator reads to decide what refused them.
+    from jackryan.config import Contract, corpus_fingerprint
+
+    identity = corpus_fingerprint(Contract(embed_model="a\nembedder=other"), "model")
+    assert "\n" not in identity
