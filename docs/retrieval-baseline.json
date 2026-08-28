@@ -1,0 +1,55 @@
+{
+  "recorded": "2026-08-28",
+  "measured_on": "Darwin arm64, python 3.12.14",
+  "conditions": {
+    "embedder": "model",
+    "reranker": "none",
+    "query_set": "built-in",
+    "queries": 17,
+    "documents": 15,
+    "chunk_max_chars": 2000,
+    "window_max_chars": 3000,
+    "limit": 10,
+    "ranked_by": "fusion"
+  },
+  "metrics": {
+    "keyword": {
+      "recall@1": 0.6470588235294118,
+      "recall@5": 0.9411764705882353,
+      "recall@10": 0.9411764705882353,
+      "mrr@10": 0.7843137254901961
+    },
+    "vector": {
+      "recall@1": 0.7647058823529411,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr@10": 0.8676470588235294
+    },
+    "fused": {
+      "recall@1": 0.8823529411764706,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr@10": 0.9264705882352942
+    }
+  },
+  "by_language": {
+    "en": {
+      "recall@1": 0.7142857142857143,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr@10": 0.8214285714285714
+    },
+    "ru": {
+      "recall@1": 1.0,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr@10": 1.0
+    },
+    "uk": {
+      "recall@1": 1.0,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr@10": 1.0
+    }
+  }
+}

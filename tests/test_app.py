@@ -136,3 +136,46 @@ def test_a_mis_sized_embedder_is_refused_before_a_store_exists(tmp_path):
     # The proof that the check runs ahead of the store rather than behind it: a
     # refused instance leaves no database file to be wrongly sized.
     assert not config.db_path.exists()
+
+
+def test_the_composition_root_wires_the_profile_s_retrieval_settings(tmp_path, gate):
+    """Every rerank test builds SearchService by hand, so nothing asserted that
+    the profile's values actually reach it — the one place they are read."""
+    from jackryan.app import build_context
+    from jackryan.config import Config, Contract, Profile
+    from jackryan.embedding.deterministic import DeterministicEmbedder
+
+    from conftest import TEST_DIMENSIONS
+
+    config = Config(
+        contract=Contract(
+            chunk_max_chars=400,
+            chunk_overlap_chars=50,
+            embed_model="deterministic-test",
+            embed_dimensions=TEST_DIMENSIONS,
+        ),
+        profile=Profile(
+            name="wiring",
+            embedder="deterministic",
+            reranker_model="Xenova/ms-marco-MiniLM-L-6-v2",
+            rerank_depth=17,
+            window_max_chars=1234,
+        ),
+        data_dir=tmp_path / "data",
+    )
+    context = build_context(
+        config, embedder=DeterministicEmbedder(TEST_DIMENSIONS), gate=gate
+    )
+    try:
+        assert context.search._window_max_chars == 1234
+        assert context.search._rerank_depth == 17
+        # Constructed, not loaded: naming a model fetches no weights until a
+        # search needs one.
+        assert context.search._reranker is not None
+        assert context.search._reranker.name == "Xenova/ms-marco-MiniLM-L-6-v2"
+    finally:
+        context.close()
+
+
+def test_no_reranker_is_wired_when_the_profile_names_none(context):
+    assert context.search._reranker is None

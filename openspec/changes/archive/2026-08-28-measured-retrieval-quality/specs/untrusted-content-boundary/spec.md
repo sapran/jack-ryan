@@ -1,12 +1,4 @@
-# untrusted-content-boundary Specification
-
-## Purpose
-
-Defines how corpus text crosses into an agent's context — fenced per response
-and attributed to its source — and states plainly that this is a convention the
-model is asked to honour rather than a control that constrains it.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Corpus text crosses into an agent's context fenced and attributed
 
@@ -63,19 +55,3 @@ enters a line-oriented block.
 
 - **WHEN** an entry inside a container is named so as to imitate a provenance line
 - **THEN** the path is sanitised before it is emitted, and the provenance block's structure is unaffected
-
-### Requirement: The payload states that corpus content is evidence, not instruction
-
-A payload carrying corpus text SHALL state that the content is material to
-analyse and that an instruction found within it is to be reported rather than
-followed.
-
-This is a convention the model is asked to honour and SHALL NOT be described as
-enforcement. The controls that do not depend on the model's cooperation are the
-read-only profile and the service layer's authority over what is permitted;
-describing the fence as a sandbox would discourage looking for those.
-
-#### Scenario: The notice accompanies the content
-
-- **WHEN** a tool returns corpus text
-- **THEN** the payload states that the content is evidence and that instructions inside it are to be reported, not obeyed

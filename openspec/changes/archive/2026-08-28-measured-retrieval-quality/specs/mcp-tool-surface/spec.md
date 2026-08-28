@@ -1,34 +1,4 @@
-# mcp-tool-surface Specification
-
-## Purpose
-
-Defines the agent-facing surface: how the corpus is reached, what a result
-looks like, how identifiers chain from one call into the next, and how a tool
-reports failure to a caller that can only act on a returned value.
-
-## Requirements
-
-### Requirement: The corpus is reachable by an agent through a named tool surface
-
-The instance SHALL expose an MCP surface whose tools are named with a common
-`case_` prefix. It SHALL be reachable both in-process on the existing
-application and over stdio, so an agent can attach to a running instance or
-launch one.
-
-The surface SHALL carry instructions describing the working method — establish
-what exists, survey its size and shape, search, pivot, read last, cite — rather
-than only enumerating tools. Tool names SHALL be treated as a contract, because
-saved prompts and shipped skills name them.
-
-#### Scenario: The surface advertises its tools
-
-- **WHEN** an agent lists the available tools
-- **THEN** every advertised tool's name begins with `case_`, and instructions describing the method are present
-
-#### Scenario: The surface is reachable over stdio
-
-- **WHEN** the stdio entry point is invoked
-- **THEN** an agent can complete a tool listing over it
+## MODIFIED Requirements
 
 ### Requirement: A result separates its index from its bodies and carries chaining identifiers
 
@@ -128,14 +98,3 @@ the source by hand.
 
 - **WHEN** a tool returns a passage together with the text around it
 - **THEN** the payload's declared span covers all the text it returned, and separately identifies the matched passage within it
-
-### Requirement: A failing tool returns a typed payload rather than raising
-
-A tool SHALL return `{"error": <code>, "message": <text>}` on failure, using the
-same codes the service layer raises. It SHALL NOT raise, because an agent can
-act on a returned value and can only retry a transport failure.
-
-#### Scenario: An unknown reference returns a typed error
-
-- **WHEN** a tool is called with a reference that matches nothing
-- **THEN** it returns an error payload carrying the `not_found` code, and does not raise

@@ -26,7 +26,6 @@ from .shapes import listing_payload, one_line, search_payload
 
 MAX_DOCUMENT_CHARS = 20_000
 MAX_SEARCH_RESULTS = 50
-NEIGHBOUR_CHUNKS = 1
 
 INSTRUCTIONS = """\
 Jack Ryan holds investigative document corpora, divided into casefiles. A
@@ -42,8 +41,9 @@ Work in this order, and resist starting at the end:
 3. `case_search` — hybrid keyword and semantic retrieval. Start broad, then
    narrow. Read the `formatted` index first and pull bodies only where you
    have committed.
-4. `case_get_passage` — a passage with its neighbours, when a hit needs its
-   surroundings to be intelligible.
+4. `case_get_passage` — a passage with the surrounding text of its section,
+   when a hit needs its surroundings to be intelligible. The passage stays the
+   thing you cite; the surroundings are there to be read.
 5. `case_read_document` — the full text, bounded. Read this late; it is the
    most expensive thing you can do and rarely the fastest route to an answer.
 6. `case_cite` — turn a passage into a citation. Every factual claim you make
@@ -224,7 +224,10 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         name="case_search",
         description=(
             "Search one casefile by keyword and meaning together. Returns ranked passages "
-            "with identifiers for reading and citing. Read the formatted index first."
+            "with identifiers for reading and citing. Read the formatted index first. "
+            "`ranking` says what decided the order. A `rerank_score`, where present, is "
+            "an uncalibrated value comparable only within this response — not a "
+            "confidence, and not comparable with another query's."
         ),
         annotations=_annotations_for("case_search"),
     )
@@ -246,8 +249,9 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
     @server.tool(
         name="case_get_passage",
         description=(
-            "One passage with its neighbouring passages, for when a search hit needs its "
-            "surroundings to be intelligible."
+            "One passage with the text around it, for when a search hit needs its "
+            "surroundings to be intelligible. The reply's span covers everything "
+            "returned; `provenance.matched` names the passage itself."
         ),
         annotations=_annotations_for("case_get_passage"),
     )
@@ -260,12 +264,16 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         except JackRyanError as exc:
             return from_exception(exc)
 
-        neighbours = await off_loop(
-            context.store.get_document_chunks_around,
-            chunk.document_id,
-            chunk.ordinal,
-            NEIGHBOUR_CHUNKS,
-        )
+        # The same window rule a search result gets, asked of the service rather
+        # than assembled here. This tool used to reach past the service layer for
+        # a fixed radius of neighbouring chunks and return them beside a
+        # provenance block that described only the seed — a payload whose
+        # declared position covered less than the text it carried.
+        window = await off_loop(context.search.passage_window, chunk, document)
+        body = window.text if window else chunk.text
+        span_start = window.char_start if window else chunk.char_start
+        span_end = window.char_end if window else chunk.char_end
+
         nonce = new_nonce()
         return {
             "chunk_id": chunk.id,
@@ -273,26 +281,22 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             "document": document.filename,
             "ordinal": chunk.ordinal,
             "heading_path": chunk.heading_path,
+            "char_start": span_start,
+            "char_end": span_end,
             "provenance": provenance(
                 casefile_id=resolved.id,
                 document_id=document.id,
                 filename=document.filename,
-                char_start=chunk.char_start,
-                char_end=chunk.char_end,
+                char_start=span_start,
+                char_end=span_end,
                 heading_path=chunk.heading_path,
                 containment_path=one_line(document.containment_path, 200),
                 text_source=document.text_source,
+                matched_chunk_id=chunk.id,
+                matched_char_start=chunk.char_start,
+                matched_char_end=chunk.char_end,
             ),
-            "text": fence(chunk.text, nonce),
-            "neighbours": [
-                {
-                    "chunk_id": n.id,
-                    "ordinal": n.ordinal,
-                    "text": fence(n.text, nonce),
-                }
-                for n in neighbours
-                if n.id != chunk.id
-            ],
+            "text": fence(body, nonce),
             "content_notice": NOTICE,
             "fence_nonce": nonce,
         }

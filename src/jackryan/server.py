@@ -87,12 +87,27 @@ def serialize_hit(hit: SearchHit) -> dict[str, Any]:
         "document_id": hit.document.id,
         "document": hit.document.filename,
         "score": hit.score,
+        # Never in place of `score`: the fusion score and an uncalibrated
+        # cross-encoder logit are different quantities, and the logit is
+        # comparable only within this response.
+        "rerank_score": hit.rerank_score,
+        "ranking": hit.ranking,
         "keyword_rank": hit.keyword_rank,
         "vector_rank": hit.vector_rank,
         "heading_path": hit.chunk.heading_path,
-        "char_start": hit.chunk.char_start,
-        "char_end": hit.chunk.char_end,
-        "text": hit.chunk.text,
+        # The span of the text returned, which is wider than the matched passage
+        # wherever the result was widened. The passage keeps its own span below,
+        # because it is what a citation quotes.
+        "char_start": hit.char_start,
+        "char_end": hit.char_end,
+        "matched_char_start": hit.chunk.char_start,
+        "matched_char_end": hit.chunk.char_end,
+        "narrowed": hit.narrowed,
+        # A person reading a hit is told how its text was obtained, exactly as
+        # the agent surface is. Recognition renders a word as a plausible
+        # different word, and a quotation from a scan can be fluent and wrong.
+        "read_as": read_as(hit.document.text_source),
+        "text": hit.text,
     }
 
 
@@ -242,6 +257,11 @@ def create_app(context: Context | None = None) -> FastAPI:
         ctx: Context = request.app.state.context
         # Embedding a query and two index scans are blocking work too.
         hits = await run_in_threadpool(ctx.search.search, reference, q, limit)
-        return {"query": q, "total": len(hits), "results": [serialize_hit(h) for h in hits]}
+        return {
+            "query": q,
+            "total": len(hits),
+            "ranking": hits[0].ranking if hits else "fusion",
+            "results": [serialize_hit(h) for h in hits],
+        }
 
     return app

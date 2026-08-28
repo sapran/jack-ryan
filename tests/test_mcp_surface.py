@@ -202,3 +202,104 @@ async def test_a_passage_from_another_casefile_is_not_reachable(server, context,
         server, "case_get_passage", {"casefile": "harbour-inquiry", "chunk_id": stolen}
     )
     assert body["error"] == "not_found"
+
+
+@pytest.mark.anyio
+async def test_a_passage_declares_the_span_of_everything_it_returns(
+    context, sectioned_corpus
+):
+    """The payload's position must cover the text beside it.
+
+    This tool used to return a passage together with its neighbouring chunks
+    while its provenance described only the passage — a declared position that
+    covered less than the payload carried, which cannot be checked against the
+    source by hand.
+    """
+    casefile = context.casefiles.create("Spans")
+    context.ingestion.ingest(casefile.short_id, sectioned_corpus)
+    server = build_mcp_server(context)
+    # One hit, so the passage has unmatched neighbours to grow into.
+    hits = await call(
+        server,
+        "case_search",
+        {"casefile": casefile.short_id, "query": "cormorant", "limit": 1},
+    )
+    top = hits["results"][0]
+
+    passage = await call(
+        server,
+        "case_get_passage",
+        {"casefile": casefile.short_id, "chunk_id": top["chunk_id"]},
+    )
+
+    document = context.ingestion.resolve_document(casefile.short_id, passage["document_id"])
+    body = passage["text"].split("\n", 1)[1].rsplit("\n", 1)[0]
+    declared = document.extracted_text[passage["char_start"] : passage["char_end"]]
+    assert body == declared
+
+    matched = passage["provenance"].get("matched")
+    assert matched is not None, "nothing was widened, so this test says nothing"
+    assert matched["chunk_id"] == passage["chunk_id"]
+    assert passage["char_start"] <= matched["char_start"]
+    assert passage["char_end"] >= matched["char_end"]
+    assert (passage["char_start"], passage["char_end"]) != (
+        matched["char_start"],
+        matched["char_end"],
+    )
+
+
+@pytest.mark.anyio
+async def test_a_passage_body_appears_once(loaded):
+    """No second copy of the passage arrives as a neighbour."""
+    context, casefile = loaded
+    server = build_mcp_server(context)
+    hits = await call(
+        server, "case_search", {"casefile": casefile.short_id, "query": "harbour lease"}
+    )
+    passage = await call(
+        server,
+        "case_get_passage",
+        {"casefile": casefile.short_id, "chunk_id": hits["results"][0]["chunk_id"]},
+    )
+    assert "neighbours" not in passage
+    assert passage["text"].count("<<<UNTRUSTED") == 1
+
+
+@pytest.mark.anyio
+async def test_a_citation_of_a_widened_result_still_quotes_the_passage(
+    context, sectioned_corpus
+):
+    """Widening what is read must not widen what is quoted.
+
+    Every other citation test runs on results that were never widened, where a
+    citation of the window and a citation of the passage are the same string.
+    """
+    casefile = context.casefiles.create("Cited")
+    context.ingestion.ingest(casefile.short_id, sectioned_corpus)
+    server = build_mcp_server(context)
+
+    hits = await call(
+        server,
+        "case_search",
+        {"casefile": casefile.short_id, "query": "cormorant", "limit": 1},
+    )
+    result = hits["results"][0]
+    assert "matched" in result["provenance"], "the result was not widened"
+    matched = result["provenance"]["matched"]
+
+    citation = await call(
+        server,
+        "case_cite",
+        {"casefile": casefile.short_id, "chunk_id": result["chunk_id"]},
+    )
+
+    # The citation names the passage's span, not the wider one that was read.
+    assert citation["char_start"] == matched["char_start"]
+    assert citation["char_end"] == matched["char_end"]
+    assert (citation["char_start"], citation["char_end"]) != (
+        result["char_start"],
+        result["char_end"],
+    )
+    quoted = citation["quote"].split("\n", 1)[1].rsplit("\n", 1)[0]
+    body = result["text"].split("\n", 1)[1].rsplit("\n", 1)[0]
+    assert quoted in body and quoted != body

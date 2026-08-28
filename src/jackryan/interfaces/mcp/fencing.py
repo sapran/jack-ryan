@@ -51,6 +51,9 @@ def provenance(
     heading_path: str = "",
     containment_path: str = "",
     text_source: str = "",
+    matched_chunk_id: str = "",
+    matched_char_start: int | None = None,
+    matched_char_end: int | None = None,
 ) -> dict[str, Any]:
     """Where a piece of text came from, so a claim can be traced back to it.
 
@@ -80,6 +83,19 @@ def provenance(
         block["char_start"] = char_start
     if char_end is not None:
         block["char_end"] = char_end
+    # Where the text returned is wider than the passage that matched, both spans
+    # have to be named. The block above describes what was actually returned; a
+    # provenance that gave only the matched passage's span would read as a
+    # precise reference and could not be followed back to the text beside it.
+    if matched_chunk_id and (
+        (matched_char_start, matched_char_end) != (char_start, char_end)
+    ):
+        matched: dict[str, Any] = {"chunk_id": matched_chunk_id}
+        if matched_char_start is not None:
+            matched["char_start"] = matched_char_start
+        if matched_char_end is not None:
+            matched["char_end"] = matched_char_end
+        block["matched"] = matched
     if heading_path:
         block["heading_path"] = heading_path
     return block

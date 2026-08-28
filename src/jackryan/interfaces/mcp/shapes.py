@@ -38,36 +38,55 @@ def search_payload(hits: list[SearchHit], query: str, casefile_id: str) -> dict[
         # metadata; the body lives under `results`, fenced, and appears once.
         lines.append(
             f"{index}. [{hit.chunk.short_id}] {one_line(hit.document.filename, 80)}{where} "
-            f"({len(hit.chunk.text)} chars, score {round(hit.score, 4)})"
+            f"({len(hit.text)} chars, score {round(hit.score, 4)})"
         )
-        results.append(
-            {
-                "chunk_id": hit.chunk.id,
-                "document_id": hit.document.id,
-                "document": hit.document.filename,
-                "score": round(hit.score, 6),
-                "found_by": {
-                    "keyword_rank": hit.keyword_rank,
-                    "vector_rank": hit.vector_rank,
-                },
-                "provenance": provenance(
-                    casefile_id=casefile_id,
-                    document_id=hit.document.id,
-                    filename=hit.document.filename,
-                    char_start=hit.chunk.char_start,
-                    char_end=hit.chunk.char_end,
-                    heading_path=hit.chunk.heading_path,
-                    containment_path=one_line(hit.document.containment_path, 200),
-                    text_source=hit.document.text_source,
-                ),
-                # The only place a passage body appears, and it is fenced.
-                "text": fence(hit.chunk.text, nonce),
-            }
-        )
+        entry: dict[str, Any] = {
+            "chunk_id": hit.chunk.id,
+            "document_id": hit.document.id,
+            "document": hit.document.filename,
+            "score": round(hit.score, 6),
+            "found_by": {
+                "keyword_rank": hit.keyword_rank,
+                "vector_rank": hit.vector_rank,
+            },
+            # The span of what is returned, which is wider than the matched
+            # passage whenever the text was widened. `provenance.matched` names
+            # the passage itself, and it is what the passage and citation tools
+            # address.
+            "char_start": hit.char_start,
+            "char_end": hit.char_end,
+            "provenance": provenance(
+                casefile_id=casefile_id,
+                document_id=hit.document.id,
+                filename=hit.document.filename,
+                char_start=hit.char_start,
+                char_end=hit.char_end,
+                heading_path=hit.chunk.heading_path,
+                containment_path=one_line(hit.document.containment_path, 200),
+                text_source=hit.document.text_source,
+                matched_chunk_id=hit.chunk.id,
+                matched_char_start=hit.chunk.char_start,
+                matched_char_end=hit.chunk.char_end,
+            ),
+            # The only place a passage body appears, and it is fenced.
+            "text": fence(hit.text, nonce),
+        }
+        if hit.rerank_score is not None:
+            entry["rerank_score"] = round(hit.rerank_score, 6)
+        if hit.narrowed:
+            # Said rather than left to be inferred from a length: a result cut
+            # back to its passage looks exactly like one that had no more
+            # context to give.
+            entry["narrowed"] = True
+        results.append(entry)
 
     return {
         "query": query,
         "total": len(hits),
+        # Which stage decided the order. `fusion` means no reranker is
+        # configured; `rerank-unavailable` means one is and could not run, which
+        # is the same ordering and a different fact.
+        "ranking": hits[0].ranking if hits else "fusion",
         "formatted": "\n".join(lines) if lines else "No matching passages.",
         "results": results,
         "content_notice": NOTICE,

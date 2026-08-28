@@ -171,6 +171,46 @@ class Profile:
     letter and a two-hundred-page report.
     """
 
+    reranker_model: str = ""
+    """A cross-encoder to reorder search results with, or empty for none.
+
+    Empty by default, and that is a licensing decision as much as a technical
+    one: the only multilingual reranker the embedding library registers is
+    published under a non-commercial licence, and this corpus is English,
+    Ukrainian and Russian. An operator names the model that suits their own use;
+    the shipped default fetches no weights and reorders nothing.
+
+    Naming a model the instance cannot build is fatal when the reranker is first
+    needed. Failing to score one response is not: the fused order stands and the
+    response says it was not reranked.
+    """
+
+    rerank_depth: int = 50
+    """How many fused candidates the reranker sees.
+
+    Larger than a caller's usual limit on purpose. A reranker shown only as many
+    candidates as the caller asked for cannot improve anything — the ordering it
+    is given is already the answer.
+    """
+
+    window_max_chars: int = 3000
+    """How wide a search result's text may be, in characters.
+
+    A result's text is a window around the matched passage rather than the
+    passage alone, so a quotation arrives with the sentences that give it
+    meaning.
+
+    Compared against the matched passage's own length, not against the contract's
+    chunk size: the chunker snaps to paragraph boundaries, so most passages are
+    shorter than `chunk_max_chars` and a budget equal to it still widens them.
+    Set this to 1 to switch widening off outright.
+
+    Retrieval settings live here rather than in the contract because they write
+    nothing: no vector, no chunk, no stored text. Changing one changes what the
+    next search returns and leaves the corpus exactly as it was, so no store is
+    ever refused for them.
+    """
+
     vlm_model: str = ""
     """A docling vision-model spec name, or empty to leave the vision rung off.
 
@@ -464,6 +504,13 @@ def _select_profile(document: dict[str, Any]) -> Profile:
         ocr_engine=_validated_ocr_engine(settings.get("ocr_engine"), name),
         ocr_language=_validated_ocr_language(settings.get("ocr_language"), name),
         min_chars_per_page=_validated_floor(settings.get("min_chars_per_page"), name),
+        reranker_model=str(_interpolate(settings.get("reranker_model", "")) or "").strip(),
+        rerank_depth=_validated_positive(
+            settings.get("rerank_depth"), name, "rerank_depth", Profile.rerank_depth
+        ),
+        window_max_chars=_validated_positive(
+            settings.get("window_max_chars"), name, "window_max_chars", Profile.window_max_chars
+        ),
         vlm_model=str(_interpolate(settings.get("vlm_model", "")) or "").strip(),
     )
 
@@ -581,6 +628,34 @@ def _validated_floor(value: Any, profile: str) -> int:
             "text. Use 1 to escalate only a page with nothing on it at all."
         )
     return floor
+
+
+def _validated_positive(value: Any, profile: str, key: str, default: int) -> int:
+    """A whole number of at least one, refused rather than coerced.
+
+    Zero is the interesting case. It reads as "no limit" and would behave as its
+    opposite — a window of no characters, a rerank pool of nothing — which is the
+    quiet misconfiguration this loader exists to refuse. A fractional value is
+    refused for the same reason `min_chars_per_page` refuses one: `int(0.5)` is
+    zero and reaches the same place by another route.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ConfigError(f"profile {profile!r} sets {key}={value!r}, which is not a number")
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise ConfigError(
+            f"profile {profile!r} sets {key}={value!r}; expected a whole number"
+        ) from None
+    if number < 1:
+        raise ConfigError(
+            f"profile {profile!r} sets {key}={number}. A value below one disables the "
+            "setting while reading as though it removed a limit; leave the key out to "
+            "take the default."
+        )
+    return number
 
 
 def _validated_embedder(value: Any, profile: str) -> str:

@@ -102,6 +102,53 @@ def corpus(tmp_path):
 
 
 @pytest.fixture
+def sectioned_corpus(tmp_path):
+    """A corpus whose documents hold several passages under real headings.
+
+    The `corpus` fixture above is one passage per document. That is enough for
+    most tests and useless for any test about windows: a window over a
+    single-passage document is the document, so nothing is ever widened and a
+    test asserting something about widening passes without exercising it.
+
+    `sections.md` has sections far longer than a chunk, so a passage has room to
+    grow. `terse.md` has sections shorter than one, so a passage straddles a
+    heading — which is the case a window built from recorded heading trails alone
+    gets wrong.
+    """
+    folder = tmp_path / "sectioned"
+    folder.mkdir()
+    long_alpha = " ".join(
+        f"Alpha sentence {n} concerns the dredging survey." for n in range(1, 21)
+    )
+    long_beta = " ".join(
+        f"Beta sentence {n} concerns the tariff schedule." for n in range(1, 21)
+    )
+    (folder / "sections.md").write_text(
+        f"# Survey\n\n## Alpha\n\n{long_alpha}\n\n"
+        f"## Beta\n\n{long_beta} A cormorant sat on the mooring buoy.\n",
+        encoding="utf-8",
+    )
+    # A long section followed by a short one, so the section's last passage runs
+    # past the heading between them. A window grown from the middle of the long
+    # section reaches that passage's end, and would cross the heading with it —
+    # which is the case a window built from recorded heading trails alone gets
+    # wrong, because the straddling passage carries the trail of where it began.
+    # Long enough for several passages, so the marked one has a same-section
+    # neighbour on each side and therefore room to grow.
+    alpha = " ".join(
+        f"Watch line {n} of the long section."
+        if n != 30
+        else "Watch line 30 records a kingfisher on the pontoon."
+        for n in range(1, 45)
+    )
+    (folder / "straddle.md").write_text(
+        f"# Watch\n\n## Long\n\n{alpha}\n\n## Short\n\nA pelican was recorded here.\n",
+        encoding="utf-8",
+    )
+    return folder
+
+
+@pytest.fixture
 def anyio_backend():
     """Async tests run on asyncio only; trio is not a target."""
     return "asyncio"

@@ -14,6 +14,8 @@ from .embedding import build_embedder
 from .embedding.port import EmbedderPort
 from .errors import ConfigError
 from .ingestion.quality_gate import QualityGate
+from .reranking import build_reranker
+from .reranking.port import RerankerPort
 from .services.casefiles import CasefileService
 from .services.ingestion import IngestionService
 from .services.search import SearchService
@@ -48,6 +50,7 @@ def build_context(
     config: Config | None = None,
     embedder: EmbedderPort | None = None,
     gate: QualityGate | None = None,
+    reranker: RerankerPort | None = None,
 ) -> Context:
     """Open the store and construct the service layer over it.
 
@@ -55,6 +58,11 @@ def build_context(
     wire a real instance without loading models. Absent, it is built from the
     profile, and nothing about it is verified here — the recognition engine is
     built at the start of an ingest run, which is the only place that needs it.
+
+    The reranker is injectable on the same terms, and is absent unless the
+    profile names one. Unlike the embedder it is not part of corpus identity: it
+    writes nothing, so an instance can gain or lose one without the store having
+    an opinion.
     """
     resolved = config or load_config()
     # The embedder is built first because it is part of corpus identity: the
@@ -113,5 +121,15 @@ def build_context(
         ingestion=IngestionService(
             store, casefiles, chosen, resolved.contract, gate=chosen_gate
         ),
-        search=SearchService(store, casefiles, chosen),
+        search=SearchService(
+            store,
+            casefiles,
+            chosen,
+            window_max_chars=resolved.profile.window_max_chars,
+            # Nothing unless the profile names one, and nothing is fetched here:
+            # the model is built when the first search needs it, so a refusal
+            # names the setting rather than delaying every `jackryan status`.
+            reranker=reranker or build_reranker(resolved),
+            rerank_depth=resolved.profile.rerank_depth,
+        ),
     )

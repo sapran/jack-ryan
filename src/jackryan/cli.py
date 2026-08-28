@@ -61,12 +61,19 @@ def _render_hit(hit: SearchHit) -> dict[str, Any]:
         "document_id": hit.document.id,
         "document": hit.document.filename,
         "score": round(hit.score, 6),
+        "rerank_score": round(hit.rerank_score, 6) if hit.rerank_score is not None else None,
+        "ranking": hit.ranking,
         "keyword_rank": hit.keyword_rank,
         "vector_rank": hit.vector_rank,
         "heading_path": hit.chunk.heading_path,
-        "char_start": hit.chunk.char_start,
-        "char_end": hit.chunk.char_end,
-        "text": hit.chunk.text,
+        # The span returned, and the passage inside it that matched.
+        "char_start": hit.char_start,
+        "char_end": hit.char_end,
+        "matched_char_start": hit.chunk.char_start,
+        "matched_char_end": hit.chunk.char_end,
+        "narrowed": hit.narrowed,
+        "read_as": read_as(hit.document.text_source),
+        "text": hit.text,
     }
 
 
@@ -226,10 +233,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             elif not hits:
                 print("No matches.")
             else:
+                if hits[0].ranking == "rerank-unavailable":
+                    # The order is the fused one and the operator asked for
+                    # better. Said once, above the results, rather than left to
+                    # be noticed.
+                    print("A reranker is configured but did not run; showing the fused order.\n")
                 for i, hit in enumerate(hits, 1):
                     where = f" · {hit.chunk.heading_path}" if hit.chunk.heading_path else ""
                     print(f"{i}. {hit.document.filename}{where}  [{hit.chunk.short_id}]")
-                    body = " ".join(hit.chunk.text.split())
+                    body = " ".join(hit.text.split())
                     print(f"   {body[:180]}{'…' if len(body) > 180 else ''}\n")
             return 0
 

@@ -1,124 +1,4 @@
-# hybrid-search Specification
-
-## Purpose
-
-Defines retrieval: two retrievers over one store, fused by rank rather than by
-blended score, always scoped to a single casefile.
-
-## Requirements
-
-### Requirement: Search combines keyword and semantic retrieval over one store
-
-Search SHALL run two retrievers over the same store — keyword ranking over the
-full-text index, and nearest-neighbour search over the vector index — and SHALL
-combine their results into a single ranking.
-
-Both SHALL be available with no endpoint configured, so an instance can search
-its corpus offline.
-
-#### Scenario: Both retrievers contribute to one ranking
-
-- **WHEN** a search runs
-- **THEN** results found by keyword and by vector similarity appear in one ranked list
-
-### Requirement: Results are fused by rank, not by blended score
-
-Fusion SHALL use reciprocal rank fusion, consuming only each retriever's
-ordering. Scores SHALL NOT be normalised and blended: keyword scores and vector
-distances are not comparable, and blending them would introduce a weighting to
-tune per corpus.
-
-In the fused ordering, a chunk returned by both retrievers SHALL rank above one
-returned by only a single retriever at the same position.
-
-These guarantees describe the fused candidate ordering. A reranker, where one is
-configured, SHALL be a later stage that consumes that ordering and MAY reorder
-it, including demoting a chunk both retrievers returned — that is what a
-reranker is for. It SHALL NOT be implemented by blending retriever scores, which
-remains forbidden; it scores the query against the passage text and nothing else.
-
-When two candidates fuse to the same score, the tie SHALL be broken by
-properties of the corpus itself rather than by any identifier. Exact ties are
-ordinary rather than rare: a chunk ranked first by one retriever and second by
-the other scores precisely what a chunk ranked second and first scores.
-
-No identifier can break them honestly. A chunk's id is minted afresh by every
-reingest, and a document's id differs between one store and another built from
-the same documents — so an ordering that falls back to either ranks an unchanged
-corpus differently after a rebuild, and ranks two stores holding identical
-material differently from each other. A retrieval figure measured under one
-cannot then be compared with a figure measured under the other, which is to say
-it cannot be compared with anything.
-
-Two candidates identical in both position and text are the one exception, and
-only because there is nothing left to decide: whichever is returned first, the
-caller is reading the same words at the same place. Their order MAY be settled by
-any stable value.
-
-#### Scenario: A tie is broken the same way in a store built afresh
-
-- **WHEN** the same documents are ingested into two stores, giving every chunk and document new identifiers
-- **THEN** two candidates that fuse to the same score are returned in the same order in both
-
-#### Scenario: Agreement outranks a single retriever
-
-- **WHEN** one chunk is returned by both retrievers and another by only one, at the same rank
-- **THEN** in the fused ordering the chunk both retrievers returned ranks higher
-
-#### Scenario: The same corpus ranks the same way after a rebuild
-
-- **WHEN** two candidates fuse to the same score and the corpus is reingested, giving them new identifiers
-- **THEN** they are returned in the same order as before
-
-#### Scenario: Retriever scores are still never blended
-
-- **WHEN** a ranking is produced, with or without a reranker
-- **THEN** no keyword score and no vector distance has been combined into a blended score
-
-### Requirement: Every search is scoped to one casefile
-
-A search SHALL name exactly one casefile and SHALL return only that casefile's
-chunks. There SHALL be no cross-casefile search, because a casefile is the
-compartment.
-
-#### Scenario: Another casefile's content is never returned
-
-- **WHEN** two casefiles hold documents with the same words and one is searched
-- **THEN** only that casefile's chunks are returned
-
-### Requirement: A result carries what is needed to use and to verify it
-
-Each result SHALL carry text taken from the document it came from, the document
-itself, the position within that document of the text returned, and identifiers
-that address both the matched chunk and the document for follow-up.
-
-Where the text returned is wider than the matched chunk, the result SHALL carry
-both spans: the span of the text it returned, and the span of the matched chunk
-within it. A single span cannot describe both, and a result whose declared
-position does not cover the text it carries cannot be verified by hand — which is
-the only reason the position is there.
-
-Result counts SHALL be bounded. Widening SHALL be bounded across the response as
-a whole: once the text already returned has reached the response bound, later
-results SHALL carry their matched chunk alone rather than a window.
-
-A result SHALL NOT be withheld to meet that bound. The passages a caller asked
-for are what the search found, and dropping evidence to save characters is a
-worse failure than a long response — an analyst cannot miss what they were never
-shown. The bound governs how much context is added, not how much is found.
-
-A result narrowed for this reason SHALL say so, so that a short answer is
-distinguishable from a passage that had no more context to give.
-
-#### Scenario: A result resolves to its source
-
-- **WHEN** a search returns a hit
-- **THEN** it carries its text, its document, the span of the text returned, the span of the matched chunk, and identifiers for both chunk and document
-
-#### Scenario: Widening stops when the response bound is reached
-
-- **WHEN** the results of one search would together carry more widened text than the response permits
-- **THEN** later results carry their matched chunk alone and report that they were narrowed, and no result is dropped
+## ADDED Requirements
 
 ### Requirement: Reranking reorders the fused candidates and is never required
 
@@ -237,3 +117,93 @@ passage to be counted as two pieces of evidence.
 
 - **WHEN** two results match chunks close enough that widening one would reach into the other
 - **THEN** the later result is narrowed, and no text beyond the overlap the contract gives adjacent chunks appears twice in the response
+
+## MODIFIED Requirements
+
+### Requirement: Results are fused by rank, not by blended score
+
+Fusion SHALL use reciprocal rank fusion, consuming only each retriever's
+ordering. Scores SHALL NOT be normalised and blended: keyword scores and vector
+distances are not comparable, and blending them would introduce a weighting to
+tune per corpus.
+
+In the fused ordering, a chunk returned by both retrievers SHALL rank above one
+returned by only a single retriever at the same position.
+
+These guarantees describe the fused candidate ordering. A reranker, where one is
+configured, SHALL be a later stage that consumes that ordering and MAY reorder
+it, including demoting a chunk both retrievers returned — that is what a
+reranker is for. It SHALL NOT be implemented by blending retriever scores, which
+remains forbidden; it scores the query against the passage text and nothing else.
+
+When two candidates fuse to the same score, the tie SHALL be broken by
+properties of the corpus itself rather than by any identifier. Exact ties are
+ordinary rather than rare: a chunk ranked first by one retriever and second by
+the other scores precisely what a chunk ranked second and first scores.
+
+No identifier can break them honestly. A chunk's id is minted afresh by every
+reingest, and a document's id differs between one store and another built from
+the same documents — so an ordering that falls back to either ranks an unchanged
+corpus differently after a rebuild, and ranks two stores holding identical
+material differently from each other. A retrieval figure measured under one
+cannot then be compared with a figure measured under the other, which is to say
+it cannot be compared with anything.
+
+Two candidates identical in both position and text are the one exception, and
+only because there is nothing left to decide: whichever is returned first, the
+caller is reading the same words at the same place. Their order MAY be settled by
+any stable value.
+
+#### Scenario: A tie is broken the same way in a store built afresh
+
+- **WHEN** the same documents are ingested into two stores, giving every chunk and document new identifiers
+- **THEN** two candidates that fuse to the same score are returned in the same order in both
+
+#### Scenario: Agreement outranks a single retriever
+
+- **WHEN** one chunk is returned by both retrievers and another by only one, at the same rank
+- **THEN** in the fused ordering the chunk both retrievers returned ranks higher
+
+#### Scenario: The same corpus ranks the same way after a rebuild
+
+- **WHEN** two candidates fuse to the same score and the corpus is reingested, giving them new identifiers
+- **THEN** they are returned in the same order as before
+
+#### Scenario: Retriever scores are still never blended
+
+- **WHEN** a ranking is produced, with or without a reranker
+- **THEN** no keyword score and no vector distance has been combined into a blended score
+
+### Requirement: A result carries what is needed to use and to verify it
+
+Each result SHALL carry text taken from the document it came from, the document
+itself, the position within that document of the text returned, and identifiers
+that address both the matched chunk and the document for follow-up.
+
+Where the text returned is wider than the matched chunk, the result SHALL carry
+both spans: the span of the text it returned, and the span of the matched chunk
+within it. A single span cannot describe both, and a result whose declared
+position does not cover the text it carries cannot be verified by hand — which is
+the only reason the position is there.
+
+Result counts SHALL be bounded. Widening SHALL be bounded across the response as
+a whole: once the text already returned has reached the response bound, later
+results SHALL carry their matched chunk alone rather than a window.
+
+A result SHALL NOT be withheld to meet that bound. The passages a caller asked
+for are what the search found, and dropping evidence to save characters is a
+worse failure than a long response — an analyst cannot miss what they were never
+shown. The bound governs how much context is added, not how much is found.
+
+A result narrowed for this reason SHALL say so, so that a short answer is
+distinguishable from a passage that had no more context to give.
+
+#### Scenario: A result resolves to its source
+
+- **WHEN** a search returns a hit
+- **THEN** it carries its text, its document, the span of the text returned, the span of the matched chunk, and identifiers for both chunk and document
+
+#### Scenario: Widening stops when the response bound is reached
+
+- **WHEN** the results of one search would together carry more widened text than the response permits
+- **THEN** later results carry their matched chunk alone and report that they were narrowed, and no result is dropped

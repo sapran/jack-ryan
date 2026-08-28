@@ -7,11 +7,12 @@ proposing anything — it carries the nine design principles, the ten locked
 decisions, and which milestone each capability belongs to.
 
 **`docs/handover.md` records what is verified and what is not.** Read it before
-trusting that anything here has been run: every test still uses a stand-in
-embedder and none opens a PDF, so `scripts/verify_model_paths.py` is the only
-thing covering the model-dependent paths — it passed 6/6 on 2026-08-26, and the
-handover says exactly what that does and does not settle. What is known but
-deliberately unfixed lives in `docs/implementation-notes.md`.
+trusting that anything here has been run: every test uses a stand-in embedder and
+none opens a PDF, so the model-dependent paths are covered by two scripts and
+nothing else — `scripts/verify_model_paths.py`, which passed 6/6 on 2026-08-26,
+and `scripts/evaluate_retrieval.py`, which measures retrieval quality against a
+recorded baseline. The handover says exactly what each does and does not settle.
+What is known but deliberately unfixed lives in `docs/implementation-notes.md`.
 
 ## What this is
 
@@ -25,11 +26,12 @@ with resolvable citations. Depth (OCR, hard formats, retrieval quality,
 summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
-Current state: **M3 slice 2 shipped — extraction now reads scans in all three
-working languages.** Seven changes are archived — M0, M1 and M2, then
-`hard-formats-and-containers`, `contract-covers-embedding-library`,
-`corpus-identity-covers-the-embedder` and `extraction-quality-gate` — and
-fourteen capabilities are published in `openspec/specs/`. No change is in flight
+Current state: **M3 slice 3 shipped — retrieval quality is measured, and the
+measurement changed what shipped.** Nine changes are archived — M0, M1 and M2,
+then `hard-formats-and-containers`, `contract-covers-embedding-library`,
+`corpus-identity-covers-the-embedder`, `extraction-quality-gate`,
+`corpus-identity-and-schema-migration` and `measured-retrieval-quality` — and
+sixteen capabilities are published in `openspec/specs/`. No change is in flight
 and no archived task is left unticked.
 
 Recognition was already running before slice 2 and had never been configured: a
@@ -38,10 +40,16 @@ empty-document guard. It is now deliberate — engine and language named in the
 profile, `auto` refused, a three-rung escalation ladder, and `text_source`
 recorded per document and shown to the agent.
 
-The remaining M3 legs are rerank, section-window expansion, summaries and
-statistical NER; the assistant writing back is M4. **Retrieval quality has never
-been measured**, which matters most for the rerank leg and is now the largest
-unaddressed gap — see `docs/handover.md`.
+**Retrieval quality is now measured.** `scripts/evaluate_retrieval.py` reports
+recall and reciprocal rank over a fixed trilingual query set and fails against a
+tracked baseline in `docs/retrieval-baseline.json`. A result's text is now a
+window around the matched passage, and a rerank stage exists — but it ships
+disabled, because both rerankers the embedding library offers made retrieval
+measurably worse on that set and took Ukrainian to zero. The figures and the
+trace are in `docs/handover.md`; read them before naming a reranker.
+
+The remaining M3 legs are summaries and statistical NER; the assistant writing
+back is M4.
 
 What remains unverified is recorded in `docs/handover.md`, and what is known
 but deliberately unfixed is in `docs/implementation-notes.md` — read both before
@@ -130,6 +138,44 @@ same width, which nothing downstream can detect.
 - **Corpus identity escapes `\`, `|` and control characters — never `=`.**
   `embed_library` legitimately contains `==`. Escaping `=` would change the
   default identity and refuse every existing store.
+- **A tie in the fused ranking is broken by the corpus, never by an
+  identifier.** Reciprocal rank fusion ties routinely, and chunk ids are minted
+  afresh on every reingest while document ids differ between two stores built
+  from the same documents. Ordering by either makes an unchanged corpus rank
+  differently between runs — which it did, by 0.058 recall@1, until ties were
+  broken by the passage's ordinal and text. An identifier decides only between
+  two passages identical in both, where the order does not matter. Nothing else
+  can be reproduced if this is not.
+- **Retrieval settings are profile and leave no residue.** `reranker_model`,
+  `rerank_depth` and `window_max_chars` are read at query time and write nothing
+  — no vector, no chunk, no stored text — so no store is ever refused for them.
+  This is a stronger claim than the one extraction settings get, and it is why
+  they are not in corpus identity.
+- **A reranker has two failure modes and they are deliberately different.** One
+  that is named but cannot be built stops the search, naming the setting: an
+  instance quietly serving the fused order has hidden a misconfiguration. One
+  that fails while scoring a response leaves the fused order and reports
+  `rerank-unavailable`, because refusing to answer would make retrieval quality
+  a condition of retrieval.
+- **A rerank score is not a confidence.** It is an uncalibrated logit,
+  comparable only within one response — never between queries or between models.
+  It never replaces the fusion score, which stays what fusion computed.
+- **The reranker is given the matched passage, never the widened window.** The
+  library truncates the query-and-passage pair at the model's own limit with no
+  override, so a window would be cut inside it and the score would describe a
+  fragment nobody chose.
+- **A window is a slice of `extracted_text`, never joined chunk texts.** Chunks
+  overlap by configuration, so joining them repeats the overlap, and a chunk's
+  stored text is stripped while its offsets are not. The slice is what a person
+  reading those offsets sees, which is what makes a citation checkable by hand.
+- **Widening what is read never widens what is cited.** The matched passage
+  stays the unit that identifiers address and `case_cite` quotes. A payload that
+  returns more than it declares cannot be followed back, which is why provenance
+  names both spans.
+- **Test fixtures with single-passage documents cannot exercise a window.** Three
+  window tests passed while proving nothing for exactly that reason. Use the
+  `sectioned_corpus` fixture where widening matters, and assert that something
+  actually widened.
 - **Never remove the `cli` service from `docker-compose.yml`.** It exists with
   `replicas: 0` on purpose, for `docker compose run --rm cli ...`. A refactor
   that "cleans it up" breaks the CLI workflow.
@@ -202,6 +248,9 @@ uv venv --python 3.12 && uv pip install -e ".[dev]"
 # Tests — the same gate CI runs
 pytest -q
 
+# Retrieval quality against the tracked baseline (needs model weights)
+python scripts/evaluate_retrieval.py
+
 # Run the API
 uvicorn jackryan.server:create_app --factory --reload --port 8500
 
@@ -229,6 +278,8 @@ docker compose run --rm cli casefile list
 - `src/jackryan/ingestion/` — format router, extractors, chunker, container and
   mail and spreadsheet readers, the expansion budget
 - `src/jackryan/embedding/` — embedder port, the real model, and the test double
+- `src/jackryan/reranking/` — reranker port and the cross-encoder behind it
+- `scripts/evaluate_retrieval.py` — the retrieval measurement and its baseline
 - `src/jackryan/services/` — all business logic
 - `src/jackryan/server.py`, `cli.py` — thin adapters
 - `src/jackryan/interfaces/mcp/` — the agent surface: tools, shapes, fencing,

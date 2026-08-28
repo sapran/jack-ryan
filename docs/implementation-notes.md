@@ -6,6 +6,69 @@ and why it was parked.
 
 ## Parked
 
+- **A FastAPI test client and the agent surface's servers, built in one test
+  module, abort the interpreter at teardown.** On macOS the suite reports every
+  test passing and the process then exits 134 with
+  `libc++abi: recursive_mutex lock failed` — a green summary and a failing exit
+  code, which is the worst shape a CI failure can take. Bisected: deselecting
+  either the module's REST tests or its MCP tests makes it clean, and each half
+  is used elsewhere in the suite without trouble. `tests/test_result_shape.py`
+  therefore compares the REST shape through `serialize_hit` rather than over
+  HTTP, and `tests/test_rest.py` covers the route. **That reduced it and did not
+  remove it** — it was still seen once in six runs afterwards, so do not read the
+  change as a fix.
+
+  **CI is unaffected, and that was checked rather than assumed.** The suite was
+  run three times inside the project's own image — Linux, the platform every
+  workflow uses — and reported `422 passed, 2 skipped` with exit code 0 each
+  time, with no abort. The message is libc++'s, which is macOS's C++ runtime;
+  Linux uses libstdc++ and does not reproduce it. Parked: the cause is a native
+  teardown race below Python — onnxruntime and torch are imported by every run
+  through `docling` — and finding it properly means debugging something this
+  project does not own. Worth knowing before writing another test module that
+  mixes the two, and worth re-checking if the suite ever fails in CI with a green
+  summary.
+
+- **A window reaches at most three passages either side, whatever the budget
+  says.** `WINDOW_MAX_CHUNKS_EITHER_SIDE` in `src/jackryan/services/search.py`
+  caps how far a result may wander from what actually matched, and it is a
+  constant rather than a setting. An operator who raises `window_max_chars` far
+  above the chunk size therefore gets less than they asked for, silently. Found
+  while building the window rule. Parked: the honest fix is to derive the reach
+  from the budget and the chunk size together, which needs the contract in the
+  search service, and that is a wider change than this slice.
+
+- **The response character bound governs the context added, not the passages
+  found.** `MAX_RESPONSE_CHARS` stops results being widened once the response is
+  full, but the matched passages themselves are always returned — fifty results
+  at the contract's chunk size still exceed it. That is deliberate, and it is
+  written into the `hybrid-search` spec: dropping evidence to save characters is
+  a worse failure than a long response. Recorded because the constant's name
+  reads like a hard ceiling and is not one.
+
+- **Reranking is built and no model is recommended.** Both cross-encoders the
+  embedding library registers made retrieval measurably worse on the project's
+  evaluation set, and both took Ukrainian to zero; the figures and the trace are
+  in `docs/handover.md`. The seam is finished and the setting is empty. Parked:
+  finding a reranker that survives this corpus's languages is its own piece of
+  work, and it now has a measurement to be judged against, which is what it
+  lacked.
+
+- **Keyword ranking inside one casefile depends on what the other casefiles
+  hold.** `search_keyword` in `src/jackryan/storage/sqlite.py` filters rows by
+  `c.casefile_id`, but orders them by `bm25(chunks_fts)`, and FTS5 computes bm25
+  over the whole index — every casefile in the store. Adding a second casefile
+  therefore changes the term statistics and can reorder results inside the first,
+  as measured while building the evaluation harness: the same corpus in a second
+  casefile scored differently on every keyword metric. No content crosses the
+  boundary — the compartment holds for what is returned — but the *order* of a
+  casefile's own results is influenced by material it cannot see, which is a
+  weak side channel as well as a reproducibility problem. Found while writing
+  `scripts/evaluate_retrieval.py`. Parked: the remedies (a per-casefile FTS
+  index, or ranking by a statistic computed within the compartment) are a change
+  to the storage seam and to what `hybrid-search` guarantees, not a line in a
+  retrieval-quality slice.
+
 - **Originals are never archived, though `docs/design.md` § 5 says they are.**
   The Finalize step of the ingestion pipeline is documented as "originals
   archived content-addressed within the casefile". Nothing in

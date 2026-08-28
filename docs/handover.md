@@ -13,10 +13,11 @@ verified, what is not, and why.
 
 ## Where things stand
 
-`main` is at the merge of M3 slice 2 plus a deadline-driven cleanup. The
-prototype (M0–M2), both M3 slices and `corpus-identity-and-schema-migration` are
-archived, fifteen capabilities are published in `openspec/specs/`, and 332 tests
-pass with 2 skipped behind `JACKRYAN_MODEL_TESTS=1`.
+`main` is at the merge of M3 slice 2 plus a deadline-driven cleanup, and
+`measured-retrieval-quality` is built on top of it. The prototype (M0–M2), both
+earlier M3 slices and `corpus-identity-and-schema-migration` are archived,
+fifteen capabilities are published in `openspec/specs/`, and 420 tests pass with
+2 skipped behind `JACKRYAN_MODEL_TESTS=1`.
 
 Built and merged, and — since 2026-08-26 — exercised against real model
 infrastructure for the first time; see the verification sections below:
@@ -33,6 +34,9 @@ infrastructure for the first time; see the verification sections below:
   deliberately for English, Ukrainian and Russian, a three-rung escalation
   ladder, page images as documents, and `text_source` recorded per document and
   surfaced to the agent.
+- **M3 slice 3** — retrieval quality, measured: an evaluation harness with a
+  tracked baseline, section windows around a matched passage, and a rerank stage
+  that ships disabled because measuring it said to. See the section below.
 
 **Archived on 2026-08-26:** `hard-formats-and-containers`, all 32 tasks done,
 now at `openspec/changes/archive/2026-08-26-hard-formats-and-containers`. It
@@ -264,23 +268,106 @@ Slice 1 took the leg that needed no model. Slice 2 — the extraction quality ga
 
 | Leg | Notes |
 |---|---|
-| Cross-encoder rerank | After RRF, before the answer. Must degrade to unranked `top_k` rather than blocking — never a hard dependency. |
-| Section-window expansion | Expand a matched chunk to a coherent section for the agent to read. Needs no model; small; could be folded into any slice. |
+| ~~Cross-encoder rerank~~ | Built. The seam ships; no model does. Measured below. |
+| ~~Section-window expansion~~ | Built. A result's text is a window around the matched passage; the passage stays what is cited. |
 | The summarization layer | Per-chunk contextual summaries at ingest (a config switch, off by default — it is the dominant ingest cost), then per-document map-reduce. |
 | Mentions / NER | Classical NER plus pattern identifiers, as facets and pivots. Pattern extraction needs no model and could ship first. |
 
 Recommended order: ~~fix the fingerprint gap~~ (done twice, the library version
-then the embedder identity) → ~~OCR/VLM~~ (done, see below) → **rerank and
-section-window together as a retrieval-quality slice**, then summaries, then
-mentions.
+then the embedder identity) → ~~OCR/VLM~~ (done) → ~~rerank and section-window
+together as a retrieval-quality slice~~ (done, measured, see below), then
+summaries, then mentions.
 
-Worth knowing before that slice, and it has not changed: **retrieval quality has
-never been measured.** The 6/6 run, the two-vendor test and the quality gate's
-own verification all say so explicitly, and rerank is a change whose whole point
-is retrieval quality — so it needs something to measure against before it can be
-said to work. That is now the single largest unaddressed gap in the project.
+**Retrieval quality is now measured**, which closes what this document called
+the single largest unaddressed gap in the project. What that measurement settles
+and what it does not is the next section.
 
 PST stays last, as `docs/design.md` § 10 has it.
+
+## Retrieval quality is measured now — and what it says about reranking
+
+`scripts/evaluate_retrieval.py` builds a synthetic trilingual corpus in a
+temporary directory, runs seventeen queries with recorded judgements through the
+shipped `SearchService`, and reports recall@1/@5/@10 and MRR@10 for the keyword
+leg, the vector leg and the fused ranking, with a per-language breakdown. It
+compares against `docs/retrieval-baseline.json` and exits non-zero below it, with
+a tolerance of 0.005 — kernels differ between machines and one query is 0.059 of
+recall@1, so a gate that fires on arithmetic noise is one a reader learns to
+ignore.
+
+Judgements are keyed to a filename and a phrase, never to a chunk id — ids are
+minted afresh on every reingest — and a judgement may name alternatives, because
+near-duplicate documents legitimately carry the same answer.
+
+**The baseline, recorded 2026-08-28 on Darwin arm64, python 3.12.14**, with
+`intfloat/multilingual-e5-large` and no reranker:
+
+| leg | recall@1 | recall@5 | recall@10 | MRR@10 |
+|---|---|---|---|---|
+| keyword | 0.647 | 0.941 | 0.941 | 0.784 |
+| vector | 0.765 | 1.000 | 1.000 | 0.868 |
+| **fused** | **0.882** | **1.000** | **1.000** | **0.926** |
+
+Fusion beats both legs, which is the first evidence this project has that
+reciprocal rank fusion earns its place. Per language, fused recall@1 is 0.714 for
+English and 1.000 for Ukrainian and Russian; English is hardest because that is
+where the three near-duplicate lease documents are.
+
+**The measurement was shown to move and to fail.** The same run under the
+deterministic embedder reports fused MRR 0.767 against 0.926, which is what makes
+it a measurement rather than a formality — a figure that cannot move cannot
+report a regression. Dropping one answering document from the corpus produced
+nine metrics below baseline and exit code 1.
+
+### Both available rerankers made retrieval worse
+
+Measured on the same set, same embedder, same day:
+
+| reranker | licence | fused recall@1 | MRR@10 | en | uk | ru |
+|---|---|---|---|---|---|---|
+| none | — | 0.882 | 0.926 | 0.714 | 1.000 | 1.000 |
+| `Xenova/ms-marco-MiniLM-L-6-v2` | apache-2.0 | 0.176 | 0.454 | 0.429 | 0.000 | 0.000 |
+| `jinaai/jina-reranker-v2-base-multilingual` | cc-by-nc-4.0 | 0.529 | 0.685 | 0.714 | 0.000 | 0.800 |
+
+The per-language columns are recall@1.
+
+**The cause was traced, not assumed.** For a Ukrainian query the cross-encoder
+ranks English passages above the Ukrainian passage that answers it — for
+"Хто отримав право користуватися причалом?" it returns two English documents
+ahead of `akt-orendy-2021.md`, which fusion had first. The English-only model is
+worse still, as expected of an English-only model on a trilingual corpus.
+
+**The wiring was checked before the conclusion**, because "the new feature makes
+things worse" is exactly the shape of an integration bug. The model orders
+unambiguous relevant/irrelevant pairs correctly in all three languages; the
+service returns results in descending rerank order; and scores recomputed
+directly from the library match what the service recorded, to four decimals.
+
+**Read this narrowly.** Fifteen synthetic documents and seventeen queries, where
+one query is 0.059 of recall@1. It is not evidence that cross-encoder reranking
+is useless in general — the usual claim for it is made on large, noisy corpora
+where fusion's top ten holds many plausible passages, which is not this set. It
+is evidence that reranking is not free, that this corpus's languages are where it
+fails, and that adopting one needs a figure rather than a reputation. That is the
+whole reason the harness was built before the leg it measures.
+
+Two explanations were tried and did not hold: reranking at 500-character
+passages, in case the cross-encoder's context was truncating a 2000-character one
+(still worse — 0.529 against 0.294 fused recall@1 at that size); and a stricter
+reading of one judgement, in case the set was penalising a legitimately different
+answer (it was, for one query, and that judgement now names both).
+
+### Running it
+
+    python scripts/evaluate_retrieval.py                          # against the baseline
+    python scripts/evaluate_retrieval.py --embedder deterministic # offline control
+    python scripts/evaluate_retrieval.py --reranker MODEL         # measure a candidate
+    python scripts/evaluate_retrieval.py --record                 # move the baseline
+
+`--corpus` and `--queries` measure an operator's own material, which may never be
+committed. Weights come from the cache `JACKRYAN_MODEL_CACHE` names.
+
+---
 
 ## The store can now be carried forward, and identity cannot be impersonated
 
@@ -554,8 +641,9 @@ documented, referenced in `docs/implementation-notes.md`, and broken.
 - **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real
   embedder are now exercised — see the verification section above. Recognition
   joined them on 2026-08-27 with the extraction quality gate, and the vision
-  rung was driven once by `--only vlm`. **Rerank and statistical NER remain
-  unexercised**, because no code for them exists yet. The vision rung is not
+  rung was driven once by `--only vlm`. **Rerank has now been exercised against
+  two real cross-encoders** — see the measurement section above. **Statistical
+  NER remains unexercised**, because no code for it exists yet. The vision rung is not
   part of a default verification run and has been driven on exactly one page.
 - **No LLM endpoint.** Nothing that calls one has ever been run.
 - **~~No Docker.~~ Compose settled 2026-08-26 — M0 task 7.4 is done.** The image
