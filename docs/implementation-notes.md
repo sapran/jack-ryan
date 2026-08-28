@@ -16,11 +16,18 @@ and why it was parked.
   therefore compares the REST shape through `serialize_hit` rather than over
   HTTP, and `tests/test_rest.py` covers the route. **That reduced it and did not
   remove it** — it was still seen once in six runs afterwards, so do not read the
-  change as a fix. Parked: the cause is a native teardown race below Python —
-  onnxruntime and torch are imported by every run through `docling` — and finding
-  it properly means debugging something this project does not own. Worth knowing
-  before writing another test module that mixes the two, and worth watching in
-  CI, which runs Linux rather than macOS.
+  change as a fix.
+
+  **CI is unaffected, and that was checked rather than assumed.** The suite was
+  run three times inside the project's own image — Linux, the platform every
+  workflow uses — and reported `422 passed, 2 skipped` with exit code 0 each
+  time, with no abort. The message is libc++'s, which is macOS's C++ runtime;
+  Linux uses libstdc++ and does not reproduce it. Parked: the cause is a native
+  teardown race below Python — onnxruntime and torch are imported by every run
+  through `docling` — and finding it properly means debugging something this
+  project does not own. Worth knowing before writing another test module that
+  mixes the two, and worth re-checking if the suite ever fails in CI with a green
+  summary.
 
 - **A window reaches at most three passages either side, whatever the budget
   says.** `WINDOW_MAX_CHUNKS_EITHER_SIDE` in `src/jackryan/services/search.py`
