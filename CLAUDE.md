@@ -26,13 +26,8 @@ with resolvable citations. Depth (OCR, hard formats, retrieval quality,
 summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
-Current state: **M3 slice 3 shipped — retrieval quality is measured, and the
-measurement changed what shipped.** Nine changes are archived — M0, M1 and M2,
-then `hard-formats-and-containers`, `contract-covers-embedding-library`,
-`corpus-identity-covers-the-embedder`, `extraction-quality-gate`,
-`corpus-identity-and-schema-migration` and `measured-retrieval-quality` — and
-sixteen capabilities are published in `openspec/specs/`. No change is in flight
-and no archived task is left unticked.
+Current state: **M3, third slice.** What is archived and what is published is in
+`openspec/`; the staged plan is in `docs/design.md`.
 
 Recognition was already running before slice 2 and had never been configured: a
 Ukrainian scan ingested as nine characters of punctuation, which passed the
@@ -47,13 +42,6 @@ window around the matched passage, and a rerank stage exists — but it ships
 disabled, because both rerankers the embedding library offers made retrieval
 measurably worse on that set and took Ukrainian to zero. The figures and the
 trace are in `docs/handover.md`; read them before naming a reranker.
-
-The remaining M3 legs are summaries and statistical NER; the assistant writing
-back is M4.
-
-What remains unverified is recorded in `docs/handover.md`, and what is known
-but deliberately unfixed is in `docs/implementation-notes.md` — read both before
-trusting that something works.
 
 ## Rules
 
@@ -93,6 +81,12 @@ the MCP surface has no request-validation layer of its own to fall back on.
 Adapters translate typed errors from `errors.py`; the service layer never
 raises adapter-specific exceptions.
 
+Three conventions a directory listing does not show: `app.py` is the
+composition root and the only place wiring happens, `storage/port.py`
+(`StorePort`) is the one deliberate abstraction, and `config.py` is where the
+corpus `contract` divides from the infra `profiles` — the distinction
+everything below about corpus identity turns on.
+
 ### Evidence is immutable
 
 Originals and extracted text are read-only inputs. Derived work — tags, notes,
@@ -118,23 +112,8 @@ same width, which nothing downstream can detect.
 
 ## Pitfalls
 
-- **`_SCHEMA` in the store is frozen at schema version 4.** Never add a column,
-  table or index to it — add a step to `_STEPS`. Every statement there is
-  `CREATE ... IF NOT EXISTS`, so editing it adds the change for new stores and
-  *silently does not* for stores already on disk, leaving two shapes reporting
-  one version. The baseline sits one version behind on purpose, so every fresh
-  store climbs the ladder's first rung and the migration runner is exercised by
-  the whole suite rather than by one fixture.
-- **A migration step may only add.** A column with a constant default, a table,
-  an index, a trigger, or a sidecar rebuilt from `chunks`. Never touch
-  `documents`, `casefiles` or `chunks` destructively, never change a uniqueness
-  constraint, and never make a step idempotent by catching "duplicate column" —
-  that turns a version row that lies into a silent success.
-- **A step that changes the FTS column list must drop and recreate the delete
-  trigger in the same transaction.** The trigger names the columns it feeds to
-  FTS5's `'delete'`; a column it does not name leaves its tokens in the index on
-  every ordinary reingest, and a strict integrity check then reports the database
-  malformed.
+- **Schema changes go through the `_STEPS` ladder, never `_SCHEMA`** — the
+  rules, and why each matters, are in `src/jackryan/storage/CLAUDE.md`.
 - **Corpus identity escapes `\`, `|` and control characters — never `=`.**
   `embed_library` legitimately contains `==`. Escaping `=` would change the
   default identity and refuse every existing store.
@@ -268,20 +247,3 @@ jackryan serve-mcp                      # the agent surface over stdio
 docker compose up -d --build
 docker compose run --rm cli casefile list
 ```
-
-## Layout
-
-- `src/jackryan/config.py` — layered config: corpus `contract` + infra `profiles`
-- `src/jackryan/app.py` — composition root; the only place wiring happens
-- `src/jackryan/storage/port.py` — `StorePort`, the one deliberate abstraction
-- `src/jackryan/storage/sqlite.py` — the single-file store and its contract guard
-- `src/jackryan/ingestion/` — format router, extractors, chunker, container and
-  mail and spreadsheet readers, the expansion budget
-- `src/jackryan/embedding/` — embedder port, the real model, and the test double
-- `src/jackryan/reranking/` — reranker port and the cross-encoder behind it
-- `scripts/evaluate_retrieval.py` — the retrieval measurement and its baseline
-- `src/jackryan/services/` — all business logic
-- `src/jackryan/server.py`, `cli.py` — thin adapters
-- `src/jackryan/interfaces/mcp/` — the agent surface: tools, shapes, fencing,
-  profiles, the annotations table
-- `analyst/` — the harness-neutral analyst role and the analytic spine
