@@ -60,11 +60,12 @@ A tool that reads document text SHALL bound what it returns. When a read is cut
 short it SHALL say so in the payload and SHALL carry the position to continue
 from, so that a document which ends and a read which stopped are distinguishable.
 
-Result counts SHALL be bounded, and the total corpus text carried by one response
-SHALL be bounded. A count bound alone was sufficient only while a result was one
-chunk; once a result may be widened, a permitted number of results no longer
-implies a permitted quantity of text. When the text bound narrows what a response
-would otherwise have carried, the payload SHALL say so.
+Result counts SHALL be bounded, and the context added to them SHALL be bounded
+across the response as a whole. A count bound alone was sufficient only while a
+result was one chunk; once a result may be widened, a permitted number of results
+no longer implies a permitted quantity of text. When that bound stops a result
+being widened, the payload SHALL say so. No result SHALL be dropped to meet it:
+a caller told it received ten passages must have received ten.
 
 An out-of-range argument SHALL be clamped rather than refused, because this
 surface has no request-validation layer above it and an over-large limit is a

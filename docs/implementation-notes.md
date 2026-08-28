@@ -6,6 +6,21 @@ and why it was parked.
 
 ## Parked
 
+- **Keyword ranking inside one casefile depends on what the other casefiles
+  hold.** `search_keyword` in `src/jackryan/storage/sqlite.py` filters rows by
+  `c.casefile_id`, but orders them by `bm25(chunks_fts)`, and FTS5 computes bm25
+  over the whole index — every casefile in the store. Adding a second casefile
+  therefore changes the term statistics and can reorder results inside the first,
+  as measured while building the evaluation harness: the same corpus in a second
+  casefile scored differently on every keyword metric. No content crosses the
+  boundary — the compartment holds for what is returned — but the *order* of a
+  casefile's own results is influenced by material it cannot see, which is a
+  weak side channel as well as a reproducibility problem. Found while writing
+  `scripts/evaluate_retrieval.py`. Parked: the remedies (a per-casefile FTS
+  index, or ranking by a statistic computed within the compartment) are a change
+  to the storage seam and to what `hybrid-search` guarantees, not a line in a
+  retrieval-quality slice.
+
 - **Originals are never archived, though `docs/design.md` § 5 says they are.**
   The Finalize step of the ingestion pipeline is documented as "originals
   archived content-addressed within the casefile". Nothing in

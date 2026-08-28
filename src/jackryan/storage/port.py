@@ -80,6 +80,23 @@ class Chunk:
 
 
 @dataclass(frozen=True)
+class Window:
+    """A span of a document's text that contains a matched chunk.
+
+    Taken as one contiguous slice of the document's extracted text, never
+    assembled by joining chunk texts: chunks overlap by configuration, so
+    joining them repeats the overlap, and a chunk's stored text has been
+    stripped of whitespace its offsets still describe. The slice is what a
+    person reading the document at those offsets would see, which is what makes
+    the citation checkable by hand.
+    """
+
+    text: str
+    char_start: int
+    char_end: int
+
+
+@dataclass(frozen=True)
 class SearchHit:
     """One ranked result, carrying what is needed to use and to verify it."""
 
@@ -88,6 +105,39 @@ class SearchHit:
     score: float
     keyword_rank: int | None
     vector_rank: int | None
+    # Set when the text returned is wider than the matched chunk. `None` means
+    # the two are the same, which is what every caller saw before windows
+    # existed.
+    window: Window | None = None
+    # Whether this result's text was cut back — because widening it would have
+    # repeated text an earlier result already carried, or because the response's
+    # character bound had been reached. Said per result so a response can report
+    # it without the caller inferring it from lengths.
+    narrowed: bool = False
+    # The reranker's score for this result, where one ran. Never replaces
+    # `score`, which stays the fusion score: an uncalibrated logit and a
+    # reciprocal-rank sum are different quantities, and overwriting one with the
+    # other would destroy the evidence that fusion ran at all.
+    rerank_score: float | None = None
+
+    @property
+    def text(self) -> str:
+        """The text this result carries: the window where there is one."""
+        return self.window.text if self.window else self.chunk.text
+
+    @property
+    def char_start(self) -> int:
+        """Where the returned text starts in the document."""
+        return self.window.char_start if self.window else self.chunk.char_start
+
+    @property
+    def char_end(self) -> int:
+        """Where the returned text ends in the document."""
+        return self.window.char_end if self.window else self.chunk.char_end
+
+    @property
+    def is_widened(self) -> bool:
+        return self.window is not None
 
 
 @dataclass(frozen=True)

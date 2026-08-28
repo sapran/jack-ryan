@@ -123,10 +123,33 @@ it, including demoting a chunk both retrievers returned — that is what a
 reranker is for. It SHALL NOT be implemented by blending retriever scores, which
 remains forbidden; it scores the query against the passage text and nothing else.
 
+When two candidates fuse to the same score, the tie SHALL be broken by
+properties of the corpus itself rather than by any identifier. Exact ties are
+ordinary rather than rare: a chunk ranked first by one retriever and second by
+the other scores precisely what a chunk ranked second and first scores.
+
+No identifier can break them honestly. A chunk's id is minted afresh by every
+reingest, and a document's id differs between one store and another built from
+the same documents — so an ordering that falls back to either ranks an unchanged
+corpus differently after a rebuild, and ranks two stores holding identical
+material differently from each other. A retrieval figure measured under one
+cannot then be compared with a figure measured under the other, which is to say
+it cannot be compared with anything.
+
+#### Scenario: A tie is broken the same way in a store built afresh
+
+- **WHEN** the same documents are ingested into two stores, giving every chunk and document new identifiers
+- **THEN** two candidates that fuse to the same score are returned in the same order in both
+
 #### Scenario: Agreement outranks a single retriever
 
 - **WHEN** one chunk is returned by both retrievers and another by only one, at the same rank
 - **THEN** in the fused ordering the chunk both retrievers returned ranks higher
+
+#### Scenario: The same corpus ranks the same way after a rebuild
+
+- **WHEN** two candidates fuse to the same score and the corpus is reingested, giving them new identifiers
+- **THEN** they are returned in the same order as before
 
 #### Scenario: Retriever scores are still never blended
 
@@ -145,16 +168,24 @@ within it. A single span cannot describe both, and a result whose declared
 position does not cover the text it carries cannot be verified by hand — which is
 the only reason the position is there.
 
-Result counts SHALL be bounded, and the total quantity of passage text in one
-response SHALL be bounded. A bound on results alone stopped being sufficient when
-each result grew wider than a chunk.
+Result counts SHALL be bounded. Widening SHALL be bounded across the response as
+a whole: once the text already returned has reached the response bound, later
+results SHALL carry their matched chunk alone rather than a window.
+
+A result SHALL NOT be withheld to meet that bound. The passages a caller asked
+for are what the search found, and dropping evidence to save characters is a
+worse failure than a long response — an analyst cannot miss what they were never
+shown. The bound governs how much context is added, not how much is found.
+
+A result narrowed for this reason SHALL say so, so that a short answer is
+distinguishable from a passage that had no more context to give.
 
 #### Scenario: A result resolves to its source
 
 - **WHEN** a search returns a hit
 - **THEN** it carries its text, its document, the span of the text returned, the span of the matched chunk, and identifiers for both chunk and document
 
-#### Scenario: A response is bounded in text as well as in count
+#### Scenario: Widening stops when the response bound is reached
 
-- **WHEN** a search's results would together carry more passage text than the response permits
-- **THEN** the response stays within the bound, and says that it was narrowed
+- **WHEN** the results of one search would together carry more widened text than the response permits
+- **THEN** later results carry their matched chunk alone and report that they were narrowed, and no result is dropped

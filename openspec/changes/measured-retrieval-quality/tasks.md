@@ -1,65 +1,87 @@
 ## 1. The measurement, before anything it would measure
 
-- [ ] 1.1 Write the synthetic evaluation set as module constants in
+- [x] 1.1 Write the synthetic evaluation set as module constants in
       `scripts/evaluate_retrieval.py` — invented documents in the existing harbour
       register, in English, Ukrainian and Russian, with at least two distractor
       documents that answer nothing; verify a test asserts every judgement names a
       document present in the set and every language is represented.
-- [ ] 1.2 Include at least one query per language whose wording shares no content
+- [x] 1.2 Include at least one query per language whose wording shares no content
       word with the passage that answers it; verify a test asserts, for those
       queries, that the query's tokens and the answering phrase's tokens are
       disjoint.
-- [ ] 1.3 Key each judgement to `(filename, phrase)` rather than to a chunk id;
+- [x] 1.3 Key each judgement to `(filename, phrase)` rather than to a chunk id;
       verify a test ingests the same corpus twice and asserts the judgements
       resolve identically both times.
-- [ ] 1.4 Implement `recall@k` and `mrr@k` as pure functions over a ranked list and
+- [x] 1.4 Implement `recall@k` and `mrr@k` as pure functions over a ranked list and
       a judgement; verify unit tests cover a hit at rank 1, a hit at rank k, a miss,
       and an empty ranking.
-- [ ] 1.5 Build the corpus in a temp workspace and rank through
+- [x] 1.5 Build the corpus in a temp workspace and rank through
       `context.search.search`, with the keyword and vector legs read separately from
       `context.store` for attribution; verify a test asserts the harness computes no
       ordering of its own — the fused ranking it scores is the service's.
-- [ ] 1.6 Report a metric table naming the embedder, the reranker or its absence,
+- [x] 1.6 Report a metric table naming the embedder, the reranker or its absence,
       and the query set; verify a test asserts a report produced with the
       deterministic embedder is marked as measuring the mechanism, not quality.
-- [ ] 1.7 Add `--record`, `--baseline`, `--corpus`, `--queries`, `--keep` and
+- [x] 1.7 Add `--record`, `--baseline`, `--corpus`, `--queries`, `--keep` and
       `--reranker`, following `scripts/verify_model_paths.py`'s argument and
       exit-code conventions; verify `--help` runs with no model download and a test
       asserts an ordinary run leaves the baseline file unmodified.
-- [ ] 1.8 Compare against the tracked baseline and exit non-zero below it, naming
+- [x] 1.8 Compare against the tracked baseline and exit non-zero below it, naming
       each metric that fell and by how much; verify a test feeds figures below a
       fixture baseline and asserts a non-zero exit naming the fallen metrics.
-- [ ] 1.9 Run the harness with the real embedder and with the deterministic one,
+- [x] 1.9 Run the harness with the real embedder and with the deterministic one,
       and commit the real-embedder figures as the baseline; verify the two runs
       report different figures, which is what proves the measurement can move.
+- [x] 1.10 Break a tied fused score by properties of the corpus — the passage's
+      ordinal and its text — rather than by any identifier; verify a test
+      constructs a tie whose chunk and document ids are both in the opposite
+      order to the passages, and asserts the passages decide.
+      *Amended: not in the original plan, and corrected once. The first
+      measurement was not reproducible — the same corpus, reingested, moved one
+      query from rank 3 to rank 2 and shifted fused MRR by 0.014. Exact ties in
+      reciprocal rank fusion were being broken by `chunk_id`, minted afresh on
+      every reingest. Breaking them by the document and the ordinal fixed the
+      reingest case but not the real one: two runs of the harness still
+      disagreed, because each builds a new store and a document's id is fresh
+      there too. Ties are now broken by the ordinal and the passage text, both
+      properties of the corpus. Two consecutive runs then reported identical
+      figures where they had differed by 0.058 recall@1. A measurement that
+      cannot be reproduced cannot detect a regression, so this is a precondition
+      of the phase rather than a neighbouring improvement.*
 
 ## 2. Section-window expansion
 
-- [ ] 2.1 Add a window rule to the service layer that takes a document's extracted
+- [x] 2.1 Add a window rule to the service layer that takes a document's extracted
       text and a matched chunk's offsets and returns one contiguous span; verify
       tests assert the span contains the chunk's text, is a slice of
       `extracted_text`, and never repeats overlap.
-- [ ] 2.2 Bound the window by `window_max_chars`, by the document's edge, and by a
+- [x] 2.2 Bound the window by `window_max_chars`, by the document's edge, and by a
       heading boundary where `heading_path` is non-empty; verify tests cover a
       mid-section match, a match at a section boundary, and a document with no
       headings at all.
-- [ ] 2.3 Carry both spans on `SearchHit` — the span returned and the matched
+- [x] 2.3 Carry both spans on `SearchHit` — the span returned and the matched
       chunk's span — leaving `chunk` and its identifiers unchanged; verify a test
       asserts the returned span contains the chunk span and that `char_start` /
       `char_end` of the chunk still round-trip through `extracted_text`.
-- [ ] 2.4 Narrow any result whose window would overlap one already returned in the
+- [x] 2.4 Narrow any result whose window would overlap one already returned in the
       same response, to its chunk if necessary; verify a test with two matches in
       one section asserts no text appears twice across the response.
-- [ ] 2.5 Apply a response-level character budget across all results and mark the
+- [x] 2.5 Apply a response-level character budget across all results and mark the
       response when it narrowed anything; verify a test asserts a response of wide
       windows stays within the bound and reports that it was narrowed.
-- [ ] 2.6 Move `case_get_passage` onto the same window rule, with provenance
+- [x] 2.6 Move `case_get_passage` onto the same window rule, with provenance
       describing the span it actually returns and separately naming the matched
       chunk; verify a test asserts the payload's declared span covers all text
       returned, which it does not today.
-- [ ] 2.7 Re-run the harness and record the figures with windows on; verify the
-      baseline is updated by an explicit `--record` and the change in each metric is
-      stated in the commit.
+- [x] 2.7 Re-run the harness with widening on and with it off; verify the figures
+      are identical, which is what shows a window changes what is read and not
+      what is ranked.
+      *Amended: the task expected windows to move the numbers. They cannot, and
+      should not: a judgement is scored against the passage the retriever chose,
+      not against how much text was returned around it. Scoring the window
+      instead would let a result count as relevant because the answer happened to
+      fall inside the context, which measures the budget rather than the
+      retrieval. Measured both ways: fused recall@1 0.882, MRR 0.926, identical.*
 
 ## 3. Reranking
 

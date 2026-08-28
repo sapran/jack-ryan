@@ -202,3 +202,57 @@ async def test_a_passage_from_another_casefile_is_not_reachable(server, context,
         server, "case_get_passage", {"casefile": "harbour-inquiry", "chunk_id": stolen}
     )
     assert body["error"] == "not_found"
+
+
+@pytest.mark.anyio
+async def test_a_passage_declares_the_span_of_everything_it_returns(loaded):
+    """The payload's position must cover the text beside it.
+
+    This tool used to return a passage together with its neighbouring chunks
+    while its provenance described only the passage — a declared position that
+    covered less than the payload carried, which cannot be checked against the
+    source by hand.
+    """
+    context, casefile = loaded
+    server = build_mcp_server(context)
+    hits = await call(
+        server, "case_search", {"casefile": casefile.short_id, "query": "harbour lease"}
+    )
+    top = hits["results"][0]
+
+    passage = await call(
+        server,
+        "case_get_passage",
+        {"casefile": casefile.short_id, "chunk_id": top["chunk_id"]},
+    )
+
+    document = context.ingestion.resolve_document(casefile.short_id, passage["document_id"])
+    body = passage["text"].split("\n", 1)[1].rsplit("\n", 1)[0]
+    declared = document.extracted_text[passage["char_start"] : passage["char_end"]]
+    assert body == declared
+
+    matched = passage["provenance"].get("matched")
+    if matched is not None:
+        # Widened: the matched passage is named separately and sits inside.
+        assert matched["chunk_id"] == passage["chunk_id"]
+        assert passage["char_start"] <= matched["char_start"]
+        assert passage["char_end"] >= matched["char_end"]
+    else:
+        assert passage["char_start"] == passage["provenance"]["char_start"]
+
+
+@pytest.mark.anyio
+async def test_a_passage_body_appears_once(loaded):
+    """No second copy of the passage arrives as a neighbour."""
+    context, casefile = loaded
+    server = build_mcp_server(context)
+    hits = await call(
+        server, "case_search", {"casefile": casefile.short_id, "query": "harbour lease"}
+    )
+    passage = await call(
+        server,
+        "case_get_passage",
+        {"casefile": casefile.short_id, "chunk_id": hits["results"][0]["chunk_id"]},
+    )
+    assert "neighbours" not in passage
+    assert passage["text"].count("<<<UNTRUSTED") == 1

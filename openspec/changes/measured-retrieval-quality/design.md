@@ -92,6 +92,25 @@ from, so the previous measurement is the only defensible bar.
 produce different figures. The file records the conditions, and a mismatch is a
 prompt to re-record deliberately rather than a silent pass.
 
+### A tied fused score is broken by position, not by identifier
+
+*Added during implementation, not designed up front.* The first measurement was
+not reproducible: reingesting the same corpus moved one query's answer from rank
+3 to rank 2 and shifted fused MRR by 0.014. Exact ties are ordinary in
+reciprocal rank fusion — a chunk ranked first by one retriever and second by the
+other scores exactly what a chunk ranked second and first scores — and they were
+being broken by `chunk_id`, which is a fresh `uuid4` after every reingest.
+
+*Consequence:* the candidate chunks are now fetched before the ordering rather
+than after it, so the sort can fall back to the matched chunk's document and
+ordinal, both of which survive a rebuild. Phase 3 needs those texts in hand at
+the same point anyway, to score them.
+
+*Why it is not a drive-by:* a measurement that cannot be reproduced cannot
+detect a regression, and the baseline gate would report failures that are noise.
+It is a precondition of the phase, and `retrieval-evaluation` already requires
+the figures to be the same across a rebuild.
+
 ### Judgements are keyed to a document and a substring, never to a chunk id
 
 Each query records the filename of the document that answers it and a short quoted

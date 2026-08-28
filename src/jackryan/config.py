@@ -171,6 +171,19 @@ class Profile:
     letter and a two-hundred-page report.
     """
 
+    window_max_chars: int = 3000
+    """How wide a search result's text may be, in characters.
+
+    A result's text is a window around the matched passage rather than the
+    passage alone, so a quotation arrives with the sentences that give it
+    meaning. Set at or below the chunk size to switch widening off.
+
+    Retrieval settings live here rather than in the contract because they write
+    nothing: no vector, no chunk, no stored text. Changing one changes what the
+    next search returns and leaves the corpus exactly as it was, so no store is
+    ever refused for them.
+    """
+
     vlm_model: str = ""
     """A docling vision-model spec name, or empty to leave the vision rung off.
 
@@ -464,6 +477,9 @@ def _select_profile(document: dict[str, Any]) -> Profile:
         ocr_engine=_validated_ocr_engine(settings.get("ocr_engine"), name),
         ocr_language=_validated_ocr_language(settings.get("ocr_language"), name),
         min_chars_per_page=_validated_floor(settings.get("min_chars_per_page"), name),
+        window_max_chars=_validated_positive(
+            settings.get("window_max_chars"), name, "window_max_chars", Profile.window_max_chars
+        ),
         vlm_model=str(_interpolate(settings.get("vlm_model", "")) or "").strip(),
     )
 
@@ -581,6 +597,34 @@ def _validated_floor(value: Any, profile: str) -> int:
             "text. Use 1 to escalate only a page with nothing on it at all."
         )
     return floor
+
+
+def _validated_positive(value: Any, profile: str, key: str, default: int) -> int:
+    """A whole number of at least one, refused rather than coerced.
+
+    Zero is the interesting case. It reads as "no limit" and would behave as its
+    opposite — a window of no characters, a rerank pool of nothing — which is the
+    quiet misconfiguration this loader exists to refuse. A fractional value is
+    refused for the same reason `min_chars_per_page` refuses one: `int(0.5)` is
+    zero and reaches the same place by another route.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ConfigError(f"profile {profile!r} sets {key}={value!r}, which is not a number")
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise ConfigError(
+            f"profile {profile!r} sets {key}={value!r}; expected a whole number"
+        ) from None
+    if number < 1:
+        raise ConfigError(
+            f"profile {profile!r} sets {key}={number}. A value below one disables the "
+            "setting while reading as though it removed a limit; leave the key out to "
+            "take the default."
+        )
+    return number
 
 
 def _validated_embedder(value: Any, profile: str) -> str:

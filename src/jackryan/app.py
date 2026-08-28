@@ -113,5 +113,7 @@ def build_context(
         ingestion=IngestionService(
             store, casefiles, chosen, resolved.contract, gate=chosen_gate
         ),
-        search=SearchService(store, casefiles, chosen),
+        search=SearchService(
+            store, casefiles, chosen, window_max_chars=resolved.profile.window_max_chars
+        ),
     )
