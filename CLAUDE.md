@@ -7,11 +7,12 @@ proposing anything — it carries the nine design principles, the ten locked
 decisions, and which milestone each capability belongs to.
 
 **`docs/handover.md` records what is verified and what is not.** Read it before
-trusting that anything here has been run: every test still uses a stand-in
-embedder and none opens a PDF, so `scripts/verify_model_paths.py` is the only
-thing covering the model-dependent paths — it passed 6/6 on 2026-08-26, and the
-handover says exactly what that does and does not settle. What is known but
-deliberately unfixed lives in `docs/implementation-notes.md`.
+trusting that anything here has been run: every test uses a stand-in embedder and
+none opens a PDF, so the model-dependent paths are covered by two scripts and
+nothing else — `scripts/verify_model_paths.py`, which passed 6/6 on 2026-08-26,
+and `scripts/evaluate_retrieval.py`, which measures retrieval quality against a
+recorded baseline. The handover says exactly what each does and does not settle.
+What is known but deliberately unfixed lives in `docs/implementation-notes.md`.
 
 ## What this is
 
@@ -25,11 +26,12 @@ with resolvable citations. Depth (OCR, hard formats, retrieval quality,
 summaries, mentions) is M3. Analysis (attributed writes, the operating picture,
 the roster split, reports) is M4. Everything else is beyond.
 
-Current state: **M3 slice 2 shipped — extraction now reads scans in all three
-working languages.** Seven changes are archived — M0, M1 and M2, then
-`hard-formats-and-containers`, `contract-covers-embedding-library`,
-`corpus-identity-covers-the-embedder` and `extraction-quality-gate` — and
-fourteen capabilities are published in `openspec/specs/`. No change is in flight
+Current state: **M3 slice 3 shipped — retrieval quality is measured, and the
+measurement changed what shipped.** Nine changes are archived — M0, M1 and M2,
+then `hard-formats-and-containers`, `contract-covers-embedding-library`,
+`corpus-identity-covers-the-embedder`, `extraction-quality-gate`,
+`corpus-identity-and-schema-migration` and `measured-retrieval-quality` — and
+sixteen capabilities are published in `openspec/specs/`. No change is in flight
 and no archived task is left unticked.
 
 Recognition was already running before slice 2 and had never been configured: a
