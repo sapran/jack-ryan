@@ -8,7 +8,9 @@
     "queries": 17,
     "documents": 15,
     "chunk_max_chars": 2000,
-    "limit": 10
+    "window_max_chars": 3000,
+    "limit": 10,
+    "ranked_by": "fusion"
   },
   "metrics": {
     "keyword": {

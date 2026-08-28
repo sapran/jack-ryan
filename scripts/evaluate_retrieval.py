@@ -719,7 +719,19 @@ def conditions_match(measured: Measurement, baseline: Mapping[str, Any]) -> list
     """
     recorded = baseline.get("conditions", {})
     differing = []
-    for key in ("embedder", "reranker", "query_set", "chunk_max_chars", "limit"):
+    # `queries` and `documents` are here because a smaller corpus with fewer
+    # distractors is easier, so a run over one is not comparable with a baseline
+    # recorded over the other however well the rest matches.
+    for key in (
+        "embedder",
+        "reranker",
+        "query_set",
+        "chunk_max_chars",
+        "window_max_chars",
+        "limit",
+        "queries",
+        "documents",
+    ):
         if key in recorded and recorded[key] != measured.conditions.get(key):
             differing.append(f"{key}: run {measured.conditions.get(key)!r}, baseline {recorded[key]!r}")
     return differing
@@ -957,6 +969,7 @@ def main() -> int:
                 "queries": len(judgements),
                 "documents": report.ingested,
                 "chunk_max_chars": context.config.contract.chunk_max_chars,
+                "window_max_chars": context.config.profile.window_max_chars,
                 "limit": args.limit,
             }
             measured = measure(

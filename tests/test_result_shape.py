@@ -182,3 +182,41 @@ def test_a_response_stays_within_the_text_bound(loaded):
     )
     carried = sum(len(row["text"]) for row in payload["results"])
     assert carried <= MAX_RESPONSE_CHARS + len(payload["results"]) * 64
+
+
+def test_the_agent_payload_carries_a_rerank_score_when_one_ran(context, tmp_path):
+    """Every other rerank assertion here is a negative one taken from an instance
+    that has no reranker — the same value as a hardcoded default."""
+    from jackryan.interfaces.mcp.shapes import search_payload
+    from jackryan.services.search import SearchService
+
+    class Stub:
+        name = "stub"
+
+        def check(self):
+            return None
+
+        def score(self, query, passages):
+            return [float(len(passages) - index) for index in range(len(passages))]
+
+    folder = tmp_path / "reranked"
+    folder.mkdir()
+    (folder / "lease.md").write_text(
+        f"# Harbour Lease\n\n## Terms\n\n{SECTION}\n", encoding="utf-8"
+    )
+    casefile = context.casefiles.create("Reranked")
+    context.ingestion.ingest(casefile.short_id, folder)
+
+    service = SearchService(
+        context.store, context.casefiles, context.embedder, reranker=Stub()
+    )
+    hits = service.search(casefile.short_id, QUERY, limit=5)
+    assert hits
+
+    payload = search_payload(hits, query=QUERY, casefile_id=casefile.id)
+
+    assert payload["ranking"] == "rerank"
+    for row in payload["results"]:
+        assert "rerank_score" in row
+        # The fusion score is still there, and is a different quantity.
+        assert row["score"] != row["rerank_score"]
