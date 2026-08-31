@@ -6,6 +6,22 @@ and why it was parked.
 
 ## Parked
 
+- **A transport-level failure reaching Hugging Face kills an ingest instead of
+  falling back.** `fastembed`'s `download_model`
+  (`common/model_management.py:444`) catches only `EnvironmentError`,
+  `RepositoryNotFoundError` and `ValueError` before trying `url_source`, the
+  GCS tarball. `huggingface_hub` 1.29 talks `httpx`, which raises
+  `httpx.ConnectError` and does no Happy Eyeballs — so on a host whose IPv6 is
+  advertised but dead it takes the AAAA record, fails with `[Errno 65] No route
+  to host`, and the working GCS mirror is never attempted. `ModelEmbedder._load`
+  then reports `could not load embedding model`, which names the model and hides
+  the network. Found priming the cache on the development Mac 2026-08-31, worked
+  around by fetching the weights with `curl -4` straight into the cache layout;
+  fastembed's own first attempt is `local_files_only=True`, so a populated cache
+  needs no network at all. Parked: the honest fix is for the embedder to say
+  which host it could not reach, and it belongs with the prefetch story rather
+  than in a slice of its own.
+
 - **A FastAPI test client and the agent surface's servers, built in one test
   module, abort the interpreter at teardown.** On macOS the suite reports every
   test passing and the process then exits 134 with
