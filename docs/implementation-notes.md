@@ -53,14 +53,45 @@ and why it was parked.
   and it forces one full reingest. Do not describe the `remote` profile as
   working until it is.
 
-- **A third reranker exists that the rerank measurement never saw.**
-  `bge-reranker-v2-m3` is multilingual and serves `/v1/rerank` on the GB10 boxes;
-  probed 2026-09-01 it ranked a Russian query correctly (1.83 against -11.04 for
-  an unrelated passage). The parked decision to ship reranking off was measured
-  against the only two models `fastembed` registers, both of which took Ukrainian
-  to zero. Retrieval settings write nothing and invalidate no store, so this is
-  testable against `scripts/evaluate_retrieval.py` with no reingest — the
-  cheapest open quality win in the project.
+- **Re-running an ingest is idempotent in outcome and full price in cost.**
+  `_ingest_work` calls `self._router.extract(work.path)` unconditionally
+  (`services/ingestion.py:318`), then `_rebuild_chunks` re-chunks and
+  **re-embeds** every document (`:381`) and `replace_chunks` wipes and rewrites
+  the chunks, FTS entries and vectors. The outcome status distinguishes
+  `reingested` from `ingested`, so nothing is silently wrong — but a second run
+  over the same folder costs the same hour as the first, not a resumption. The
+  1502-document dump took 1h06m; a re-run to pick up the 19 extraction gaps
+  after enabling a better rung costs that hour again. Parked: skipping a document
+  whose content hash and extractor version both match would make a re-run
+  incremental, and it needs an extractor-version column to be safe.
+
+- **Chunk identifiers are regenerated on every ingest, so nothing may be keyed to
+  them across one.** `_rebuild_chunks` assigns `uuid.uuid4().hex` per chunk
+  (`services/ingestion.py:370`) while the *document* id is deliberately reused
+  via `find_document_by_hash`. Document-keyed work therefore survives a reingest
+  and chunk-keyed work does not. This decides the shape of two M3 features:
+  per-chunk summaries and mention offsets must either be produced in the same
+  pass that creates the chunks, or be keyed on `(document_id, ordinal)`. Nothing
+  currently depends on chunk ids surviving, so this is a design constraint to
+  respect rather than a defect to fix.
+
+- **Per-chunk contextual summarisation would change vector semantics and corpus
+  identity would not notice.** `docs/design.md` § 5 puts per-chunk contextual
+  summaries in the *Enrich* stage, enabled "later for retrieval quality" — and a
+  contextual summary improves retrieval by folding context into what gets
+  embedded. `Contract` has no field for it, so turning it on would append vectors
+  built one way to a corpus of vectors built another, both at the declared width,
+  and `_verify_meta` would pass. That is precisely what `corpus_fingerprint` was
+  written to prevent; its own docstring calls itself "the last place that can be
+  caught". Parked with a condition attached: whichever change builds
+  summarisation must add a contract field for it in the same change, or it ships
+  a corpus of mixed semantics with no error.
+
+- **~~A third reranker exists that the rerank measurement never saw.~~**
+  Superseded on 2026-09-01 by measuring it — see the three-model reranking entry
+  below. `bge-reranker-v2-m3` failed the same way as the other two, so this is
+  recorded as closed rather than deleted: the next person to notice a multilingual
+  reranker on those boxes should find the measurement, not repeat it.
 
 - **Offloading docling to a GPU server is not worth it for born-digital files and
   is actively harmful for scans as that server is configured.** Measured against
