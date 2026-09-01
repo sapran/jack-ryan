@@ -132,13 +132,25 @@ and why it was parked.
   a worse failure than a long response. Recorded because the constant's name
   reads like a hard ceiling and is not one.
 
-- **Reranking is built and no model is recommended.** Both cross-encoders the
-  embedding library registers made retrieval measurably worse on the project's
-  evaluation set, and both took Ukrainian to zero; the figures and the trace are
-  in `docs/handover.md`. The seam is finished and the setting is empty. Parked:
-  finding a reranker that survives this corpus's languages is its own piece of
-  work, and it now has a measurement to be judged against, which is what it
-  lacked.
+- **Reranking is built and no model is recommended — now measured three times.**
+  Both cross-encoders the embedding library registers made retrieval measurably
+  worse on the project's evaluation set, and both took Ukrainian to zero; the
+  figures and the trace are in `docs/handover.md`. A third model,
+  `BAAI/bge-reranker-v2-m3` — the multilingual flagship, which `fastembed` does
+  not register — was measured on 2026-09-01 over an OpenAI-compatible
+  `/v1/rerank` endpoint, with the port implemented in a throwaway script and
+  `build_reranker` substituted for that process only. Same harness, same
+  built-in query set, same embedder, control run reproducing the recorded
+  baseline exactly. It reproduced the same failure: fused recall@1 **0.882 ->
+  0.647** and MRR@10 **0.926 -> 0.778**, English improving **0.714 -> 0.857**
+  while Russian fell **1.000 -> 0.600** and Ukrainian **1.000 -> 0.400**.
+  English improving is the evidence the wiring worked, so this is the model and
+  not the integration. Three of three cross-encoders now trade this corpus's
+  languages for English. The seam is finished and the setting stays empty.
+  Parked: the pattern is strong enough that the next attempt should be a
+  multilingual reranker chosen on Slavic evaluation results rather than on
+  reputation, and 17 queries over 15 synthetic documents is still too small to
+  settle it either way.
 
 - **Keyword ranking inside one casefile depends on what the other casefiles
   hold.** `search_keyword` in `src/jackryan/storage/sqlite.py` filters rows by
