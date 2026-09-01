@@ -276,6 +276,29 @@ and why it was parked.
   content sniffing as a fallback when the suffix is unknown. Parked with it,
   because they want one fix, not two.
 
+- **LibreOffice parses untrusted documents as root in the container.** The image
+  now carries `libreoffice-writer libreoffice-calc libreoffice-impress` — a
+  large, historically CVE-rich parser for OLE2, BIFF and RTF — and hands it files
+  from an untrusted dump. Neither the `Dockerfile` nor `docker-compose.yml` sets
+  `USER`, so it runs as root with the default seccomp profile, full network
+  access, and `/data` — the whole corpus and the SQLite store — writable.
+  `--headless` is a UI switch and suppresses dialogs; it restricts no file,
+  network or process access, so it is not a mitigation. Parked, and stated
+  plainly rather than fixed: this widens an existing exposure rather than opening
+  a new one, because docling and the OCR stack already parse untrusted PDFs as
+  root in the same image. Excluding the JRE and the desktop integration via
+  `--no-install-recommends` is a real reduction. The fix is a non-root user for
+  the image, which touches the volume permissions and the compose file and is its
+  own change.
+
+- **A converted file is read by the delegate with no ceiling of its own beyond a
+  flat byte limit.** `MAX_CONVERTED_BYTES` refuses a conversion that writes more
+  than 512 MB, which closes the unbounded case, but the number is the same as
+  `MAX_FILE_BYTES` by intent rather than by measurement — nothing has established
+  what expansion ratio real legacy files actually produce. Parked: the honest
+  version measures the ratio across a corpus and sets the ceiling from it, which
+  needs a corpus this project does not yet have.
+
 ## Fixed
 
 - **~~The store has no migration path.~~** Fixed by
