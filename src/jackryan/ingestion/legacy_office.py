@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 from pathlib import Path
@@ -80,6 +81,44 @@ def converter_status() -> str:
     return find_converter() or UNAVAILABLE
 
 
+# A ceiling on what the converter may *write*. Every other byte limit in this
+# pipeline measures input the caller supplied — `MAX_FILE_BYTES` for a file on
+# disk, the expansion budget for a container entry — and input size is exactly
+# what a converted artefact is not bounded by. A legacy file well inside
+# `MAX_FILE_BYTES` can convert into something far larger, and the converted file
+# is the one a delegate loads whole. Kept here rather than imported from the
+# service so an extractor does not depend on a service, and separate for the
+# same reason `MAX_IMAGE_PIXELS` is separate: the quantity that costs the memory
+# is not the quantity any input ceiling measures.
+MAX_CONVERTED_BYTES = 512 * 1024 * 1024
+
+
+def _kill_group(process: subprocess.Popen) -> None:
+    """Kill the converter's whole process group, tolerating a race with its exit."""
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        # Already gone, or never made it into its own group. Fall back to the
+        # single pid so a timeout never leaves the direct child behind either.
+        process.kill()
+
+
+def _diagnosis(returncode: int, stderr: bytes | None, stdout: bytes | None) -> str:
+    """The most useful thing that can be said about a failed conversion.
+
+    LibreOffice's stderr opens with fontconfig and dbus noise and ends with the
+    actual complaint, so the *tail* is kept rather than the head. Some builds
+    write the diagnosis to stdout instead, and some say nothing at all — hence
+    the fallbacks, so an operator is never handed a message that trails off
+    after a colon.
+    """
+    for stream in (stderr, stdout):
+        text = (stream or b"").decode("utf-8", "replace").strip()
+        if text:
+            return text[-300:]
+    return f"the converter exited {returncode} without saying why"
+
+
 class LegacyOfficeExtractor:
     """Converts a legacy Office file, then delegates to the modern format's reader.
 
@@ -123,7 +162,13 @@ class LegacyOfficeExtractor:
         except OSError as exc:
             raise ExtractionError(f"could not read {path.name}: {exc}") from exc
 
-        work = Path(tempfile.mkdtemp(prefix="jackryan-legacy-"))
+        try:
+            work = Path(tempfile.mkdtemp(prefix="jackryan-legacy-"))
+        except OSError as exc:
+            raise ExtractionError(
+                f"could not make a scratch directory for {path.name}: {exc}"
+            ) from exc
+
         try:
             if suffix == ".rtf":
                 if not head.startswith(_RTF_MAGIC):
@@ -136,9 +181,16 @@ class LegacyOfficeExtractor:
                 # Already the modern format under a legacy name. The dump this
                 # change answers held two such workbooks. Converting one would
                 # be a lossy round trip for no reason.
-                source = self._rename_to_target(path, target, work)
+                source = self._copy_as_target(path, target, work)
                 lineage = "legacy-office-passthrough"
-            elif head.startswith(_OLE2_MAGIC):
+            elif head.startswith(_OLE2_MAGIC) or (
+                # RTF under a `.doc` name is ordinary Word and mail-merge
+                # output, and LibreOffice converts it without complaint. Only
+                # word-processor targets are widened: an RTF payload really is
+                # unreadable as a workbook or a deck, so the refusal below stays
+                # accurate for `.xls` and `.ppt`.
+                target == "docx" and head.startswith(_RTF_MAGIC)
+            ):
                 source = self._convert(path, target, work)
                 lineage = "legacy-office"
             else:
@@ -154,6 +206,17 @@ class LegacyOfficeExtractor:
                 # Named for the file the operator has, not for the scratch copy
                 # they will never see.
                 raise ExtractionError(f"{path.name}, read as .{target}: {exc}") from exc
+            except Exception as exc:
+                # A delegate is supposed to raise only `ExtractionError`, and
+                # `SpreadsheetExtractor` does not honour that: `load_workbook` is
+                # guarded but the lazy row iteration underneath it is not, so a
+                # workbook truncated mid-sheet surfaces a bare `ParseError`. That
+                # would leave `_ingest_work` and end the run. Narrowed to
+                # `Exception` rather than `BaseException` so the test gate's rung
+                # sentinel still escapes and can still fail a test loudly.
+                raise ExtractionError(
+                    f"{path.name}, read as .{target}: {type(exc).__name__}: {exc}"
+                ) from exc
 
             return Extraction(
                 text=delegated.text,
@@ -162,19 +225,33 @@ class LegacyOfficeExtractor:
                 media_type=LEGACY_SUFFIXES[suffix],
                 extractor=f"{lineage}+{delegated.extractor}",
                 metadata=delegated.metadata,
+                # Carried rather than defaulted. Neither delegate sets either
+                # today, so nothing changes now — but `refusals` is how this
+                # project carries "what I could not read" upward, and silently
+                # dropping it the day a delegate starts setting it would lose
+                # exactly the disclosure it exists for.
+                refusals=delegated.refusals,
+                text_source=delegated.text_source,
             )
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
-    def _rename_to_target(self, path: Path, target: str, work: Path) -> Path:
+    def _copy_as_target(self, path: Path, target: str, work: Path) -> Path:
         """Copy the file under the suffix its content actually is.
 
         A delegate keys its media type off the path's suffix, so handing it the
         original `.xls` would raise a `KeyError` — which is not an
         `ExtractionError`, and would therefore end the whole ingest run rather
         than fail one document.
+
+        The scratch name is fixed rather than derived from the operator's
+        filename. Nothing downstream reads it — both delegates key only off the
+        suffix, and the error wrapper re-labels with the original name — while a
+        derived stem lets the input decide the output name. A workbook genuinely
+        named `..xls` has stem `.`, which would land as `..xlsx`, whose suffix
+        openpyxl then refuses.
         """
-        destination = work / f"{path.stem}.{target}"
+        destination = work / f"source.{target}"
         try:
             shutil.copyfile(path, destination)
         except OSError as exc:
@@ -191,48 +268,100 @@ class LegacyOfficeExtractor:
 
         out_dir = work / "out"
         profile = work / "profile"
-        out_dir.mkdir(exist_ok=True)
-        profile.mkdir(exist_ok=True)
-
         try:
-            subprocess.run(
-                [
-                    converter,
-                    # Per call, not shared: LibreOffice takes an exclusive lock
-                    # on its user profile, and ingestion runs in a thread pool.
-                    f"-env:UserInstallation={profile.as_uri()}",
-                    "--headless",
-                    "--convert-to",
-                    target,
-                    "--outdir",
-                    str(out_dir),
-                    str(path.resolve()),
-                ],
-                # Captured rather than discarded, so a failure carries
-                # LibreOffice's own diagnosis instead of a bare exit code.
-                capture_output=True,
-                check=True,
-                timeout=CONVERSION_TIMEOUT_S,
-            )
+            out_dir.mkdir(exist_ok=True)
+            profile.mkdir(exist_ok=True)
+        except OSError as exc:
+            raise ExtractionError(
+                f"could not prepare a conversion directory for {path.name}: {exc}"
+            ) from exc
+
+        argv = [
+            converter,
+            # Per call, not shared: LibreOffice takes an exclusive lock on its
+            # user profile, and ingestion runs in a thread pool.
+            f"-env:UserInstallation={profile.as_uri()}",
+            "--headless",
+            "--convert-to",
+            target,
+            "--outdir",
+            str(out_dir),
+            # Absolute, and load-bearing: LibreOffice has no `--` end-of-options
+            # marker, so a file named `--convert-to` or `-env:x` would otherwise
+            # arrive as an option. `resolve()` guarantees a leading `/`, which
+            # makes it an operand. Never pass a bare or relative name here.
+            str(path.resolve()),
+        ]
+        try:
+            completed = self._run_converter(argv)
         except subprocess.TimeoutExpired as exc:
             raise ExtractionError(
                 f"converting {path.name} to .{target} exceeded {CONVERSION_TIMEOUT_S}s"
-            ) from exc
-        except subprocess.CalledProcessError as exc:
-            detail = (exc.stderr or b"").decode("utf-8", "replace").strip()[:300]
-            raise ExtractionError(
-                f"could not convert {path.name} to .{target}: {detail}"
             ) from exc
         except OSError as exc:
             raise ExtractionError(
                 f"could not run the converter for {path.name}: {exc}"
             ) from exc
 
+        if completed.returncode != 0:
+            raise ExtractionError(
+                f"could not convert {path.name} to .{target}: "
+                f"{_diagnosis(completed.returncode, completed.stderr, completed.stdout)}"
+            )
+
         # The glob, not the exit status, is the real gate: LibreOffice exits 0
         # in some cases having written nothing at all.
         produced = sorted(out_dir.glob(f"*.{target}"))
-        if len(produced) != 1:
+        if not produced:
             raise ExtractionError(
                 f"converting {path.name} to .{target} produced no output"
             )
+        if len(produced) > 1:
+            raise ExtractionError(
+                f"converting {path.name} to .{target} produced {len(produced)} files "
+                "where one was expected"
+            )
+
+        # The one artefact in this pipeline that no existing ceiling covers.
+        # `MAX_FILE_BYTES` bounds what the caller handed us and the expansion
+        # budget bounds container entries; both measure input. This measures what
+        # the converter *wrote*, which is what the delegate then loads whole — a
+        # bounded `.xls` can expand without bound. It is a separate constant for
+        # the same reason `MAX_IMAGE_PIXELS` is: the quantity that costs the
+        # memory is not the quantity any input ceiling measures.
+        size = produced[0].stat().st_size
+        if size > MAX_CONVERTED_BYTES:
+            raise ExtractionError(
+                f"converting {path.name} to .{target} produced {size} bytes, over the "
+                f"{MAX_CONVERTED_BYTES}-byte limit; a small legacy file can expand "
+                "without bound and the converted file is what gets loaded whole"
+            )
         return produced[0]
+
+    def _run_converter(self, argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+        """Run the converter in its own process group, and kill the group on timeout.
+
+        `subprocess.run`'s own timeout kills a single pid, and the pid it holds is
+        not the worker: `soffice` execs a launcher that spawns `soffice.bin`, and
+        Debian's `libreoffice` goes through `oosplash`. Killing the launcher
+        leaves the worker running — still burning CPU, still holding the profile
+        lock, and still able to write into the scratch directory *after* the
+        `finally` has removed it, which would leave converted evidence on disk.
+        `start_new_session` puts the whole tree in one group so it dies together.
+        """
+        with subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            # LibreOffice must never reach the parent's stdin: under
+            # `jackryan serve-mcp` that channel belongs to the protocol.
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        ) as process:
+            try:
+                stdout, stderr = process.communicate(timeout=CONVERSION_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                _kill_group(process)
+                process.communicate()
+                raise
+        return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
