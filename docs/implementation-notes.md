@@ -41,6 +41,41 @@ and why it was parked.
   should decide whether rung three is worth recommending, and it needs the
   scanned-documents slice of M3 rather than a note.
 
+- **`embed_url`, `llm_url` and `api_key` are read into `Profile` and consumed by
+  nothing.** `grep` finds them only in `config.py`. They are reserved seams, and
+  `config.yaml.example` describes the `remote` profile as though pointing them at
+  an endpoint did something. Measured 2026-09-01 on a GB10 box: `bge-m3` over an
+  OpenAI-compatible endpoint embeds a contract-sized chunk in **27 ms** against
+  the local e5-large's ~96 ms implied by the 1502-document production ingest, at
+  the same 1024 dimensions — so the seam is worth roughly 3.5x on the dominant
+  ingest cost, and two boxes double it. Parked: it needs an `EmbedderPort`
+  implementation plus the endpoint and remote model name entering corpus identity,
+  and it forces one full reingest. Do not describe the `remote` profile as
+  working until it is.
+
+- **A third reranker exists that the rerank measurement never saw.**
+  `bge-reranker-v2-m3` is multilingual and serves `/v1/rerank` on the GB10 boxes;
+  probed 2026-09-01 it ranked a Russian query correctly (1.83 against -11.04 for
+  an unrelated passage). The parked decision to ship reranking off was measured
+  against the only two models `fastembed` registers, both of which took Ukrainian
+  to zero. Retrieval settings write nothing and invalidate no store, so this is
+  testable against `scripts/evaluate_retrieval.py` with no reingest — the
+  cheapest open quality win in the project.
+
+- **Offloading docling to a GPU server is not worth it for born-digital files and
+  is actively harmful for scans as that server is configured.** Measured against
+  `docling-serve` 1.26.0 (CUDA image, `DOCLING_DEVICE=cuda`): the async endpoint
+  reaches 4.64 files/s on DOCX against ~5 files/s in-process, and the *sync*
+  endpoint manages 0.48 files/s and does not scale — identical throughput at
+  parallelism 1, 4 and 12. Worse, its OCR cannot read Cyrillic: the same scan
+  returns byte-identical output with **zero** Cyrillic characters under
+  `easyocr`, `tesserocr` and `rapidocr` after clearing both `/v1/clear/results`
+  and `/v1/clear/converters`, so `ocr_engine` and `ocr_lang` are ignored, while
+  local `rapidocr`+`eslav` reads the same file correctly. `docs/design.md` § 5
+  offers "optional out-of-process offload for throughput"; the measurement says
+  the throughput is not there and the quality would regress. Parked as a
+  do-not-do until the server's model cache carries non-Latin OCR models.
+
 - **A transport-level failure reaching Hugging Face kills an ingest instead of
   falling back.** `fastembed`'s `download_model`
   (`common/model_management.py:444`) catches only `EnvironmentError`,
