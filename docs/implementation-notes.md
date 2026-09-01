@@ -363,6 +363,14 @@ and why it was parked.
   silently. Parked: whether "cannot be compared" should be an error or a report
   is the harness's contract, and changing it belongs with the decision, not
   inside a change that only added a key.
+- **`CLAUDE.md` points at an `openspec/config.yaml` that does not exist.** Line
+  50 reads "Config at `openspec/config.yaml`", and `openspec/` holds only
+  `changes/` and `specs/`. The file is auto-loaded into every session in this
+  repo, so the wrong path is read before anything else and a future session can
+  spend time looking for a file that was never there. Nothing depends on it —
+  the OpenSpec CLI finds its root without one — so the cost is confusion rather
+  than breakage. Parked: found while writing `embed-input-is-corpus-coupled`,
+  which had no business editing that line.
 
 ## Fixed
 
