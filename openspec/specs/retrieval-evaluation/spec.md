@@ -116,6 +116,15 @@ way moves one query, so a gate that fires on arithmetic noise is one a reader
 learns to ignore — but a tolerance nobody has written down is indistinguishable
 from a gate that does not work.
 
+Comparability SHALL be established over corpus identity, not over a chosen list
+of settings. A baseline records the figures one corpus produced, and two corpora
+built from different text handed to the embedder are not comparable however well
+the named settings agree. A recorded baseline that does not state the corpus
+identity it was measured over SHALL be reported as not comparable rather than
+compared on the settings it does state: a key absent from the baseline is
+silently skipped by any check that only compares what is present, which turns
+the guard into a fail-open.
+
 Recording a new baseline SHALL be a deliberate act, not something a run performs
 because the numbers changed.
 
@@ -129,11 +138,16 @@ because the numbers changed.
 - **WHEN** a measurement runs and produces different figures
 - **THEN** the recorded baseline is unchanged unless recording was explicitly asked for
 
+#### Scenario: A baseline that does not state its corpus is not compared
+
+- **WHEN** a recorded baseline states no corpus identity
+- **THEN** the run reports it as not comparable, naming the identity the run measured over
+
 ### Requirement: A retrieval-quality claim names what it was measured on
 
 Any reported retrieval figure SHALL name the conditions that produced it: the
-embedder actually used, whether a reranker was in the path and which one, and the
-query set it ran against.
+corpus identity it was measured over, the embedder actually used, whether a
+reranker was in the path and which one, and the query set it ran against.
 
 A figure produced with the deterministic stand-in embedder SHALL be marked as
 measuring the retrieval mechanism rather than retrieval quality. Those vectors
@@ -147,7 +161,7 @@ quality at all. A measurement that cannot move cannot report a regression.
 #### Scenario: The report names its conditions
 
 - **WHEN** figures are reported
-- **THEN** they name the embedder used, the reranker used or its absence, and the query set
+- **THEN** they name the corpus identity measured over, the embedder used, the reranker used or its absence, and the query set
 
 #### Scenario: The stand-in embedder is marked as not a quality claim
 
