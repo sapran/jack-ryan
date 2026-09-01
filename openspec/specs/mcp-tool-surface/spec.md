@@ -42,11 +42,20 @@ matched passages may still share the overlap the corpus contract gives adjacent
 chunks, which is a property of how the corpus was divided rather than of this
 payload.
 
-Every result entry SHALL carry `chunk_id` and `document_id`. An identifier a
-tool returns SHALL be accepted by the tools that address that kind of object, so
-one call chains into the next without the caller reconstructing references.
-Widening a body SHALL NOT change what the entry's identifiers address: they name
-the matched passage, which stays the unit that is read and cited.
+An entry that addresses a passage SHALL carry `chunk_id` and `document_id`. An
+identifier a tool returns SHALL be accepted by the tools that address that kind
+of object, so one call chains into the next without the caller reconstructing
+references. Widening a body SHALL NOT change what the entry's identifiers
+address: they name the matched passage, which stays the unit that is read and
+cited.
+
+Not every entry addresses a passage, and the requirement is stated that way
+deliberately. An inventory entry — a casefile in a listing, an identifier in a
+facet with its counts — is an aggregate over the corpus rather than a reference
+into it, and has no passage to name. Such an entry SHALL instead carry whatever
+addresses what it describes, and SHALL carry the values a caller needs to turn it
+into a search: a facet entry names an identifier that can be filtered on, which
+is how an inventory becomes a pivot.
 
 Identifiers SHALL be accepted as 8-character prefixes wherever they are taken.
 
@@ -86,6 +95,11 @@ score, and described as comparable only within that response.
 
 - **WHEN** a search returns results
 - **THEN** the payload states whether the ordering was reranked
+
+#### Scenario: An inventory entry carries what turns it into a search
+
+- **WHEN** a tool returns an inventory of identifiers rather than passages
+- **THEN** each entry carries the value a search can be filtered by, and no entry claims a passage it does not address
 
 ### Requirement: Reads are bounded, and truncation is explicit
 
