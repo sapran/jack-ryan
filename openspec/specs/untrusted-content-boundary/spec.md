@@ -2,9 +2,10 @@
 
 ## Purpose
 
-Defines how corpus text crosses into an agent's context — fenced per response
-and attributed to its source — and states plainly that this is a convention the
-model is asked to honour rather than a control that constrains it.
+Defines how corpus text — and text a model derived from it — crosses into an
+agent's context, fenced per response and attributed to its source and to
+whatever produced it, and states plainly that this is a convention the model is
+asked to honour rather than a control that constrains it.
 
 ## Requirements
 
