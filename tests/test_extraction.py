@@ -33,11 +33,22 @@ def test_plain_text_needs_no_engine(tmp_path):
         ("a.pptx", "docling"),
         ("a.html", "docling"),
         ("a.md", "docling"),
+        ("a.doc", "legacy-office"),
+        ("a.xls", "legacy-office"),
+        ("a.ppt", "legacy-office"),
+        ("a.rtf", "legacy-office"),
     ],
 )
 def test_router_selects_the_right_extractor(name, expected):
     chosen = FormatRouter().extractor_for(Path(name))
     assert chosen is not None and chosen.name == expected
+
+
+@pytest.mark.parametrize("name", ["a.doc", "a.xls", "a.ppt", "a.rtf"])
+def test_legacy_office_suffixes_are_reported_as_supported(name):
+    # Derived from the registry, so this is what makes the four formats work
+    # inside a ZIP or a mailbox as well as on disk.
+    assert Path(name).suffix in FormatRouter().supported_suffixes()
 
 
 def test_unsupported_format_has_no_extractor():

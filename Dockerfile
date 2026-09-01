@@ -6,16 +6,28 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# OpenCV's shared-library dependencies, which python:3.12-slim does not carry.
-# Not optional and not only a build-time need: `opencv-python` arrives with the
+# Two unrelated system dependencies, in one layer.
+#
+# OpenCV's shared libraries, which python:3.12-slim does not carry. Not
+# optional and not only a build-time need: `opencv-python` arrives with the
 # RapidOCR recognition engine, and `import cv2` happens every time recognition
 # runs. Without these, OCR inside the container fails with
 # `ImportError: libxcb.so.1` — which is why `--build-arg PREFETCH_MODELS=true`
 # could not complete before they were added. Determined by installing them into
 # the built image and importing cv2, not by guessing: libgl1 alone still leaves
 # `libgthread-2.0.so.0` missing.
+#
+# LibreOffice, which is how the legacy binary Office formats are read: a `.doc`,
+# `.xls` or `.ppt` is converted to its modern sibling and handed to the reader
+# that already owns that suffix. Three component packages rather than the
+# `libreoffice` metapackage, and `--no-install-recommends` throughout, so the
+# JRE and the desktop integration are not pulled in. Without it the container
+# still runs and every other format still ingests — a legacy file simply fails
+# with a message naming the remedy.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+    && apt-get install -y --no-install-recommends \
+        libgl1 libglib2.0-0 \
+        libreoffice-writer libreoffice-calc libreoffice-impress \
     && rm -rf /var/lib/apt/lists/*
 
 # Dependency layer first so source edits do not invalidate the install.
@@ -27,9 +39,12 @@ RUN pip install --no-cache-dir .
 # its first run rather than downloading models mid-ingest. This is what makes
 # the local-first promise true for a fresh container.
 #
-# Measured on arm64, 2026-08-27: 5.81GB without, 10.2GB with — so the weights
-# add about 4.4GB, not the 2.5GB this comment used to claim. Most of the 5.81GB
-# base is the CUDA stack that `docling` pulls in through torch and that an arm64
+# Measured on arm64, 2026-09-01, from `docker images --format '{{.Size}}'`:
+# 6.49GB without weights, 10.7GB with. Both figures rose when LibreOffice joined
+# the system layer — from 5.81GB and 10.2GB measured on 2026-08-27 — so that
+# capability costs about 0.68GB. Re-measured rather than adjusted by arithmetic,
+# which is why the two deltas do not match exactly. Most of the base is still
+# the CUDA stack that `docling` pulls in through torch and that an arm64
 # container cannot use; see docs/implementation-notes.md.
 #
 # Off by default so the CI gate can prove the image builds without pulling

@@ -217,6 +217,28 @@ same width, which nothing downstream can detect.
 - **A descendant never outlives its container.** `documents.parent_id` carries
   `ON DELETE CASCADE`, verified to recurse through nesting and to fire the chunk
   trigger at every level. Never replace it with code that has to remember.
+- **A legacy Office format is converted, then delegated — never read directly.**
+  `.doc` and `.rtf` become `.docx`, `.xls` becomes `.xlsx`, `.ppt` becomes
+  `.pptx`, and the file is handed to the extractor that already owns that
+  suffix. docling *would* read all three legacy formats if they were added to
+  `MARKUP_SUFFIXES`, and that is the trap: its spreadsheet backend renders a
+  workbook differently from `SpreadsheetExtractor`, so the corpus would hold two
+  renderings of the same kind of document. That failure is invisible — it shows
+  up as retrieval quality, never as an error.
+- **The media type stored for a converted document is the legacy one.** A `.doc`
+  is `application/msword`, not the DOCX type it was read as. The conversion is
+  how the text was obtained; it is not what the evidence is. Which path ran is
+  recoverable from `documents.extractor`, which reads `legacy-office+<delegate>`
+  or `legacy-office-passthrough+<delegate>` and has no third value.
+- **A passthrough file is copied under its true suffix before delegating.** A
+  delegate keys its media type off `path.suffix`, so handing `SpreadsheetExtractor`
+  an OOXML file still named `.xls` raises `KeyError` — which is not an
+  `ExtractionError`, so it would abort the whole run instead of failing one
+  document. Never "simplify" the copy away.
+- **LibreOffice is reported, never required at startup.** Unlike the recognition
+  engine, an absent converter fails only the documents that need it, so
+  `jackryan status` and `GET /health` both carry `legacy_office`. Both read one
+  `converter_status()`: two agreeing definitions is one definition too many.
 
 ## Commands
 

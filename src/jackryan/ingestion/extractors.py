@@ -326,6 +326,7 @@ def default_extractors(gate: QualityGate | None = None) -> list[Extractor]:
     still works — which is what the tests and any direct caller rely on.
     """
     from .containers import TarExtractor, ZipExtractor
+    from .legacy_office import LegacyOfficeExtractor
     from .mail import EmlExtractor, MboxExtractor, MsgExtractor
     from .sheets import DelimitedExtractor, SpreadsheetExtractor
 
@@ -338,6 +339,7 @@ def default_extractors(gate: QualityGate | None = None) -> list[Extractor]:
         ZipExtractor(),
         TarExtractor(),
         SpreadsheetExtractor(),
+        LegacyOfficeExtractor(gate),
         ImageExtractor(gate),
         DoclingExtractor(gate),
     ]

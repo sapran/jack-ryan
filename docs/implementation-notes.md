@@ -251,6 +251,31 @@ and why it was parked.
   an accurate message, verified by forcing one. Noted so nobody "fixes" the
   guard by weakening the one in `ModelEmbedder`.
 
+- **A LibreOffice conversion is a lossy round trip and nothing records that it
+  happened, beyond `documents.extractor`.** A `.doc` is read as whatever
+  LibreOffice's DOCX writer made of it, which is not necessarily what Word 97
+  would have shown. `text_source` says `native` — truthfully, since no
+  recognition ran — so an analyst weighing a converted quotation has only the
+  `legacy-office+` prefix to tell them a converter stood between the file and
+  the text. Parked: a fourth `text_source` value would be the honest fix, but
+  that vocabulary is published in `extraction-quality-gate` and consumed by the
+  MCP payloads, so widening it is its own change with its own spec delta.
+
+- **Legacy template and show suffixes are not registered.** `.dot`, `.xlt`,
+  `.pot` and `.pps` convert through exactly the same path and would each be one
+  line in `LEGACY_SUFFIXES` and `_TARGET`. None appears in the dump this change
+  was written against, so none could be demonstrated, and a suffix nobody can
+  check is a claim nobody can check. Parked deliberately: add them when a dump
+  contains one, not before.
+
+- **`accepts()` is suffix-based, so a legacy file with no suffix at all is still
+  invisible.** The container sniff runs inside `extract`, after the router has
+  already selected on `Path.suffix`. A file named `Договор` with OLE2 bytes is
+  dropped by the directory-walk pre-filter exactly as it was before this change.
+  This is the same root cause as the parked apostrophe-filename finding above:
+  content sniffing as a fallback when the suffix is unknown. Parked with it,
+  because they want one fix, not two.
+
 ## Fixed
 
 - **~~The store has no migration path.~~** Fixed by
