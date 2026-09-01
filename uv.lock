@@ -988,6 +988,7 @@ dependencies = [
     { name = "extract-msg" },
     { name = "fastapi" },
     { name = "fastembed" },
+    { name = "httpx" },
     { name = "mcp" },
     { name = "openpyxl" },
     { name = "pydantic" },
@@ -998,7 +999,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
 ]
 
@@ -1008,7 +1008,7 @@ requires-dist = [
     { name = "extract-msg", specifier = ">=0.54" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "fastembed", specifier = "==0.8.0" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28" },
+    { name = "httpx", specifier = ">=0.28" },
     { name = "mcp", specifier = ">=2.0" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pydantic", specifier = ">=2.9" },

@@ -44,14 +44,63 @@ and why it was parked.
 - **`embed_url`, `llm_url` and `api_key` are read into `Profile` and consumed by
   nothing.** `grep` finds them only in `config.py`. They are reserved seams, and
   `config.yaml.example` describes the `remote` profile as though pointing them at
-  an endpoint did something. Measured 2026-09-01 on a GB10 box: `bge-m3` over an
-  OpenAI-compatible endpoint embeds a contract-sized chunk in **27 ms** against
-  the local e5-large's ~96 ms implied by the 1502-document production ingest, at
-  the same 1024 dimensions — so the seam is worth roughly 3.5x on the dominant
-  ingest cost, and two boxes double it. Parked: it needs an `EmbedderPort`
-  implementation plus the endpoint and remote model name entering corpus identity,
-  and it forces one full reingest. Do not describe the `remote` profile as
-  working until it is.
+  an endpoint did something. Do not describe the `remote` profile as working
+  until it is.
+
+  **Re-measured 2026-09-01 (later the same day), and the earlier figures in this
+  entry were wrong.** They claimed the local e5-large costs ~96 ms per chunk,
+  inferred from a "1h06m" production ingest. Both numbers are wrong. Measured
+  directly through `build_embedder`, on a contract-sized (2,000-char) Russian
+  chunk: **414 ms per chunk**, and *batching buys nothing* — 433/427/416 ms at
+  batch 1/8/32, because ONNX Runtime's CPU provider already saturates every core
+  on one chunk. And the dump's own `documents.created_at` histogram shows **seven
+  consecutive hours with no gap** — 5h52m, not 1h06m, for 1,502 documents. The
+  two corrected figures reconcile exactly: 32,989 chunks x 414 ms = 3h47m of
+  embedding, plus 2h04m of everything else, against 5h52m observed. So embedding
+  is **65% of the ingest**. The old entry's *conclusion* — that embedding is the
+  dominant cost and the seam is where to attack it — survives and gets stronger;
+  its arithmetic did not. Anyone quoting 27 ms against 96 ms was comparing a
+  measured number to an invented one.
+
+  **`bge-m3` on the GPU boxes, measured from this Mac, not on-box.** A dedicated
+  `bge-m3` FP16 unit on each box, reached over HTTP, returns
+  **1024 dimensions at L2 norm 1.000000** — the same width *and* the same
+  normalisation as e5-large, so a corpus holding both kinds of vector is
+  undetectable by shape. Throughput, at 111 ms RTT: **batching beats concurrency
+  and 32 concurrent single requests is worse than useless** — one request of 128
+  inputs gives 32 chunks/s, four concurrent requests of 32 give 50 chunks/s, but
+  32 concurrent single requests collapse to 6 chunks/s against 22 at eight. At 50
+  chunks/s the embedding leg would fall from 3h47m to 11m, putting a full reingest
+  at roughly 2h15m — extraction-bound, and extraction offload is the do-not-do
+  recorded below.
+
+  **The endpoint is bit-deterministic**, which matters for how identity would be
+  built: six calls with the same input returned six byte-identical vectors
+  (SHA-256 of the serialised floats). So the embedder's identity could be
+  *behavioural* — a hash of a probe vector — rather than a declared model name.
+  The difference is not cosmetic. A declared identity trusts the operator to
+  describe their infrastructure honestly, and points `embed_url` at bge-m3 while
+  `embed_model` still says `intfloat/multilingual-e5-large` opens a mixed corpus
+  silently. A behavioural one verifies the weights instead of believing a label,
+  and survives load-balancing across two boxes serving the same GGUF.
+
+  **The real blocker is a published requirement, not the missing code.**
+  `openspec/specs/hybrid-search/spec.md:16-17` says both retrievers "SHALL be
+  available with no endpoint configured, so an instance can search its corpus
+  offline", and `services/search.py:384` embeds the query on every search. A
+  remotely-embedded corpus therefore cannot be *searched* while the endpoint is
+  down, and the halves cannot be split — a bge-m3 query vector against e5-large
+  passage vectors is meaningless, and e5 also prefixes its input (`"passage: "` /
+  `"query: "`, `embedding/model.py:14-15`) where bge-m3 does not. So the seam
+  tethers reads, not just writes, and taking it means knowingly withdrawing the
+  offline-search guarantee. Parked on that, not on the implementation work.
+
+  **Unexplored, and the option that would keep the guarantee:** the same
+  OpenAI-compatible `EmbedderPort` pointed at `127.0.0.1` — `llama-server` with
+  Metal on the development Mac, serving the same 1.1 GB `bge-m3-FP16.gguf`. One
+  implementation, one different URL, endpoint shipped with the instance so
+  offline still holds. llama.cpp is not installed here, so whether Metal on an
+  M3 Max beats 414 ms of ONNX CPU is unmeasured — an open question, not a promise.
 
 - **Re-running an ingest is idempotent in outcome and full price in cost.**
   `_ingest_work` calls `self._router.extract(work.path)` unconditionally
@@ -59,11 +108,54 @@ and why it was parked.
   **re-embeds** every document (`:381`) and `replace_chunks` wipes and rewrites
   the chunks, FTS entries and vectors. The outcome status distinguishes
   `reingested` from `ingested`, so nothing is silently wrong — but a second run
-  over the same folder costs the same hour as the first, not a resumption. The
-  1502-document dump took 1h06m; a re-run to pick up the 19 extraction gaps
-  after enabling a better rung costs that hour again. Parked: skipping a document
-  whose content hash and extractor version both match would make a re-run
-  incremental, and it needs an extractor-version column to be safe.
+  over the same folder costs the same hours as the first, not a resumption. The
+  1502-document dump took **5h52m** — corrected 2026-09-01 from the "1h06m"
+  originally recorded here, which nothing supports: the `documents.created_at`
+  histogram is seven consecutive hours with no gap, so it was one continuous run
+  and the shorter figure was not a measurement of it. A re-run to pick up the 19
+  extraction gaps after enabling a better rung costs those six hours again.
+  Parked: skipping a document whose content hash and extractor version both match
+  would make a re-run incremental, and it needs an extractor-version column to be
+  safe. Worth more than it looks — at 65% of that cost being embedding (see the
+  `embed_url` entry), an incremental re-run is the cheapest large win available
+  without touching the embedder at all.
+
+- **`CoreMLExecutionProvider` is available and is 4.5x *slower* than CPU.**
+  Measured 2026-09-01 on an M3 Max, same `intfloat/multilingual-e5-large` weights
+  through `fastembed`'s `providers=` argument: **1,866 ms per chunk on CoreML
+  against 414 ms on CPU**, and 7.3 s of session load against 0.7 s. Onnxruntime
+  says why on the way past: "number of partitions supported by CoreML: 146 number
+  of nodes in the graph: 1237 number of nodes supported by CoreML: 786". A third
+  of the graph stays on CPU, so the model is cut into 146 pieces and the
+  round-trips between the two providers cost more than the acceleration returns.
+  Recorded because the reverse is the intuition — the box has a GPU and a neural
+  engine, `onnxruntime` lists the provider, and turning it on looks like free
+  speed. It is not, and a future reader should find the measurement rather than
+  repeat it. Not parked as work: there is nothing to do.
+
+- **One of the two GPU boxes answers `curl` and refuses `httpx`, reproducibly.**
+  `curl` returns HTTP 200 under both `-4` and `-6`; `httpx` raises
+  `ConnectError: [Errno 9] Bad file descriptor` from `connect_tcp`, in a fresh
+  process with no other traffic, against the hostname *and* against the bare
+  address. Its twin, on the same port, from the same client, in the same
+  process, works. Both resolve to a single A record with no AAAA, so this is
+  *not* the dead-IPv6 case recorded further down for `huggingface_hub`.
+  Unexplained. It matters only if something later depends on reaching both boxes
+  from this Mac over `httpx`: the throughput figures in the `embed_url` entry were
+  taken against the working box alone for that reason, and the "two boxes double
+  it" claim is therefore *unverified from here* even though both services are up.
+
+- **`uv sync` builds the environment on Python 3.14 while CI and the container are
+  on 3.12.** There is no `.python-version` in the repository, `requires-python` is
+  `>=3.12`, and uv resolves to the newest interpreter it can find — 3.14.7 here.
+  `.github/workflows/tests.yml:26` pins `uv venv --python 3.12` and the Dockerfile
+  is `FROM python:3.12-slim`, so a plain `uv sync` gives a developer an
+  interpreter that neither gate uses. It resolved and installed cleanly, which is
+  what makes it worth writing down: nothing failed, and the divergence is silent.
+  Found rebuilding the environment before a full reingest 2026-09-01 and worked
+  around with an explicit `uv sync --python 3.12`. Parked: a one-line
+  `.python-version` would close it, and that is a repository change rather than a
+  note, so it is not taken here.
 
 - **Chunk identifiers are regenerated on every ingest, so nothing may be keyed to
   them across one.** `_rebuild_chunks` assigns `uuid.uuid4().hex` per chunk
