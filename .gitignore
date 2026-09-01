@@ -27,3 +27,6 @@ venv/
 .ruff_cache/
 dist/
 build/
+
+# Disposable worktrees for isolated change work
+/.worktrees/
