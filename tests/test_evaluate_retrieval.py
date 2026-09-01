@@ -156,6 +156,10 @@ def evaluated(context, tmp_path):
 
 def _conditions(**overrides):
     base = {
+        # Comparability is established over corpus identity, so a baseline built
+        # from these must state one — without it every comparison here would be
+        # measuring the fail-open rather than the guard.
+        "corpus": "test-identity",
         "embedder": "deterministic",
         "reranker": "none",
         "query_set": "built-in",
@@ -306,6 +310,35 @@ def test_a_baseline_recorded_under_other_conditions_is_not_compared():
 def test_matching_conditions_compare_cleanly():
     baseline = {"conditions": _conditions(), "metrics": {}}
     assert harness.conditions_match(_measurement(), baseline) == []
+
+
+def test_a_baseline_over_another_corpus_is_not_compared():
+    """Two corpora built from different text handed to the embedder are not
+    comparable however well the named settings agree."""
+    baseline = {"conditions": _conditions(corpus="other-identity"), "metrics": {}}
+    differing = harness.conditions_match(_measurement(), baseline)
+    assert any("corpus" in line for line in differing)
+
+
+def test_a_baseline_that_does_not_state_its_corpus_is_not_compared():
+    """A key absent from the baseline is skipped by a check that only compares
+    what is present, which turns this guard into a fail-open. Absence of the
+    corpus is therefore itself a mismatch."""
+    conditions = _conditions()
+    del conditions["corpus"]
+    baseline = {"conditions": conditions, "metrics": {}}
+    differing = harness.conditions_match(_measurement(), baseline)
+    assert any("corpus" in line for line in differing)
+
+
+def test_the_shipped_baseline_states_the_corpus_it_was_measured_over():
+    """What stops a later --record or a hand edit from dropping the key and
+    quietly restoring the fail-open."""
+    shipped = json.loads(harness.BASELINE_PATH.read_text(encoding="utf-8"))
+    assert shipped["conditions"].get("corpus"), (
+        "the tracked baseline must state the corpus identity its figures were "
+        "measured over, or every run compares clean against it"
+    )
 
 
 def run_harness(monkeypatch, *args) -> int:

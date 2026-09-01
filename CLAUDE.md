@@ -130,6 +130,16 @@ same width, which nothing downstream can detect.
   — no vector, no chunk, no stored text — so no store is ever refused for them.
   This is a stronger claim than the one extraction settings get, and it is why
   they are not in corpus identity.
+- **A setting that changes the bytes handed to the embedder is contract, not
+  profile.** Per-chunk contextual summaries are the deferred case: contextual
+  retrieval folds the summary into the text that gets embedded, so the vectors
+  mean something different while staying the declared width, and a corpus
+  holding both kinds is undetectable. The switch *and* the identity of whatever
+  writes the summaries belong in the contract — a boolean alone leaves the same
+  hole one level down, since a different model writes different summaries.
+  `tests/test_embedding.py` asserts that what reaches the embedder today is the
+  chunk's own text, heading path included but not folded in; that test failing
+  is the signal to add the contract value, not to update the test.
 - **A reranker has two failure modes and they are deliberately different.** One
   that is named but cannot be built stops the search, naming the setting: an
   instance quietly serving the fused order has hidden a misconfiguration. One

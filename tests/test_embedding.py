@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+from jackryan.app import build_context
 from jackryan.config import Config, Contract, Profile
 from jackryan.embedding import build_embedder
 from jackryan.embedding.deterministic import DeterministicEmbedder
 from jackryan.embedding.model import ModelEmbedder
 from jackryan.embedding.port import EmbeddingError
+from jackryan.ingestion.chunker import chunk_text
 
 
 def dot(a, b):
@@ -124,3 +126,84 @@ def test_a_malformed_library_declaration_is_refused():
     embedder = ModelEmbedder(model_name="x", dimensions=4, embed_library="fastembed")
     with pytest.raises(EmbeddingError, match="distribution.*version"):
         embedder.embed_query("anything")
+
+
+# --- what reaches the embedder ---------------------------------------------
+
+
+class _RecordingEmbedder(DeterministicEmbedder):
+    """Records what ingestion hands the embedder, then embeds normally.
+
+    Subclassing rather than wrapping keeps `name = "deterministic"`, so corpus
+    identity is the one the fixture's config already describes and the store is
+    not refused.
+    """
+
+    def __init__(self, dimensions: int) -> None:
+        super().__init__(dimensions)
+        self.seen: list[list[str]] = []
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.seen.append(list(texts))
+        return super().embed_documents(texts)
+
+
+def test_what_reaches_the_embedder_is_the_chunks_own_text(config, gate, sectioned_corpus):
+    """A setting that changes the bytes handed to the embedder is corpus-coupled.
+
+    Contextual retrieval — folding a per-chunk summary into the text before
+    embedding it — is deferred to M3, and the heading path is already computed
+    and stored without being embedded. Either one folded in produces vectors of
+    the declared width that mean something else, appended to a corpus whose
+    identity does not change. Nothing downstream can detect that, so this test
+    is the detection: it fails on the day the folding-in happens, and the fix is
+    to declare the setting in the contract, not to update the test.
+
+    The expectation is recomputed from each document's extracted text rather
+    than read back from the store. Chunking is deterministic by spec, so this is
+    an independent expectation; comparing against the stored chunk texts would
+    compare the pipeline with itself and pass on any transformation applied
+    before both the store write and the embed call.
+    """
+    embedder = _RecordingEmbedder(config.contract.embed_dimensions)
+    ctx = build_context(config, embedder=embedder, gate=gate)
+    try:
+        casefile = ctx.casefiles.create("Embed Input")
+        report = ctx.ingestion.ingest(casefile.short_id, sectioned_corpus)
+        assert not report.failed
+
+        expected: list[str] = []
+        headed = 0
+        for document in ctx.ingestion.list_documents(casefile.short_id):
+            for piece in chunk_text(
+                document.extracted_text,
+                max_chars=config.contract.chunk_max_chars,
+                overlap_chars=config.contract.chunk_overlap_chars,
+            ):
+                expected.append(piece.text)
+                headed += bool(piece.heading_path)
+
+        recorded = [text for call in embedder.seen for text in call]
+
+        assert recorded, (
+            "nothing was handed to the embedder, so this test proves nothing about "
+            "what reaches it"
+        )
+        assert headed, (
+            "no chunk in this corpus carries a heading path, so the corpus cannot "
+            "show that the heading path is not folded into what is embedded — use a "
+            "fixture whose documents have headings"
+        )
+        # Sorted multisets, not positional: ingestion runs in a thread pool, so
+        # the order of per-document embed calls is not guaranteed. Equality still
+        # fails on any prefix, suffix or substitution, which is the assertion.
+        assert sorted(recorded) == sorted(expected), (
+            "what reaches the embedder must be the chunk's own text and nothing "
+            "else — no heading path, no summary, no other context. Folding "
+            "anything in changes what the vector means while leaving its width "
+            "and corpus identity untouched, so it is corpus-coupled and the "
+            "setting that turns it on belongs in the contract. This test failing "
+            "is the signal to declare that value, not to update the test."
+        )
+    finally:
+        ctx.close()

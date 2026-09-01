@@ -710,6 +710,14 @@ def compare(
     return fallen
 
 
+# Conditions whose absence from a baseline is itself a mismatch. `conditions_match`
+# skips any key the baseline does not record, which is right for a key added for
+# readability and fail-open for one that decides comparability: a baseline recorded
+# before corpus identity was carried would compare clean against a run over an
+# entirely different corpus.
+REQUIRED_CONDITIONS = ("corpus",)
+
+
 def conditions_match(measured: Measurement, baseline: Mapping[str, Any]) -> list[str]:
     """Conditions that differ between this run and the recorded baseline.
 
@@ -723,6 +731,7 @@ def conditions_match(measured: Measurement, baseline: Mapping[str, Any]) -> list
     # distractors is easier, so a run over one is not comparable with a baseline
     # recorded over the other however well the rest matches.
     for key in (
+        "corpus",
         "embedder",
         "reranker",
         "query_set",
@@ -732,8 +741,17 @@ def conditions_match(measured: Measurement, baseline: Mapping[str, Any]) -> list
         "queries",
         "documents",
     ):
-        if key in recorded and recorded[key] != measured.conditions.get(key):
-            differing.append(f"{key}: run {measured.conditions.get(key)!r}, baseline {recorded[key]!r}")
+        if key in recorded:
+            if recorded[key] != measured.conditions.get(key):
+                differing.append(
+                    f"{key}: run {measured.conditions.get(key)!r}, baseline {recorded[key]!r}"
+                )
+        elif key in REQUIRED_CONDITIONS:
+            differing.append(
+                f"{key}: run {measured.conditions.get(key)!r}, baseline records none — "
+                "a baseline that does not state the corpus it measured cannot be shown "
+                "to be comparable"
+            )
     return differing
 
 
@@ -792,7 +810,15 @@ def load_judgements(path: Path) -> tuple[Judgement, ...]:
 
 def print_report(measured: Measurement) -> None:
     columns = [f"recall@{k}" for k in RECALL_AT] + [f"mrr@{MRR_AT}"]
-    print("Conditions: " + ", ".join(f"{k}={v}" for k, v in measured.conditions.items()))
+    # Corpus identity is ~130 characters, so it goes on its own line rather than
+    # into the comma-joined list, which it would make unreadable.
+    corpus = measured.conditions.get("corpus")
+    if corpus:
+        print(f"Corpus: {corpus}")
+    print(
+        "Conditions: "
+        + ", ".join(f"{k}={v}" for k, v in measured.conditions.items() if k != "corpus")
+    )
     if measured.conditions.get("embedder") == "deterministic":
         print(
             "  These figures measure the retrieval mechanism, not retrieval quality:\n"
@@ -963,6 +989,11 @@ def main() -> int:
                 return 1
 
             conditions = {
+                # The identity the store enforces, read from the context rather
+                # than recomposed here: two comparabilities computed separately
+                # can disagree. `chunk_max_chars` below is subsumed by it and
+                # stays because an operator reads it at a glance.
+                "corpus": context.corpus_fingerprint,
                 "embedder": args.embedder,
                 "reranker": args.reranker or "none",
                 "query_set": "operator" if args.queries else "built-in",

@@ -274,7 +274,7 @@ Slice 1 took the leg that needed no model. Slice 2 — the extraction quality ga
 |---|---|
 | ~~Cross-encoder rerank~~ | Built. The seam ships; no model does. Measured below. |
 | ~~Section-window expansion~~ | Built. A result's text is a window around the matched passage; the passage stays what is cited. |
-| The summarization layer | Per-chunk contextual summaries at ingest (a config switch, off by default — it is the dominant ingest cost), then per-document map-reduce. |
+| The summarization layer | Per-chunk contextual summaries at ingest, then per-document map-reduce. The per-chunk switch is a **contract** value, not a profile one — the summary is folded into what is embedded, so turning it on invalidates an existing corpus — and it is off by default because it is the dominant ingest cost. |
 | Mentions / NER | Classical NER plus pattern identifiers, as facets and pivots. Pattern extraction needs no model and could ship first. |
 
 Recommended order: ~~fix the fingerprint gap~~ (done twice, the library version
@@ -298,6 +298,14 @@ compares against `docs/retrieval-baseline.json` and exits non-zero below it, wit
 a tolerance of 0.005 — kernels differ between machines and one query is 0.059 of
 recall@1, so a gate that fires on arithmetic noise is one a reader learns to
 ignore.
+
+Comparability is established over corpus identity, which the run reads from the
+context and the baseline records alongside its figures — two corpora built from
+different text handed to the embedder are not comparable however well the named
+settings agree. A baseline that states no corpus identity is reported as not
+comparable rather than compared on the settings it does state: a key the
+baseline does not record is otherwise skipped, which would have compared a run
+clean against a corpus it was never measured over.
 
 Judgements are keyed to a filename and a phrase, never to a chunk id — ids are
 minted afresh on every reingest — and a judgement may name alternatives, because
