@@ -275,12 +275,50 @@ Slice 1 took the leg that needed no model. Slice 2 — the extraction quality ga
 | ~~Cross-encoder rerank~~ | Built. The seam ships; no model does. Measured below. |
 | ~~Section-window expansion~~ | Built. A result's text is a window around the matched passage; the passage stays what is cited. |
 | ~~The summarization layer~~ | Built. Per-chunk contextual summaries folded into embed input, then a per-document map-reduce summary. The per-chunk switch is **corpus-coupled but lives in the profile**: the summariser's identity is *composed* into corpus identity exactly as `embedder` is, not declared in the `contract` block, because it is partly a hash of the shipped prompt and sampling parameters that no operator could know. Turning it on refuses an existing corpus; leaving it off keeps the identity string byte-identical, which is what lets the real corpus survive this change. Off by default because it is the dominant ingest cost. The per-document summary folds nothing, so it moves no vector and is outside corpus identity. |
-| Mentions / NER | Classical NER plus pattern identifiers, as facets and pivots. Pattern extraction needs no model and could ship first. |
+| ~~Mentions / NER~~ | Pattern identifiers built; the classical NER model is the seam, not shipped. Four extractors — email, phone, IBAN with a mod-97 check, and registration number anchored to a `ЄДРПОУ`/`ИНН`/`ІПН` keyword — run at ingest with no setting, and are written inside the transaction that writes the chunks. `case_mentions` inventories them; `case_search --mention` pivots on one. **A casefile ingested before this change has no mentions until it is reingested**, and an empty facet over an old casefile is indistinguishable from a corpus that genuinely contains none. That is not fixable by a migration — the mentions come from chunk text, so re-extracting them is a reingest. |
 
 Recommended order: ~~fix the fingerprint gap~~ (done twice, the library version
 then the embedder identity) → ~~OCR/VLM~~ (done) → ~~rerank and section-window
 together as a retrieval-quality slice~~ (done, measured, see below) →
-~~summaries~~ (done, see below), then mentions.
+~~summaries~~ (done) → ~~mentions~~ (done, see below). **Only PST remains in
+M3**, and `docs/design.md` § 10 still has its library choice open.
+
+## What mentions ship, and the one thing that will mislead an analyst
+
+Four pattern extractors behind a registry, run over every chunk at ingest with
+no setting to enable, written inside the transaction that writes the chunks.
+`case_mentions` inventories a casefile's identifiers with two counts —
+how many mentions and in how many documents, because forty mentions in one
+document is a different fact from one in each of forty. `case_search --mention`
+narrows to passages carrying one.
+
+**The filter is applied by the retrievers, not to their results**, and that is
+the whole of the implementation worth knowing. Both legs fetch
+`depth = limit * 5` candidates, so filtering their output would drop every
+matching passage that ranked below that depth unfiltered — and on a corpus of
+36,000 chunks the caller would be handed nothing while the store held exactly
+what they asked for, which reads as "this casefile does not mention that
+account". The predicate is inside the SQL of both legs, beside the casefile
+constraint that is there for the same reason.
+
+**Precision is the bar, and it cost a real false positive to find.** On a
+realistic letterhead, `ЄДРПОУ 12345678, тел. +380441234567` filed the telephone
+number as a second registration number, because the keyword sat 17 characters in
+front of it. Two local rules close it: a digit run preceded by `+` is a telephone
+number, and the keyword names the *next* number after it. The IBAN extractor
+validates mod-97 rather than matching a shape, because a shape match turns every
+product code into a bank account.
+
+**The thing that will mislead an analyst**, stated plainly because nothing in the
+tool can say it for us: a casefile ingested before this change has no mentions at
+all until it is reingested. Its facet is empty and a filtered search over it
+returns nothing, which is indistinguishable from a corpus that genuinely contains
+none. A migration cannot fix it — the mentions come from chunk text, so
+re-extracting them means re-chunking, which is a reingest. And even on a fresh
+ingest the facet is an inventory of what was *found*: an identifier written
+without its keyword, or with a transposed digit, is absent from it. The analyst
+pack's own rule that absence of evidence is not evidence of absence applies to
+this list exactly.
 
 **Retrieval quality is now measured**, which closes what this document called
 the single largest unaddressed gap in the project. What that measurement settles

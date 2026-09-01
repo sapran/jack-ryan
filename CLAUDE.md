@@ -125,6 +125,32 @@ same width, which nothing downstream can detect.
   broken by the passage's ordinal and text. An identifier decides only between
   two passages identical in both, where the order does not matter. Nothing else
   can be reproduced if this is not.
+- **A search filter goes inside the retrievers' SQL, never over their results.**
+  Both legs are asked for `depth = limit * 5` candidates, so filtering what they
+  return discards every matching passage that ranked below that depth
+  unfiltered. The caller is then handed nothing while the store holds exactly
+  what they asked for — and an empty result reads as "this casefile does not
+  mention that account", which is the most damaging wrong answer this tool can
+  give. The casefile constraint is inside both legs for the same reason and its
+  comment makes the same argument; put any new predicate beside it. Filtering
+  there also keeps it before fusion, so reranking still only reorders what
+  fusion produced, and keeps it out of the scoring path entirely — a filter that
+  touched the score would be a third retriever wearing a filter's name.
+- **An unknown facet kind is an error naming the kinds, never an empty result.**
+  `--mention passport:123` must refuse. An empty list tells the analyst the
+  casefile contains no such identifier, which is a different claim and a false
+  one. Same reasoning as refusing text that is punctuation alone rather than
+  treating it as empty.
+- **A mention extractor earns its place by precision, not coverage.** The IBAN
+  extractor validates mod-97 rather than matching a shape; the
+  registration-number extractor requires a `ЄДРПОУ`/`ИНН`/`ІПН` keyword before
+  the digits. A bare eight-digit regex returns every date and page number in the
+  corpus, and a facet dominated by false matches costs an analyst more than an
+  absent one — they scroll past it once and never open it again. If an extractor
+  cannot meet that bar, drop it rather than loosen it. Digits are `[0-9]`, never
+  `\d`, which in Python also matches Arabic-Indic digits and would put two
+  incomparable spellings of one digit into a normalised form that exists to be
+  compared.
 - **Retrieval settings are profile and leave no residue.** `reranker_model`,
   `rerank_depth` and `window_max_chars` are read at query time and write nothing
   — no vector, no chunk, no stored text — so no store is ever refused for them.

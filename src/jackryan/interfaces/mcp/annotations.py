@@ -30,6 +30,7 @@ ANNOTATIONS: dict[str, Stamp] = {
     "case_get_passage": Stamp(read_only=True, destructive=False, open_world=False),
     "case_read_document": Stamp(read_only=True, destructive=False, open_world=False),
     "case_cite": Stamp(read_only=True, destructive=False, open_world=False),
+    "case_mentions": Stamp(read_only=True, destructive=False, open_world=False),
 }
 
 

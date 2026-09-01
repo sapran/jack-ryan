@@ -19,7 +19,7 @@ from pathlib import Path
 import sqlite_vec
 
 from ..errors import ConfigError, ConflictError
-from .port import Casefile, Chunk, Document
+from .port import Casefile, Chunk, Document, Mention, MentionFacet
 
 _BASELINE_VERSION = 4
 """The shape `_SCHEMA` below creates. Frozen — see the warning on `_SCHEMA`."""
@@ -156,6 +156,38 @@ _STEPS: tuple[_Step, ...] = (
             "ALTER TABLE documents ADD COLUMN summary_by TEXT NOT NULL DEFAULT ''",
         ),
     ),
+    # This table's cascade needs no trigger, and the difference from the two
+    # sidecars is worth stating because the trigger above it looks like the
+    # house rule. `chunks.id` is `TEXT NOT NULL UNIQUE`, which SQLite accepts as
+    # a foreign-key parent, and `PRAGMA foreign_keys=ON` is set in `initialize`,
+    # so deleting a chunk — or the document or the casefile above it — deletes
+    # its mentions. `_SIDECAR_TRIGGER` exists only because `chunks_fts` and
+    # `chunk_vectors` are virtual tables, which never observe a cascade at all;
+    # a real table does. So this step adds no trigger, and touches neither that
+    # one nor the FTS column list it names.
+    _Step(
+        to_version=7,
+        reason="mentions are extracted at ingest so identifiers can be faceted and pivoted on",
+        statements=(
+            "CREATE TABLE IF NOT EXISTS mentions ("
+            " chunk_id TEXT NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,"
+            " document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,"
+            " casefile_id TEXT NOT NULL REFERENCES casefiles(id) ON DELETE CASCADE,"
+            " kind TEXT NOT NULL, value TEXT NOT NULL, normalised TEXT NOT NULL,"
+            " char_start INTEGER NOT NULL, char_end INTEGER NOT NULL,"
+            # Where the identifier sits in the document, as opposed to in the
+            # chunk. Chunks overlap by the contract's overlap, so one textual
+            # occurrence near a boundary is extracted from two chunks; counting
+            # rows would then report it twice and "how many times it was
+            # mentioned" would be wrong by the overlap. The facet counts
+            # distinct (document, offset) pairs instead.
+            " document_offset INTEGER NOT NULL DEFAULT 0,"
+            " extractor TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 1.0)",
+            "CREATE INDEX IF NOT EXISTS idx_mentions_facet ON mentions(casefile_id, kind, normalised)",
+            "CREATE INDEX IF NOT EXISTS idx_mentions_pivot ON mentions(casefile_id, normalised)",
+            "CREATE INDEX IF NOT EXISTS idx_mentions_chunk ON mentions(chunk_id)",
+        ),
+    ),
 )
 """The ladder, in order. Every step may only ADD.
 
@@ -211,6 +243,45 @@ _FTS_TOKEN = re.compile(r"[\w\u0400-\u04FF]+", re.UNICODE)
 
 def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _mention_filter(
+    column: str, casefile_id: str, mention_kind: str, mention_value: str
+) -> tuple[str, tuple[str, ...]]:
+    """The clause that confines a search to passages carrying one identifier.
+
+    Returned as a fragment and its parameters rather than as finished SQL. Only
+    the *shape* of the clause varies — whether it is there at all, and whether
+    it names a kind — and only the shape is composed. The identifier itself
+    reaches SQLite as a bound parameter, so a value carrying a quote or a
+    semicolon is matched rather than parsed.
+
+    `column` names the chunk id in the query being assembled: `c.id` where
+    `chunks` is joined under an alias, `id` where the clause sits inside a
+    subquery already selecting from it. It is a literal from this module and
+    never comes from a caller.
+
+    An empty `mention_value` is no filter, including when a kind was named.
+    Validating that combination belongs to the service layer, where the kinds
+    are known; the store applies what it is given rather than forming an opinion
+    of its own about it.
+
+    The casefile is repeated inside the subquery although the query around it is
+    already confined to one. It is the leading column of both mention indexes,
+    and without it neither is usable — which turns the one read this table exists
+    for into a scan of every mention in the store.
+    """
+    if not mention_value:
+        return "", ()
+    clause = (
+        f" AND {column} IN (SELECT chunk_id FROM mentions"
+        " WHERE casefile_id = ? AND normalised = ?"
+    )
+    parameters = (casefile_id, mention_value)
+    if mention_kind:
+        clause += " AND kind = ?"
+        parameters += (mention_kind,)
+    return clause + ")", parameters
 
 
 def _row_to_document(row: sqlite3.Row) -> Document:
@@ -754,12 +825,20 @@ class SqliteStore:
     # -- chunks ------------------------------------------------------------
 
     def replace_chunks(
-        self, document_id: str, chunks: list[Chunk], embeddings: list[list[float]]
+        self,
+        document_id: str,
+        chunks: list[Chunk],
+        embeddings: list[list[float]],
+        mentions: list[Mention],
     ) -> None:
-        """Replace a document's chunks, full-text entries, and vectors atomically.
+        """Replace a document's chunks, full-text entries, vectors and mentions.
 
-        One transaction covers all three, so a chunk whose text is stored
-        without its vector is not a state the store can be left in.
+        One transaction covers all four, so a chunk whose text is stored without
+        its vector is not a state the store can be left in — and neither is a
+        mention pointing at a chunk from the ingest before this one. A mention
+        naming a chunk that is not among those being written violates its foreign
+        key, which fails the whole call rather than storing a reference nothing
+        can resolve.
         """
         if len(chunks) != len(embeddings):
             raise ValueError("each chunk must have exactly one embedding")
@@ -806,6 +885,68 @@ class SqliteStore:
                         "INSERT INTO chunk_vectors(rowid, embedding) VALUES (?, ?)",
                         (rowid, json.dumps(list(embedding))),
                     )
+                # After the chunks and not before: `mentions.chunk_id` is a
+                # foreign key onto `chunks.id`, the constraint is immediate, and
+                # a mention inserted first would have no parent to reference.
+                # `executemany`, because nothing has to be read back per row —
+                # unlike the chunk inserts above, each of which needs its own
+                # rowid in order to address the two sidecars.
+                #
+                # `document_id`, `casefile_id` and the document offset are taken
+                # from the chunk this mention names, not from the mention itself.
+                # The foreign keys prove only that those ids exist somewhere;
+                # nothing makes them agree with the chunk. A row whose
+                # denormalised casefile disagreed would appear in another
+                # casefile's inventory — a compartment breach, and a casefile is
+                # the compartment. Reviewed and demonstrated: a mention naming a
+                # chunk in one casefile and a `casefile_id` in another was
+                # accepted, and the second casefile's facet then advertised an
+                # identifier that existed only in the first's text. Deriving them
+                # here makes that unreachable rather than merely unused, which
+                # matters because this registry is advertised as the seam a
+                # second, model-backed producer arrives through.
+                by_id = {chunk.id: chunk for chunk in chunks}
+                rows = []
+                for mention in mentions:
+                    parent = by_id.get(mention.chunk_id)
+                    if parent is None:
+                        # Named a chunk that is not being written. The foreign
+                        # key would refuse it; refused here instead so the
+                        # message names the mention rather than the constraint.
+                        raise ConfigError(
+                            f"a {mention.kind} mention names chunk "
+                            f"{mention.chunk_id!r}, which is not among the "
+                            f"{len(chunks)} chunks being written for this document"
+                        )
+                    rows.append(
+                        (
+                            mention.chunk_id,
+                            parent.document_id,
+                            parent.casefile_id,
+                            mention.kind,
+                            mention.value,
+                            mention.normalised,
+                            mention.char_start,
+                            mention.char_end,
+                            # Where this identifier sits in the *document*, so a
+                            # facet can count textual occurrences rather than
+                            # rows. Chunks overlap by the contract's overlap, so
+                            # an identifier near a boundary is extracted from two
+                            # chunks of one document and would otherwise be
+                            # counted twice — making "how many times it was
+                            # mentioned" wrong by exactly the overlap.
+                            parent.char_start + mention.char_start,
+                            mention.extractor,
+                            mention.confidence,
+                        )
+                    )
+                db.executemany(
+                    "INSERT INTO mentions (chunk_id, document_id, casefile_id, kind,"
+                    " value, normalised, char_start, char_end, document_offset,"
+                    " extractor, confidence)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
                 db.commit()
             except Exception:
                 db.rollback()
@@ -876,45 +1017,134 @@ class SqliteStore:
 
     # -- retrieval ---------------------------------------------------------
 
-    def search_keyword(self, casefile_id: str, query: str, limit: int) -> list[str]:
+    def search_keyword(
+        self,
+        casefile_id: str,
+        query: str,
+        limit: int,
+        mention_kind: str = "",
+        mention_value: str = "",
+    ) -> list[str]:
         """Rank chunks by full-text relevance, returning chunk ids in order.
 
         Every term is quoted so that user text is matched as words rather than
         interpreted as FTS5 operators.
+
+        A mention filter is applied inside this query, never to the ids it
+        returns. The caller asks for a bounded number of candidates, so removing
+        the non-matching ones afterwards would discard every matching chunk that
+        ranked below that depth unfiltered — on a corpus of any size, nearly all
+        of them. The caller would then be told that nothing carries the
+        identifier while the store held exactly what it asked for, which is the
+        one wrong answer an evidence tool must not give.
         """
         terms = [t for t in _FTS_TOKEN.findall(query) if t]
         if not terms:
             return []
         match = " OR ".join(f'"{t}"' for t in terms)
+        predicate, carrying = _mention_filter(
+            "c.id", casefile_id, mention_kind, mention_value
+        )
         with self._lock:
             rows = self._db.execute(
                 "SELECT c.id AS id FROM chunks_fts f"
                 " JOIN chunks c ON c.rowid = f.rowid"
                 " WHERE chunks_fts MATCH ? AND c.casefile_id = ?"
+                f"{predicate}"
                 " ORDER BY bm25(chunks_fts) LIMIT ?",
-                (match, casefile_id, int(limit)),
+                (match, casefile_id, *carrying, int(limit)),
             ).fetchall()
         return [row["id"] for row in rows]
 
-    def search_vector(self, casefile_id: str, embedding: list[float], limit: int) -> list[str]:
+    def search_vector(
+        self,
+        casefile_id: str,
+        embedding: list[float],
+        limit: int,
+        mention_kind: str = "",
+        mention_value: str = "",
+    ) -> list[str]:
         """Rank chunks by vector distance, returning chunk ids nearest first."""
         if len(embedding) != self._dimensions:
             raise ConfigError(
                 f"query embedding has width {len(embedding)} but the contract declares "
                 f"{self._dimensions}"
             )
+        predicate, carrying = _mention_filter(
+            "id", casefile_id, mention_kind, mention_value
+        )
         with self._lock:
             # The casefile constraint goes inside the MATCH, so the nearest
             # neighbours are the nearest *in this casefile*. Filtering after a
             # global KNN would silently lose hits whenever another casefile
             # owned the top of the list.
+            #
+            # The mention filter sits in the same subquery, beside it, because it
+            # is the same argument: the KNN returns a bounded number of
+            # neighbours, so a filter applied to what it returned loses every
+            # match that was not already among the nearest overall. Both decide
+            # which vectors are candidates, and neither touches how the
+            # candidates rank.
             rows = self._db.execute(
                 "SELECT c.id AS id FROM ("
                 "  SELECT rowid, distance FROM chunk_vectors"
                 "  WHERE embedding MATCH ?"
-                "    AND rowid IN (SELECT rowid FROM chunks WHERE casefile_id = ?)"
+                "    AND rowid IN (SELECT rowid FROM chunks WHERE casefile_id = ?"
+                f"{predicate})"
                 "  ORDER BY distance LIMIT ?"
                 ") v JOIN chunks c ON c.rowid = v.rowid ORDER BY v.distance",
-                (json.dumps(list(embedding)), casefile_id, int(limit)),
+                (json.dumps(list(embedding)), casefile_id, *carrying, int(limit)),
             ).fetchall()
         return [row["id"] for row in rows]
+
+    # -- mentions ----------------------------------------------------------
+
+    def mention_facets(
+        self, casefile_id: str, kind: str, limit: int
+    ) -> list[MentionFacet]:
+        """Count a casefile's identifiers, most mentioned first.
+
+        One GROUP BY, counted in the database: fetching a casefile's mentions in
+        order to count them in Python costs the whole table in memory for a
+        handful of integers, and the service layer holds no SQL.
+
+        The order is made total deliberately. The mention count decides it, and
+        where two identifiers were mentioned equally often the normalised value
+        and then the kind decide the rest. Left at the count alone, two equal
+        entries would come back in whatever order the query plan happened to
+        produce, and anything comparing this list with a previous one — a test,
+        or a surface showing a table an analyst expects to be the same between
+        two looks — would disagree with itself for no reason it could see.
+
+        `mentions` counts distinct textual occurrences, not rows. Chunks overlap
+        by the contract's overlap, so an identifier near a boundary is extracted
+        from two chunks of one document and `COUNT(*)` reported it twice — which
+        made "how many times it was mentioned" wrong by exactly the overlap, and
+        wrong invisibly, since nothing in the number said which occurrences were
+        the same one seen twice. Counting distinct `(document_id,
+        document_offset)` pairs is exact: one occurrence has one offset in its
+        document however many chunks it lands in.
+        """
+        clause = " AND kind = ?" if kind else ""
+        selection = (casefile_id, kind) if kind else (casefile_id,)
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT kind, normalised AS value,"
+                "       COUNT(DISTINCT document_id || ':' || document_offset) AS mentions,"
+                "       COUNT(DISTINCT document_id) AS documents"
+                " FROM mentions"
+                f" WHERE casefile_id = ?{clause}"
+                " GROUP BY kind, normalised"
+                " ORDER BY mentions DESC, value, kind"
+                " LIMIT ?",
+                (*selection, int(limit)),
+            ).fetchall()
+        return [
+            MentionFacet(
+                kind=row["kind"],
+                value=row["value"],
+                mentions=row["mentions"],
+                documents=row["documents"],
+            )
+            for row in rows
+        ]

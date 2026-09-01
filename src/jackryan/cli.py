@@ -159,6 +159,21 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("casefile")
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=10)
+    search.add_argument(
+        "--mention",
+        default="",
+        metavar="KIND:VALUE",
+        help=(
+            "narrow to passages carrying an identifier; a bare value matches any kind"
+        ),
+    )
+
+    mentions = sub.add_parser(
+        "mentions", help="the identifiers a casefile contains, counted"
+    )
+    mentions.add_argument("casefile")
+    mentions.add_argument("--kind", default="", help="one identifier kind, or all")
+    mentions.add_argument("--limit", type=int, default=50)
 
     document = sub.add_parser("document", help="inspect ingested documents").add_subparsers(
         dest="document_command", required=True
@@ -244,7 +259,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1 if report.failed and not report.ingested else 0
 
         if args.command == "search":
-            hits = context.search.search(args.casefile, args.query, args.limit)
+            hits = context.search.search(
+                args.casefile, args.query, args.limit, args.mention
+            )
             if args.json:
                 _print([_render_hit(h) for h in hits], True, "")
             elif not hits:
@@ -260,6 +277,35 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"{i}. {hit.document.filename}{where}  [{hit.chunk.short_id}]")
                     body = " ".join(hit.text.split())
                     print(f"   {body[:180]}{'…' if len(body) > 180 else ''}\n")
+            return 0
+
+        if args.command == "mentions":
+            facets = context.search.mention_facets(
+                args.casefile, args.kind, args.limit
+            )
+            rows = [
+                {
+                    "kind": f.kind,
+                    "value": f.value,
+                    "mentions": f.mentions,
+                    "documents": f.documents,
+                }
+                for f in facets
+            ]
+            if args.json:
+                _print(rows, True, "")
+            elif not rows:
+                # Said as "none found", never as "none present": the shipped
+                # extractors prefer precision, and a casefile ingested before
+                # mentions existed has none until it is reingested.
+                print("No identifiers extracted from this casefile.")
+            else:
+                print(f"{'mentions':>8}  {'docs':>5}  {'kind':<20} value")
+                for row in rows:
+                    print(
+                        f"{row['mentions']:>8}  {row['documents']:>5}  "
+                        f"{row['kind']:<20} {row['value']}"
+                    )
             return 0
 
         if args.command == "document":

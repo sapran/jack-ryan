@@ -24,7 +24,9 @@ from ..ingestion.chunker import chunk_text
 from ..ingestion.extractors import ExtractionError
 from ..ingestion.quality_gate import QualityGate
 from ..ingestion.router import FormatRouter
-from ..storage.port import Chunk, Document, StorePort
+from ..mentions import default_extractors
+from ..mentions.port import MentionExtractor
+from ..storage.port import Chunk, Document, Mention, StorePort
 from ..summarising.port import SummariserPort, SummaryError
 from .casefiles import CasefileService
 
@@ -102,6 +104,7 @@ class IngestionService:
         gate: QualityGate | None = None,
         summariser: SummariserPort | None = None,
         chunk_summaries: bool = False,
+        extractors: list[MentionExtractor] | None = None,
     ) -> None:
         if router is not None and gate is not None:
             raise ValueError(
@@ -120,6 +123,11 @@ class IngestionService:
         # identity string could disagree, the store would be enforcing a rule the
         # pipeline was not following.
         self._fold_summaries = bool(chunk_summaries and summariser is not None)
+        # Injectable for the same reason the gate and the embedder are: so a test
+        # can drive one extractor rather than build a document that happens to
+        # exercise all four. Absent, the shipped registry — which is where
+        # selection lives, so adding an extractor is registering one.
+        self._extractors = default_extractors() if extractors is None else extractors
         self._router = router or FormatRouter(gate=gate)
         # Held as limits rather than as a live budget: each ingest spends its
         # own. Injectable so a deployment can tune a ceiling without editing
@@ -379,7 +387,7 @@ class IngestionService:
             # never ingested and the report still claiming to be complete. Every
             # other per-document failure in this method leaves nothing behind,
             # and this one now matches them.
-            prepared, embeddings, document_summary = self._prepare_chunks(document)
+            prepared, embeddings, mentions, document_summary = self._prepare_chunks(document)
             document = replace(
                 document,
                 summary=document_summary,
@@ -387,7 +395,10 @@ class IngestionService:
             )
 
             stored = self._store.upsert_document(document)
-            self._store.replace_chunks(stored.id, prepared, embeddings)
+            # Mentions travel with the chunks rather than in a later call:
+            # `replace_chunks` mints every chunk id afresh, so a separate write
+            # afterwards would attach them to rows that had just been replaced.
+            self._store.replace_chunks(stored.id, prepared, embeddings, mentions)
             return (
                 IngestOutcome(
                     path=str(work.path),
@@ -426,14 +437,14 @@ class IngestionService:
 
     def _prepare_chunks(
         self, document: Document
-    ) -> tuple[list[Chunk], list[list[float]], str]:
-        """Chunk, summarise and embed a document, writing nothing.
+    ) -> tuple[list[Chunk], list[list[float]], list[Mention], str]:
+        """Chunk, summarise, embed and read a document, writing nothing.
 
-        Returns the chunks, their embeddings, and the document's summary — which
-        is empty whenever no summariser is configured. Deliberately free of
-        writes: every fallible step of a document's ingest happens here, so the
-        caller can persist only once all of them have succeeded and a failed
-        document leaves nothing behind.
+        Returns the chunks, their embeddings, the mentions found in them, and the
+        document's summary — which is empty whenever no summariser is configured.
+        Deliberately free of writes: every fallible step of a document's ingest
+        happens here, so the caller can persist only once all of them have
+        succeeded and a failed document leaves nothing behind.
         """
         pieces = chunk_text(
             document.extracted_text,
@@ -484,7 +495,40 @@ class IngestionService:
         ]
         embeddings = self._embedder.embed_documents(embed_input)
 
-        return chunks, embeddings, self._document_summary(chunks)
+        return chunks, embeddings, self._mentions(chunks), self._document_summary(chunks)
+
+    def _mentions(self, chunks: list[Chunk]) -> list[Mention]:
+        """Every identifier the registry finds in these chunks.
+
+        Read from `chunk.text` rather than from the document's extracted text, so
+        a mention's offsets address the chunk that a citation resolves to. The
+        same identifier in two overlapping chunks is two mentions; counting them
+        is the facet's job, not this one's.
+
+        Gated on nothing. Four compiled patterns over a document's chunks cost
+        milliseconds and reach no endpoint, and a facet nobody switched on is a
+        facet nobody has. The absence of a switch is also deliberate the other
+        way round: an extractor that turns out to be noisy has to be fixed or
+        dropped, and a setting would let it survive instead.
+        """
+        found: list[Mention] = []
+        for chunk in chunks:
+            for extractor in self._extractors:
+                for hit in extractor.find(chunk.text):
+                    found.append(
+                        Mention(
+                            chunk_id=chunk.id,
+                            document_id=chunk.document_id,
+                            casefile_id=chunk.casefile_id,
+                            kind=extractor.kind,
+                            value=hit.value,
+                            normalised=hit.normalised,
+                            char_start=hit.char_start,
+                            char_end=hit.char_end,
+                            extractor=extractor.name,
+                        )
+                    )
+        return found
 
     def _document_summary(self, chunks: list[Chunk]) -> str:
         """One summary of the whole document, or empty when none is configured.

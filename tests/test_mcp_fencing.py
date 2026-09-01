@@ -360,6 +360,7 @@ async def test_no_agent_search_surface_carries_a_chunk_summary(context, server):
         chunks[0].document_id,
         [replace(chunks[0], summary="A passage, condensed by a model.")],
         [context.embedder.embed_documents([chunks[0].text])[0]],
+        [],
     )
     reloaded = context.store.get_chunks([chunks[0].id])
     assert reloaded and reloaded[chunks[0].id].summary, (
