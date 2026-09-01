@@ -112,6 +112,16 @@ class Contract:
         return "|".join(parts)
 
 
+MAX_SUMMARY_CONCURRENCY = 64
+"""The most chunk-summary requests one document may have in flight.
+
+A ceiling rather than a clamp, so a mistyped value is reported instead of
+silently reduced. Sixty-four is well above anything a single local endpoint
+serves usefully and well below the point where the threads and sockets become
+the problem — it is there to catch an extra zero, not to tune throughput.
+"""
+
+
 @dataclass(frozen=True)
 class Profile:
     """Swappable infrastructure for one deployment shape."""
@@ -268,6 +278,10 @@ class Profile:
     Per document rather than per run, because a document's chunks are summarised
     together with the document they came from: this is the width of that one
     fan-out and not a budget spread across the ingest.
+
+    Ceilinged at `MAX_SUMMARY_CONCURRENCY`, because this value sizes a thread pool
+    and a connection pool rather than describing a preference: a mistyped extra
+    zero would be threads and sockets rather than a slightly wrong result.
     """
 
     summary_timeout_seconds: int = 60
@@ -624,6 +638,7 @@ def _select_profile(document: dict[str, Any]) -> Profile:
             name,
             "summary_concurrency",
             Profile.summary_concurrency,
+            maximum=MAX_SUMMARY_CONCURRENCY,
         ),
         summary_timeout_seconds=_validated_positive(
             settings.get("summary_timeout_seconds"),
@@ -749,7 +764,9 @@ def _validated_floor(value: Any, profile: str) -> int:
     return floor
 
 
-def _validated_positive(value: Any, profile: str, key: str, default: int) -> int:
+def _validated_positive(
+    value: Any, profile: str, key: str, default: int, maximum: int | None = None
+) -> int:
     """A whole number of at least one, refused rather than coerced.
 
     Zero is the interesting case. It reads as "no limit" and would behave as its
@@ -757,6 +774,13 @@ def _validated_positive(value: Any, profile: str, key: str, default: int) -> int
     quiet misconfiguration this loader exists to refuse. A fractional value is
     refused for the same reason `min_chars_per_page` refuses one: `int(0.5)` is
     zero and reaches the same place by another route.
+
+    `maximum` is for a value that buys a resource rather than describing one.
+    Most settings here have no sensible ceiling — a wider result window is only
+    ever a preference — but `summary_concurrency` sizes a thread pool *and* a
+    connection pool, so a mistyped `summary_concurrency: 10000` would be accepted
+    at load and become ten thousand threads and sockets at the first document.
+    Refused at load, where the message can name the setting.
     """
     if value is None:
         return default
@@ -773,6 +797,12 @@ def _validated_positive(value: Any, profile: str, key: str, default: int) -> int
             f"profile {profile!r} sets {key}={number}. A value below one disables the "
             "setting while reading as though it removed a limit; leave the key out to "
             "take the default."
+        )
+    if maximum is not None and number > maximum:
+        raise ConfigError(
+            f"profile {profile!r} sets {key}={number}, above the ceiling of {maximum}. "
+            "This value sizes a thread pool and a connection pool, so a larger number "
+            "buys no throughput and costs threads and sockets at the first document."
         )
     return number
 

@@ -274,7 +274,7 @@ Slice 1 took the leg that needed no model. Slice 2 — the extraction quality ga
 |---|---|
 | ~~Cross-encoder rerank~~ | Built. The seam ships; no model does. Measured below. |
 | ~~Section-window expansion~~ | Built. A result's text is a window around the matched passage; the passage stays what is cited. |
-| ~~The summarization layer~~ | Built. Per-chunk contextual summaries folded into embed input, then a per-document map-reduce summary. The per-chunk switch is **corpus-coupled but lives in the profile**: the summariser's identity is *composed* into corpus identity exactly as `embedder` is, not declared in the `contract` block, because it is partly a hash of the shipped prompt and sampling parameters that no operator could know. Turning it on refuses an existing corpus; leaving it off keeps the identity string byte-identical, which is what lets the `bauman4` corpus survive this change. Off by default because it is the dominant ingest cost. The per-document summary folds nothing, so it moves no vector and is outside corpus identity. |
+| ~~The summarization layer~~ | Built. Per-chunk contextual summaries folded into embed input, then a per-document map-reduce summary. The per-chunk switch is **corpus-coupled but lives in the profile**: the summariser's identity is *composed* into corpus identity exactly as `embedder` is, not declared in the `contract` block, because it is partly a hash of the shipped prompt and sampling parameters that no operator could know. Turning it on refuses an existing corpus; leaving it off keeps the identity string byte-identical, which is what lets the real corpus survive this change. Off by default because it is the dominant ingest cost. The per-document summary folds nothing, so it moves no vector and is outside corpus identity. |
 | Mentions / NER | Classical NER plus pattern identifiers, as facets and pivots. Pattern extraction needs no model and could ship first. |
 
 Recommended order: ~~fix the fingerprint gap~~ (done twice, the library version
@@ -295,7 +295,7 @@ OpenAI-compatible implementation, the fold into embed input behind
 `chunk_summaries`, and per-document summaries. Schema 6 adds `chunks.summary`,
 `documents.summary` and `documents.summary_by`.
 
-**The `bauman4` corpus survived it.** With the fold off, `corpus_fingerprint`
+**The real corpus survived it.** With the fold off, `corpus_fingerprint`
 produces the identity string that store already recorded, byte for byte, because
 the `|summariser=` component is appended only when folding is on. Verified
 against a copy of the real 435 MB file: it migrated 5 → 6, opened, kept all
@@ -308,7 +308,7 @@ It is opt-in and the read stack still runs offline with zero configured
 endpoints.
 
 **A reasoning model needs thinking off, and the request now says so.** Against
-the gdx boxes' Qwen3.8-27B, the first end-to-end run failed two documents: the
+a local Qwen3 endpoint, the first end-to-end run failed two documents: the
 model spent the recipe's whole 200-token budget on `reasoning_content` and
 returned an empty context. The fail-closed policy caught it — those documents
 failed rather than being embedded bare — but the fix is

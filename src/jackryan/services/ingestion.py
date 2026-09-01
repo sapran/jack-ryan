@@ -174,6 +174,22 @@ class IngestionService:
         # noticing and reingesting.
         self._router.gate.verify()
 
+        # The summariser gets the same treatment, and for a sharper reason: this
+        # is the one request in the run that carries no evidence. `check` sends a
+        # one-token probe, so it establishes that the endpoint answers, accepts
+        # the credential and knows the model *before* the first document's text
+        # leaves the machine. Without it the first thing a wrong endpoint
+        # receives is corpus text, and it receives it once per chunk for the
+        # whole casefile.
+        #
+        # Fatal for the run rather than per document, because it is a
+        # misconfiguration: `SummariserUnavailable` is a `ConfigError` and is
+        # deliberately not caught by `_ingest_work`. A thousand identical
+        # per-document failures report one setting a thousand times and fix it
+        # none of them.
+        if self._summariser is not None:
+            self._summariser.check()
+
         depth, descendants, extracted = self._limits
         budget = ExpansionBudget(
             max_depth=depth,
@@ -347,28 +363,37 @@ class IngestionService:
                 containment_path=work.containment_path,
                 identity_path=identity_path,
             )
+            # Everything that can fail happens before anything is written.
+            #
+            # `document.id` is already settled above — it is the existing row's
+            # id on a reingest and a fresh one otherwise — so chunking and
+            # summarising need no stored row, and `upsert_document` keeps the id
+            # it is given. That is what lets the whole fallible sequence run
+            # first.
+            #
+            # It has to be this way round. Persisting first and summarising after
+            # meant a summariser failure reported the document as failed while
+            # its row, its text and its chunks were already committed and
+            # searchable — and, because a failed document is not expanded, an
+            # archive whose summary failed was stored with its entries silently
+            # never ingested and the report still claiming to be complete. Every
+            # other per-document failure in this method leaves nothing behind,
+            # and this one now matches them.
+            prepared, embeddings, document_summary = self._prepare_chunks(document)
+            document = replace(
+                document,
+                summary=document_summary,
+                summary_by=self._summariser.name if document_summary else "",
+            )
+
             stored = self._store.upsert_document(document)
-            count, document_summary = self._rebuild_chunks(stored)
-            if document_summary:
-                # A second upsert rather than a reordered flow. The document
-                # summary is built from the chunks, so it cannot be known before
-                # chunking, and moving chunking above the first upsert would make
-                # `_rebuild_chunks` depend on a document that is not yet stored —
-                # reordering the extract/persist sequence that document identity
-                # and reuse-on-reingest rest on, to save one statement.
-                stored = self._store.upsert_document(
-                    replace(
-                        stored,
-                        summary=document_summary,
-                        summary_by=self._summariser.name if self._summariser else "",
-                    )
-                )
+            self._store.replace_chunks(stored.id, prepared, embeddings)
             return (
                 IngestOutcome(
                     path=str(work.path),
                     status="reingested" if existing else "ingested",
                     document_id=stored.id,
-                    chunks=count,
+                    chunks=len(prepared),
                     containment_path=work.containment_path,
                 ),
                 stored,
@@ -399,12 +424,16 @@ class IngestionService:
                 None,
             )
 
-    def _rebuild_chunks(self, document: Document) -> tuple[int, str]:
-        """Rebuild a document's chunks and vectors, and summarise it.
+    def _prepare_chunks(
+        self, document: Document
+    ) -> tuple[list[Chunk], list[list[float]], str]:
+        """Chunk, summarise and embed a document, writing nothing.
 
-        Returns the chunk count and the document's summary, which is empty
-        whenever no summariser is configured. The summary is returned rather
-        than written here so that this method keeps owning chunking alone.
+        Returns the chunks, their embeddings, and the document's summary — which
+        is empty whenever no summariser is configured. Deliberately free of
+        writes: every fallible step of a document's ingest happens here, so the
+        caller can persist only once all of them have succeeded and a failed
+        document leaves nothing behind.
         """
         pieces = chunk_text(
             document.extracted_text,
@@ -445,18 +474,17 @@ class IngestionService:
             ]
 
         # The fold, and the whole corpus-coupling argument in two expressions:
-        # the embedder is given the summary and the text, `replace_chunks` below
-        # is given the text alone. A folded corpus and a bare one therefore hold
-        # identical `chunks.text` and different vectors, which is why the
-        # summariser's identity has to be in the corpus identity the store
+        # the embedder is given the summary and the text, and the caller's
+        # `replace_chunks` is given the text alone. A folded corpus and a bare one
+        # therefore hold identical `chunks.text` and different vectors, which is
+        # why the summariser's identity has to be in the corpus identity the store
         # enforces — and why `chunks.summary` records what was folded in.
         embed_input = [
             f"{c.summary}\n\n{c.text}" if c.summary else c.text for c in chunks
         ]
         embeddings = self._embedder.embed_documents(embed_input)
-        self._store.replace_chunks(document.id, chunks, embeddings)
 
-        return len(chunks), self._document_summary(chunks)
+        return chunks, embeddings, self._document_summary(chunks)
 
     def _document_summary(self, chunks: list[Chunk]) -> str:
         """One summary of the whole document, or empty when none is configured.

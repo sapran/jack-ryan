@@ -33,6 +33,7 @@ from jackryan.summarising.model import (
     DOCUMENT_PROMPT,
     RECIPE_FINGERPRINT,
     SUMMARY_DOCUMENT_CHARS,
+    SUMMARY_ENABLE_THINKING,
     SUMMARY_MAX_TOKENS,
     SUMMARY_PROMPT,
     SUMMARY_TEMPERATURE,
@@ -197,6 +198,10 @@ _RECIPE_EDITS = {
         "SUMMARY_TEMPERATURE = 0.0",
         "SUMMARY_TEMPERATURE = 0.7",
     ),
+    "whether the model is asked to think first": (
+        "SUMMARY_ENABLE_THINKING = False",
+        "SUMMARY_ENABLE_THINKING = True",
+    ),
 }
 
 
@@ -230,7 +235,7 @@ def _fingerprint_after(original: str, edited: str) -> str:
 
 
 def test_the_recipe_fingerprint_is_the_hash_of_the_recipe_and_of_each_component():
-    """The legible half: what the identity is, and that all four parts are in it.
+    """The legible half: what the identity is, and that all five parts are in it.
 
     Faster to read than the re-execution below and it fails on the same defect,
     naming which component vanished from the join. The re-execution is what makes
@@ -248,6 +253,9 @@ def test_the_recipe_fingerprint_is_the_hash_of_the_recipe_and_of_each_component(
         ),
         "the token ceiling on one context": f"max_tokens={SUMMARY_MAX_TOKENS}",
         "the sampling temperature": f"temperature={SUMMARY_TEMPERATURE}",
+        "whether the model is asked to think first": (
+            f"enable_thinking={SUMMARY_ENABLE_THINKING}"
+        ),
     }
     for what, rendered in components.items():
         assert rendered in _RECIPE, (
@@ -793,6 +801,216 @@ def test_a_named_summariser_with_no_endpoint_is_fatal_and_names_both_settings(co
     )
 
 
+def test_an_unreachable_endpoint_stops_the_run_before_any_document_is_sent(
+    config, gate, corpus
+):
+    """The real summariser against a closed port must be fatal, not per document.
+
+    The stub-based test above proves the ingest loop's type split; it cannot
+    prove that the shipped implementation ever produces a `ConfigError` when an
+    endpoint is unreachable. It did not: `check()` was defined, documented as the
+    control, and never called from any production path, so first contact happened
+    inside `_post` and arrived as a per-document `SummaryError`. The run then
+    completed with every document failed — and on a real casefile that is one
+    identical failure per document, each of which had already sent the endpoint a
+    document's text before failing.
+
+    `check()` is the one request in a run that carries no evidence, which is why
+    it has to come first.
+    """
+    closed = _with_profile(
+        config,
+        summary_model="probe",
+        llm_url="http://127.0.0.1:1/v1",
+        chunk_summaries=True,
+    )
+    ctx = build_context(
+        closed, embedder=DeterministicEmbedder(TEST_DIMENSIONS), gate=gate
+    )
+    try:
+        casefile = ctx.casefiles.create("Unreachable")
+        with pytest.raises(ConfigError) as raised:
+            ctx.ingestion.ingest(casefile.short_id, corpus)
+
+        message = str(raised.value)
+        assert "summary_model" in message and "llm_url" in message, (
+            "the refusal must name both settings, as the reranker's does: "
+            f"{message!r}"
+        )
+        assert ctx.store.casefile_statistics(casefile.id)["documents"] == 0, (
+            "the run stored a document before failing, so the endpoint was sent "
+            "evidence before it was established that it answers at all"
+        )
+    finally:
+        ctx.close()
+
+
+def test_the_endpoint_named_in_an_error_carries_no_credential(config):
+    """A failure detail travels out through the unauthenticated REST ingest route.
+
+    Several OpenAI-compatible gateways carry the credential in the URL — as
+    userinfo, a path token, or a query parameter — and `SummaryError` becomes
+    `IngestOutcome.detail`, which the REST ingest response returns in its body
+    with no authentication in front of it. So the messages name a redacted
+    endpoint and never the composed URL.
+
+    The stand-in below is deliberately low-entropy and reads as fake. An earlier
+    version used a JWT-shaped value and the repository's own secret scan flagged
+    it at entropy 3.75 — correctly, since a scanner cannot tell a test's fake
+    token from a real one. What this test needs is a distinctive string, not a
+    realistic one, so the scanner's objection costs nothing to honour and
+    silencing it with an allowlist entry would have been the wrong trade.
+    """
+    secret = "not-a-real-token-not-a-real-token"
+    named = _with_profile(
+        config,
+        summary_model="probe",
+        llm_url=f"http://svc:{secret}@127.0.0.1:1/v1?api-key={secret}",
+    )
+    summariser = build_summariser(named)
+
+    with pytest.raises(SummariserUnavailable) as raised:
+        summariser.check()
+
+    message = str(raised.value)
+    assert secret not in message, (
+        "the refusal named a credential embedded in llm_url. This message reaches "
+        f"an unauthenticated REST response body: {message!r}"
+    )
+    assert "127.0.0.1" in message, (
+        "the refusal names no endpoint at all, so an operator cannot tell which "
+        f"one was unreachable: {message!r}"
+    )
+
+
+def test_a_wedged_concurrency_setting_is_refused_at_load(config):
+    """This value sizes a thread pool and a connection pool, so it needs a ceiling.
+
+    Every other numeric profile setting describes a preference — a wider window is
+    only ever a preference — and a ceiling on one of those would be arbitrary.
+    `summary_concurrency` buys threads and sockets, so a mistyped extra zero is
+    ten thousand of each at the first document rather than a slightly wrong
+    result. Refused where the message can name the setting.
+    """
+    from jackryan.config import MAX_SUMMARY_CONCURRENCY, _select_profile
+
+    document = {
+        "profiles": {
+            "local": {"summary_concurrency": MAX_SUMMARY_CONCURRENCY + 1},
+        }
+    }
+    with pytest.raises(ConfigError) as raised:
+        _select_profile(document)
+    assert "summary_concurrency" in str(raised.value), (
+        f"the refusal must name the setting: {str(raised.value)!r}"
+    )
+
+    at_ceiling = {
+        "profiles": {"local": {"summary_concurrency": MAX_SUMMARY_CONCURRENCY}}
+    }
+    assert _select_profile(at_ceiling).summary_concurrency == MAX_SUMMARY_CONCURRENCY, (
+        "the ceiling itself must be accepted, or the bound is off by one and the "
+        "error message names a value that was in fact allowed"
+    )
+
+
+def test_a_failed_document_leaves_neither_a_row_nor_a_chunk(config, gate, corpus):
+    """A summariser failure must leave nothing behind, as every other failure does.
+
+    `ValidationError` and `ExtractionError` both arise before anything is
+    written, so before summaries existed a failed document left no trace. The
+    first implementation of this change persisted the document and its chunks and
+    only then summarised, so a `summarise_document` failure reported the document
+    as failed while its text and chunks were committed and searchable — and
+    because a failed document is not expanded, an archive whose summary failed
+    was stored with its entries silently never ingested and the report still
+    claiming to be complete.
+
+    Asserted against the store rather than read off the report, and for both
+    failure points, because they are on opposite sides of where the write used to
+    happen.
+    """
+    for failing in ("chunks", "document"):
+        stub = _StubSummariser()
+        if failing == "chunks":
+            stub._fail_on = ""
+            stub.summarise_chunks = lambda *_: (_ for _ in ()).throw(
+                SummaryError("the endpoint refused every chunk")
+            )
+        else:
+            stub.summarise_document = lambda *_: (_ for _ in ()).throw(
+                SummaryError("the endpoint refused the document summary")
+            )
+
+        with _instance(
+            config, gate, stub, summary_model="stub", chunk_summaries=True
+        ) as ctx:
+            casefile = ctx.casefiles.create(f"Failed {failing}")
+            report = ctx.ingestion.ingest(casefile.short_id, corpus)
+
+            assert report.failed and not report.ingested, (
+                f"a summariser failing on the {failing} pass did not fail the "
+                f"documents: {[(o.status, o.detail) for o in report.outcomes]}"
+            )
+            stats = ctx.store.casefile_statistics(casefile.id)
+            chunks = ctx.store.find_chunks_by_id_prefix(casefile.id, "")
+            assert stats["documents"] == 0 and not chunks, (
+                f"a document that failed on the {failing} pass left "
+                f"{stats['documents']} row(s) and {len(chunks)} chunk(s) in the "
+                "store. A failed document must leave nothing: a row with no chunks "
+                "is listed and readable through every document surface while no "
+                "search can ever return it, so an analyst's negative result over "
+                "the casefile is wrong and nothing on disk says why."
+            )
+
+
+def test_the_client_cannot_be_re_routed_by_the_environment(config):
+    """An environment variable must not be able to redirect corpus egress.
+
+    `httpx` trusts the environment by default, so `HTTPS_PROXY` or `ALL_PROXY`
+    in the ingesting process would route every summary request — up to twenty
+    thousand characters of a document each, plus the bearer token — through a
+    host that appears nowhere in `config.yaml`. This module's docstring says the
+    endpoint is always one the operator wrote down; `trust_env=False` is what
+    makes that sentence true.
+
+    Also pins the two defaults that are currently correct and would be silent
+    leaks if a future httpx flipped them: `follow_redirects=False`, so a 3xx
+    cannot replay the Authorization header to whatever the Location header names,
+    and `verify=True`. `httpx>=0.28` does not prevent a minor release from
+    changing either.
+
+    Reads `_trust_env` — private, and read deliberately. The alternative is no
+    guard at all for a control that is one keyword away from silently
+    disappearing, and a test that breaks loudly when httpx renames an attribute
+    is a better outcome than a control nothing checks.
+    """
+    named = _with_profile(
+        config, summary_model="probe", llm_url="http://127.0.0.1:1/v1"
+    )
+    summariser = build_summariser(named)
+    client = summariser._connect()
+    try:
+        assert client._trust_env is False, (
+            "the summary client trusts the environment, so HTTPS_PROXY can route "
+            "every document's text through a host the operator never configured"
+        )
+        assert client.follow_redirects is False, (
+            "the summary client follows redirects, so a 3xx from the endpoint "
+            "replays the Authorization header to whatever the Location names"
+        )
+        assert summariser._connect() is client, (
+            "a second `_connect` built a second client. One pooled client per "
+            "summariser is the entire reason httpx is a runtime dependency: a "
+            "client per call is 36,000 handshakes for the corpus this was built "
+            "for, and `httpx.Limits` is per client, so the connection ceiling "
+            "would multiply too. The race that motivates the lock in `_connect` "
+            "is not deterministically testable; this is the regression that is."
+        )
+    finally:
+        client.close()
+
+
 def test_a_named_summariser_is_built_without_reaching_the_endpoint(config):
     """Construction is cheap; the endpoint is `check`'s business.
 
@@ -841,7 +1059,7 @@ needs_llm = pytest.mark.skipif(
     reason="reaches a real generation endpoint; set JACKRYAN_LLM_TESTS=1 to run",
 )
 
-LLM_URL = os.environ.get("JACKRYAN_LLM_URL", "http://gdx1:8080/v1")
+LLM_URL = os.environ.get("JACKRYAN_LLM_URL", "http://localhost:8080/v1")
 LLM_MODEL = os.environ.get("JACKRYAN_LLM_MODEL", "qwen3.8-27b")
 
 

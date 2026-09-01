@@ -394,6 +394,30 @@ def test_what_reaches_the_embedder_with_the_fold_on_is_the_summary_and_the_text(
             "`replace_chunks`: the two must differ by the summary and by nothing "
             "else."
         )
+
+        # The pairing, which none of the assertions above can see. Each of them
+        # compares the embed input against `chunks.summary` — and a mispaired
+        # summary is what gets *stored*, so both sides of every comparison move
+        # together and the multiset stays equal. `summarising/port.py` names this
+        # exactly: "a reordering pairs one chunk's context with another chunk's
+        # text and nothing stored afterwards would say so".
+        #
+        # The stub's output is derived from the chunk it was given, which is what
+        # makes the pairing checkable at all: recomputing it here is an oracle
+        # outside the pipeline rather than a reading of the pipeline's own record.
+        for chunk in stored:
+            assert chunk.summary == f"context for {chunk.text[:20]}", (
+                "a chunk carries a summary derived from a different chunk, so the "
+                "fold paired one chunk's context with another chunk's text. Under a "
+                "real summariser that produces vectors of the declared width, from "
+                "the declared model, under a correct corpus identity, and meaning "
+                "something other than what they claim — the failure class this "
+                "whole change is built to prevent, and the one thing no later check "
+                "can detect. `_rebuild_chunks` must zip the summaries onto the "
+                "chunks in the order the summariser was given them. "
+                f"Chunk {chunk.short_id} text={chunk.text[:40]!r} "
+                f"summary={chunk.summary[:60]!r}"
+            )
     finally:
         ctx.close()
 

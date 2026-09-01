@@ -14,10 +14,36 @@ summariser instance, reused for every request, is what that dependency buys.
 from __future__ import annotations
 
 import hashlib
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Sequence
+from urllib.parse import urlsplit, urlunsplit
 
 from .port import SummariserUnavailable, SummaryError
+
+
+def _redacted(url: str) -> str:
+    """An endpoint safe to name in an error message.
+
+    Scheme, host, port and path only. Userinfo and query string are dropped,
+    because several OpenAI-compatible gateways carry the credential in one of
+    them — `https://svc:TOKEN@host/v1`, or `?api-key=...` — and a summariser
+    failure becomes an `IngestOutcome.detail`, which the REST ingest route
+    returns in its response body with no authentication in front of it.
+
+    A malformed URL is reported as unparseable rather than passed through: this
+    function's whole purpose is that its output is safe, so failing closed here
+    is the only honest behaviour.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "<unparseable llm_url>"
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
+
 
 SUMMARY_DOCUMENT_CHARS = 20_000
 SUMMARY_MAX_TOKENS = 200
@@ -110,6 +136,12 @@ class OpenAICompatSummariser:
         # the client's own base-url joining, whose trailing-slash handling is a
         # property of the library version rather than of this file.
         self._completions_url = f"{self._base_url}/chat/completions"
+        # What an error message is allowed to name. Some OpenAI-compatible
+        # gateways carry the credential in the URL — as userinfo, a path token or
+        # a query parameter — and a failure detail travels out through the REST
+        # ingest response, which has no authentication in front of it. So the
+        # messages name this and never `_completions_url`.
+        self._safe_url = _redacted(self._completions_url)
         self._api_key = api_key
         self._concurrency = concurrency
         self._timeout_seconds = timeout_seconds
@@ -117,6 +149,14 @@ class OpenAICompatSummariser:
         # `CrossEncoderReranker.__init__`/`check()` split: `jackryan status` on an
         # instance that names a summariser it will not use pays for neither.
         self._client = None
+        # `self._client` is shared mutable state, and REST reaches an ingest
+        # through a thread pool over one shared `Context`, so two concurrent
+        # ingests can enter `_connect` at once. Without this each would build its
+        # own client: one is orphaned unclosed, and `httpx.Limits` is per client,
+        # so the connection ceiling the comment below describes would silently
+        # double. A `threading` primitive rather than an asyncio one, for the
+        # reason `storage-seam` gives for the store's.
+        self._lock = threading.Lock()
 
     def check(self) -> None:
         client = self._connect()
@@ -130,8 +170,8 @@ class OpenAICompatSummariser:
             self._content(self._post(client, _PROBE_PROMPT, 1))
         except SummaryError as exc:
             raise SummariserUnavailable(
-                f"profile names summary_model={self._model_name!r} at llm_url="
-                f"{self._base_url!r}, which could not be reached: {exc}. "
+                f"profile names summary_model={self._model_name!r} at "
+                f"llm_url={self._safe_url!r}, which could not be reached: {exc}. "
                 "Ingestion is not run with a summariser the instance cannot reach, "
                 "because a document embedded without its context inside a folded "
                 "corpus is silently incomparable with every other document."
@@ -139,6 +179,10 @@ class OpenAICompatSummariser:
 
     def _connect(self):
         """Build the pooled client on first use, or fail naming the setting."""
+        with self._lock:
+            return self._build_client()
+
+    def _build_client(self):
         if self._client is not None:
             return self._client
 
@@ -169,6 +213,20 @@ class OpenAICompatSummariser:
             limits=httpx.Limits(
                 max_connections=workers, max_keepalive_connections=workers
             ),
+            # Every one of these three is a default today and is pinned anyway,
+            # because this client carries evidence and a bearer token.
+            #
+            # `trust_env=False` is the one that is not merely defensive. Left
+            # true, `HTTPS_PROXY` in the ingesting process's environment routes
+            # every summary request — up to 20,000 characters of a document each,
+            # plus the credential — through a host that appears nowhere in
+            # `config.yaml`. This module's docstring says the endpoint is one the
+            # operator wrote down; this is what makes that true.
+            trust_env=False,
+            # A 3xx would otherwise replay the Authorization header to whatever
+            # the Location header names. Off, a redirect is a non-2xx and fails.
+            follow_redirects=False,
+            verify=True,
         )
         return self._client
 
@@ -193,7 +251,7 @@ class OpenAICompatSummariser:
             response = client.post(self._completions_url, json=body)
         except Exception as exc:
             raise SummaryError(
-                f"summariser {self.name!r} could not reach {self._completions_url}: "
+                f"summariser {self.name!r} could not reach {self._safe_url}: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
         if not 200 <= response.status_code < 300:
@@ -201,7 +259,7 @@ class OpenAICompatSummariser:
             # request it objected to, so a truncated slice of it goes in the
             # message rather than the status code alone.
             raise SummaryError(
-                f"summariser {self.name!r} was refused by {self._completions_url}: "
+                f"summariser {self.name!r} was refused by {self._safe_url}: "
                 f"HTTP {response.status_code}: {response.text[:500]!r}"
             )
         try:

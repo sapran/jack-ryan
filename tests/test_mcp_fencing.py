@@ -331,3 +331,69 @@ async def test_a_prose_free_listing_carries_no_summary(context, server):
             "listing ships model-written prose unfenced. Remove it; summaries "
             "are read through case_read_document, which fences them."
         )
+
+
+@pytest.mark.anyio
+async def test_no_agent_search_surface_carries_a_chunk_summary(context, server):
+    """The chunk summary must not reach the agent through a ranked result.
+
+    REST's `serialize_hit` and the CLI's `_render_hit` both carry
+    `chunk.summary`, so MCP is deliberately the only one of the three surfaces
+    that does not — and this project's own convention, recorded in
+    `tests/test_result_shape.py`, is that a field present on some surfaces and
+    absent from others is a defect to be closed. Closed in the wrong direction
+    it ships model-written prose into `search_payload`.
+
+    That is worse than the listing case above rather than merely similar.
+    `search_payload` already carries a `fence_nonce` and a `content_notice`, so
+    an unfenced `summary` key sitting beside a fenced `text` key reads as fenced
+    and attributed while being neither. A chunk summary is the context folded
+    into a vector — an audit artefact for an operator, not analytic content — and
+    beside ranked evidence it invites being quoted as evidence.
+    """
+    casefile = context.casefiles.resolve("harbour-inquiry")
+    chunks = context.store.find_chunks_by_id_prefix(casefile.id, "")
+    assert chunks, "test precondition broken: the casefile holds no chunks"
+    # A real stored chunk summary, so the guard cannot pass because there was
+    # nothing to leak.
+    context.store.replace_chunks(
+        chunks[0].document_id,
+        [replace(chunks[0], summary="A passage, condensed by a model.")],
+        [context.embedder.embed_documents([chunks[0].text])[0]],
+    )
+    reloaded = context.store.get_chunks([chunks[0].id])
+    assert reloaded and reloaded[chunks[0].id].summary, (
+        "test precondition broken: the chunk summary was not stored, so nothing "
+        "below could leak one"
+    )
+
+    search = await call(
+        server, "case_search", {"casefile": "harbour-inquiry", "query": "harbour"}
+    )
+    assert search["results"], "no results, so this proves nothing about them"
+    for entry in search["results"]:
+        assert "summary" not in entry, (
+            "case_search is carrying a chunk's model-written summary. "
+            "search_payload has a fence_nonce and a content_notice, so an "
+            "unfenced summary key beside the fenced text reads as fenced and "
+            "attributed while being neither. The chunk summary is an audit "
+            "artefact and belongs on the CLI and REST hit shapes only."
+        )
+
+    passage = await call(
+        server,
+        "case_get_passage",
+        {"casefile": "harbour-inquiry", "chunk_id": chunks[0].id},
+    )
+    assert "summary" not in passage, (
+        "case_get_passage is carrying a chunk's model-written summary beside the "
+        "passage it fences; the same reasoning as case_search applies"
+    )
+
+    citation = await call(
+        server, "case_cite", {"casefile": "harbour-inquiry", "chunk_id": chunks[0].id}
+    )
+    assert "summary" not in citation, (
+        "case_cite is carrying a chunk's model-written summary. A citation is the "
+        "one payload that must resolve to what the document says and nothing else"
+    )

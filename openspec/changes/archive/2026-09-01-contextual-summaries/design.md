@@ -91,7 +91,7 @@ under one identity.
 The end-to-end check against a real endpoint found this, and it is the reason that check exists rather
 than a stub.
 
-The gdx boxes serve Qwen3.8-27B, a reasoning model. Asked for a chunk context at the recipe's
+The local Qwen3 endpoint used for this check serves a reasoning model. Asked for a chunk context at the recipe's
 `max_tokens=200`, it spends the budget on a trace: `reasoning_content` fills, and `content` arrives
 either empty or cut mid-word. Measured on one probe: 719 characters of reasoning, `finish_reason:
 length`, and a summary truncated at "awarded to three b". Over the `sectioned_corpus` fixture, two
@@ -250,7 +250,7 @@ honour.
 
 **Turning folding on refuses the existing 435 MB corpus.** That is the designed behaviour and the whole
 point of the identity component, but it should be said plainly: an operator who sets
-`chunk_summaries: true` on the instance holding `bauman4` will be refused at startup and must reingest
+`chunk_summaries: true` on the instance holding that corpus will be refused at startup and must reingest
 1,760 documents through roughly 36,000 LLM calls. The refusal names both identity strings and how to
 proceed, which is existing behaviour. Nothing here makes that cheaper, and pretending otherwise by
 admitting a mixed corpus is the failure this change exists to prevent.
