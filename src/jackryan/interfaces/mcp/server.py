@@ -328,7 +328,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         truncated = end < len(text)
         nonce = new_nonce()
 
-        return {
+        payload: dict[str, Any] = {
             "document_id": found.id,
             "document": found.filename,
             "total_characters": len(text),
@@ -351,6 +351,31 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             "content_notice": NOTICE,
             "fence_nonce": nonce,
         }
+        if found.summary:
+            # Fenced separately from the document's own text, and with its own
+            # provenance carrying `derived_by`. A summary of an untrusted
+            # document is untrusted text — a model asked to summarise a document
+            # carrying an instruction can carry it into the summary, shorter and
+            # stripped of the surrounding text that made it obviously misplaced.
+            # Separate rather than inside the text's fence because one fence
+            # around both would lose exactly the distinction `derived_by` makes.
+            #
+            # `summary_by` is read from the document rather than from the
+            # configured summariser: this summary moves no vector, so it is
+            # outside corpus identity, so the instance cannot assume the model it
+            # is configured with now is the one that wrote what is stored.
+            payload["summary"] = {
+                "text": fence(found.summary, nonce),
+                "provenance": provenance(
+                    casefile_id=resolved.id,
+                    document_id=found.id,
+                    filename=found.filename,
+                    containment_path=one_line(found.containment_path, 200),
+                    text_source=found.text_source,
+                    derived_by=one_line(found.summary_by, 120),
+                ),
+            }
+        return payload
 
     @server.tool(
         name="case_cite",

@@ -36,6 +36,20 @@ class Document:
     # did not write. Text recovered by recognition can be fluent and wrong, so
     # this travels with the text all the way to the agent.
     text_source: str = ""
+    # The model-written summary of the whole document, empty when none was
+    # written. Prose no human wrote, which is why every surface that shows it
+    # fences it and names its author rather than presenting it as the
+    # document's own words.
+    summary: str = ""
+    # Which summariser wrote `summary`. Recorded per document where the chunk's
+    # producer deliberately is not, because the per-document summary moves no
+    # vector and is therefore outside corpus identity — so nothing else in the
+    # store records who wrote it. A surface reporting whichever summariser the
+    # instance happens to be configured with today as the author of a summary
+    # written before that model changed would be asserting something it cannot
+    # know. The same rule as `text_source` above: what the fingerprint does not
+    # guard, the per-document record makes findable.
+    summary_by: str = ""
     # Absent for a file ingested directly; set for one found inside another.
     parent_id: str | None = None
     # The names from the ingested file down to this one, joined — including the
@@ -73,6 +87,14 @@ class Chunk:
     text: str
     char_start: int
     char_end: int
+    # The context that was folded into what was embedded for this chunk, empty
+    # when nothing was folded. `text` above is deliberately left unchanged by
+    # the fold — it stays the chunk's own text — so without this column nothing
+    # on disk would record what the vector was actually built from. No producer
+    # travels beside it: this is non-empty only when folding was on, and that
+    # is exactly the case where corpus identity already names the summariser,
+    # so the store holds that fact once rather than twice.
+    summary: str = ""
 
     @property
     def short_id(self) -> str:

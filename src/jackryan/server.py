@@ -77,6 +77,10 @@ def serialize_document(document: Document) -> dict[str, Any]:
         # an assistant are never given two words for one fact.
         "read_as": read_as(document.text_source),
         "characters": len(document.extracted_text),
+        # Model-written, not the document's own words, which is why the producer
+        # travels beside it. Empty unless a summariser was configured at ingest.
+        "summary": document.summary,
+        "summary_by": document.summary_by,
         "created_at": document.created_at.isoformat(),
         "updated_at": document.updated_at.isoformat(),
     }
@@ -96,6 +100,11 @@ def serialize_hit(hit: SearchHit) -> dict[str, Any]:
         "keyword_rank": hit.keyword_rank,
         "vector_rank": hit.vector_rank,
         "heading_path": hit.chunk.heading_path,
+        # The context that was folded into what was embedded for this passage,
+        # empty unless folding was on. Surfaced so an operator can audit the
+        # fold: the stored text is deliberately unchanged by it, so this is the
+        # only place the difference is visible.
+        "summary": hit.chunk.summary,
         # The span of the text returned, which is wider than the matched passage
         # wherever the result was widened. The passage keeps its own span below,
         # because it is what a citation quotes.

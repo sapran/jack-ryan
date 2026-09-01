@@ -182,8 +182,10 @@ hit shapes, which is where an operator auditing the fold looks.
 ### `httpx` moves from dev to runtime
 
 One call per chunk means roughly 36,000 requests for the corpus that exists. Without connection pooling
-that is 36,000 TCP and TLS handshakes. `httpx` is already in the lock file as a dev dependency, so
-promoting it adds no new package to resolve — it changes what a runtime install pulls.
+that is 36,000 TCP and TLS handshakes. `httpx` already arrives with a runtime install — `uv.lock` has
+both `docling` (line 655) and `huggingface-hub` (line 953) depending on it directly — so promoting it
+adds no package to resolve. What it changes is the declaration: this code depends on `httpx` itself
+rather than inheriting it from a library that may drop it.
 
 The alternative considered and rejected: `urllib.request` with an explicit timeout and a hand-written
 retry, which adds no runtime dependency to a public AGPL tool and costs the pooling. Rejected on the

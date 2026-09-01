@@ -4,7 +4,11 @@ Two layers with different lifetimes:
 
 * ``contract`` is corpus-coupled. Changing any value invalidates an existing
   corpus and forces a reingest, so it is frozen once documents exist.
-* ``profiles`` are swappable infrastructure. Changing one is always safe.
+* ``profiles`` are swappable infrastructure, with two settings excepted:
+  ``embedder`` and ``chunk_summaries`` each decide what a stored vector was
+  built from without changing any stored text. Corpus identity records both, so
+  changing either is refused against an existing corpus rather than quietly
+  accepted. Every other profile value is safe to change at any time.
 
 Precedence is: real environment variable > ``config.yaml`` > built-in default.
 Configuration fails loudly at boot — an unknown profile or an unresolvable
@@ -218,6 +222,62 @@ class Profile:
     and the two rungs above it handle every document that is not hard.
     """
 
+    summary_model: str = ""
+    """A chat model to write summaries with, or empty for none.
+
+    Empty by default, and empty means nothing is fetched, nothing is called and
+    nothing derived is stored: both summary features — the per-chunk context and
+    the per-document summary — are off together, because one seam produces both.
+    Naming a model turns them on, and the endpoint it is called at comes from
+    `llm_url`.
+
+    This is the first setting that sends document text off the instance.
+    `llm_url` has been a declared setting since the first milestone with nothing
+    reading it, and a casefile is evidence, so that is a change in the tool's
+    posture rather than a performance knob and it is opt-in for that reason. The
+    read stack still runs with zero configured endpoints.
+
+    Naming a model the instance cannot reach is fatal when the summariser is
+    first needed, exactly as `reranker_model` is.
+    """
+
+    chunk_summaries: bool = False
+    """Whether a chunk's summary is folded into what is embedded.
+
+    The chunk's *stored* text is unchanged either way. The store holds the
+    chunk's own text; only what the embedder is handed changes. That asymmetry
+    is why this setting is corpus-coupled despite living in the profile layer,
+    which is otherwise safe to change: nothing on disk would separate a folded
+    corpus from a bare one, since both hold the same text and vectors of the
+    same declared width.
+
+    So turning it on appends a `|summariser=` component to corpus identity — see
+    `corpus_fingerprint` — which refuses an existing corpus at startup and forces
+    a reingest of every casefile. The refusal is the point rather than a cost of
+    it: a corpus holding both kinds of vector cannot be told apart afterwards by
+    anything.
+
+    Off by default because it is the dominant cost of ingest. It is one LLM call
+    per chunk, so a corpus of thirty-six thousand chunks is thirty-six thousand
+    requests.
+    """
+
+    summary_concurrency: int = 8
+    """How many chunk-summary requests are in flight for one document.
+
+    Per document rather than per run, because a document's chunks are summarised
+    together with the document they came from: this is the width of that one
+    fan-out and not a budget spread across the ingest.
+    """
+
+    summary_timeout_seconds: int = 60
+    """How long one summary request may take before it is abandoned.
+
+    A summariser failure fails the document rather than degrading to an
+    unsummarised embed, so this bounds how long a wedged endpoint holds an ingest
+    open, and the document it stops is reported as failed rather than stored.
+    """
+
 
 @dataclass(frozen=True)
 class Config:
@@ -231,7 +291,9 @@ class Config:
         return self.data_dir / "jackryan.db"
 
 
-def corpus_fingerprint(contract: Contract, embedder_name: str) -> str:
+def corpus_fingerprint(
+    contract: Contract, embedder_name: str, summariser_name: str = ""
+) -> str:
     """The identity the store records: the contract plus who filled it.
 
     The contract alone is not enough. The choice between the real embedder and
@@ -244,13 +306,41 @@ def corpus_fingerprint(contract: Contract, embedder_name: str) -> str:
     Composed here rather than by copying the embedder into the contract: two
     copies of one setting can disagree with each other, which is the shape of
     the bug this closes.
+
+    `summariser_name` is that same argument one level up. When a chunk's summary
+    is folded into what is embedded, the summariser produced the stored vectors
+    as surely as the embedder did, so its identity belongs in the string that
+    decides whether a corpus may be opened. It is composed here rather than
+    declared in the contract because it is not a value an operator holds: it is
+    the model name joined with a hash of the prompt, the document-truncation
+    limit and the sampling parameters, all of which live in shipped code. A
+    contract field for it would be a second copy of something the code already
+    fixes — the hazard the paragraph above closes — and a contract naming one
+    recipe while the code implements another is a corpus recording a recipe it
+    was not built under.
+
+    The component is appended only when it is non-empty, and that condition is
+    load-bearing rather than tidiness. An absent component must contribute
+    nothing, so an instance configured without folding produces byte for byte the
+    identity recorded before this component existed, and the corpora ingested
+    under it still open. Adding a component to corpus identity must never refuse
+    the corpora it was added to protect; only configuring it may, and then the
+    refusal is the correct answer.
+
+    The per-document summary is deliberately not represented here. It is stored
+    and never embedded, so it moves no vector and may be turned on over a corpus
+    ingested without it. Which summariser wrote a stored document summary is
+    recorded per document instead, beside the summary itself.
     """
-    # The contract's fingerprint is already escaped component by component, so
-    # it is joined raw; only the embedder's own name needs escaping here.
-    # `EmbedderPort.name` is an unvalidated `str`, and a third embedder whose
-    # name carried a separator is exactly how the unreachable collision becomes
-    # reachable.
-    return f"{contract.fingerprint()}|embedder={_escaped(embedder_name)}"
+    # The contract's fingerprint is already escaped component by component, so it
+    # is joined raw; the names composed onto it here are what need escaping.
+    # `EmbedderPort.name` is an unvalidated `str` and a summariser's name carries
+    # an operator-supplied model name, so a name carrying a separator is exactly
+    # how the unreachable collision becomes reachable.
+    identity = f"{contract.fingerprint()}|embedder={_escaped(embedder_name)}"
+    if summariser_name:
+        identity = f"{identity}|summariser={_escaped(summariser_name)}"
+    return identity
 
 
 def canonical_embed_library(declared: str) -> tuple[str, str] | None:
@@ -493,6 +583,21 @@ def _select_profile(document: dict[str, Any]) -> Profile:
             ". Known keys: " + ", ".join(sorted(known))
         )
 
+    # Resolved ahead of the constructor because the rule between them is a
+    # relationship rather than a value, so neither validator can see it alone.
+    summary_model = str(_interpolate(settings.get("summary_model", "")) or "").strip()
+    chunk_summaries = _validated_bool(
+        settings.get("chunk_summaries"), name, "chunk_summaries", Profile.chunk_summaries
+    )
+    if chunk_summaries and not summary_model:
+        raise ConfigError(
+            f"profile {name!r} sets chunk_summaries: true but names no summary_model. "
+            "Folding a summary into what is embedded needs a model to write it, and "
+            "embedding the bare chunk instead would fill the corpus with vectors its "
+            "own identity says were built from something else. Name a model in "
+            "summary_model, or set chunk_summaries: false."
+        )
+
     return Profile(
         name=name,
         llm_url=str(_interpolate(settings.get("llm_url", "")) or ""),
@@ -512,6 +617,20 @@ def _select_profile(document: dict[str, Any]) -> Profile:
             settings.get("window_max_chars"), name, "window_max_chars", Profile.window_max_chars
         ),
         vlm_model=str(_interpolate(settings.get("vlm_model", "")) or "").strip(),
+        summary_model=summary_model,
+        chunk_summaries=chunk_summaries,
+        summary_concurrency=_validated_positive(
+            settings.get("summary_concurrency"),
+            name,
+            "summary_concurrency",
+            Profile.summary_concurrency,
+        ),
+        summary_timeout_seconds=_validated_positive(
+            settings.get("summary_timeout_seconds"),
+            name,
+            "summary_timeout_seconds",
+            Profile.summary_timeout_seconds,
+        ),
     )
 
 
@@ -656,6 +775,33 @@ def _validated_positive(value: Any, profile: str, key: str, default: int) -> int
             "take the default."
         )
     return number
+
+
+def _validated_bool(value: Any, profile: str, key: str, default: bool) -> bool:
+    """A real boolean, refused rather than coerced.
+
+    A string is the case this exists for. `bool("false")` is `True`, so a
+    YAML-quoted `"false"` — which is what an operator writes when they are being
+    careful, and what a templating layer leaves behind — would silently *enable*
+    the setting rather than disable it. For `chunk_summaries` that produces a
+    corpus whose vectors were built from text the operator did not intend, under
+    an identity that correctly records what was actually done: no later check can
+    find the disagreement, because there is none. That is invisible corpus
+    corruption arriving through the layer this file declares safe to change.
+
+    Every other spelling is refused too — `1`, `"yes"`, `"on"` — for the reason
+    the numeric validators refuse a coercion: a value the loader had to interpret
+    is a value the operator and the instance can read differently.
+    """
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ConfigError(
+            f"profile {profile!r} sets {key}={value!r}, which is not true or false. "
+            "Write it unquoted: a quoted 'false' is a non-empty string, reads as true, "
+            "and would switch the setting on rather than off."
+        )
+    return value
 
 
 def _validated_embedder(value: Any, profile: str) -> str:

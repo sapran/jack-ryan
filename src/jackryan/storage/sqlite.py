@@ -141,6 +141,21 @@ _STEPS: tuple[_Step, ...] = (
             "ALTER TABLE documents ADD COLUMN text_source TEXT NOT NULL DEFAULT ''",
         ),
     ),
+    # None of these three columns enters `chunks_fts`, and that exclusion is a
+    # decision rather than an omission. A model's words answering a keyword
+    # search would report a document as containing a term that appears nowhere
+    # in it, and a ranked list has no way to mark which hits matched evidence
+    # and which matched a summary of it. The FTS column list is therefore
+    # unchanged and `_SIDECAR_TRIGGER` is untouched.
+    _Step(
+        to_version=6,
+        reason="chunks record the context folded into what was embedded, and documents record their summary and who wrote it",
+        statements=(
+            "ALTER TABLE chunks ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE documents ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE documents ADD COLUMN summary_by TEXT NOT NULL DEFAULT ''",
+        ),
+    ),
 )
 """The ladder, in order. Every step may only ADD.
 
@@ -209,6 +224,8 @@ def _row_to_document(row: sqlite3.Row) -> Document:
         extracted_text=row["extracted_text"],
         extractor=row["extractor"],
         text_source=row["text_source"],
+        summary=row["summary"],
+        summary_by=row["summary_by"],
         created_at=_from_iso(row["created_at"]),
         updated_at=_from_iso(row["updated_at"]),
         parent_id=row["parent_id"],
@@ -228,6 +245,7 @@ def _row_to_chunk(row: sqlite3.Row) -> Chunk:
         text=row["text"],
         char_start=row["char_start"],
         char_end=row["char_end"],
+        summary=row["summary"],
     )
 
 
@@ -566,9 +584,9 @@ class SqliteStore:
         with self._lock:
             self._db.execute(
                 "INSERT INTO documents (id, casefile_id, content_hash, filename, media_type,"
-                " byte_size, extracted_text, extractor, text_source, created_at, updated_at,"
-                " parent_id, containment_path, identity_path)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " byte_size, extracted_text, extractor, text_source, summary, summary_by,"
+                " created_at, updated_at, parent_id, containment_path, identity_path)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(casefile_id, content_hash, identity_path) DO UPDATE SET"
                 "   filename = excluded.filename,"
                 "   media_type = excluded.media_type,"
@@ -579,6 +597,13 @@ class SqliteStore:
                 # describe the text now stored beside it. A document reingested
                 # after the recognition engine changed was read by the new one.
                 "   text_source = excluded.text_source,"
+                # Overwritten on reingest for the same reason, one step further
+                # out: the summary has to describe the text now stored beside
+                # it. A document reingested after the summariser changed was
+                # summarised by the new one, and `summary_by` has to say so or
+                # it credits the wrong author for text it did not write.
+                "   summary = excluded.summary,"
+                "   summary_by = excluded.summary_by,"
                 "   updated_at = excluded.updated_at,"
                 "   parent_id = excluded.parent_id,"
                 "   containment_path = excluded.containment_path",
@@ -592,6 +617,8 @@ class SqliteStore:
                     document.extracted_text,
                     document.extractor,
                     document.text_source,
+                    document.summary,
+                    document.summary_by,
                     _to_iso(document.created_at),
                     _to_iso(document.updated_at),
                     document.parent_id,
@@ -754,8 +781,8 @@ class SqliteStore:
                 for chunk, embedding in zip(chunks, embeddings):
                     cursor = db.execute(
                         "INSERT INTO chunks (id, document_id, casefile_id, ordinal,"
-                        " heading_path, text, char_start, char_end)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        " heading_path, text, char_start, char_end, summary)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             chunk.id,
                             chunk.document_id,
@@ -765,9 +792,13 @@ class SqliteStore:
                             chunk.text,
                             chunk.char_start,
                             chunk.char_end,
+                            chunk.summary,
                         ),
                     )
                     rowid = cursor.lastrowid
+                    # `chunk.text`, never the folded text: the full-text index
+                    # answers for what the document contains, and a model's
+                    # summary of it is not that.
                     db.execute(
                         "INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)", (rowid, chunk.text)
                     )

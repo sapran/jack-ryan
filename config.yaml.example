@@ -3,11 +3,13 @@
 # Two layers with different lifetimes:
 #   contract — corpus-coupled. Changing any value invalidates an existing
 #              corpus and forces a reingest. Frozen once documents exist.
-#   profiles — swappable infrastructure. Safe to change at any time, with one
-#              exception: `embedder` decides which implementation produces the
-#              vectors, so changing it invalidates every vector already stored.
-#              Corpus identity records it, and the store refuses a corpus filled
-#              by the other one.
+#   profiles — swappable infrastructure. Safe to change at any time, with two
+#              exceptions, and both decide what a stored vector was built from
+#              without changing any stored text: `embedder` chooses which
+#              implementation produces the vectors, and `chunk_summaries`
+#              chooses whether a summary is folded into what is embedded.
+#              Corpus identity records both, and the store refuses a corpus
+#              filled under other settings.
 #
 # Precedence: real environment variable > this file > built-in default.
 
@@ -56,6 +58,29 @@ profiles:
     # recognition is also below the floor. Empty leaves it off: it downloads
     # model weights and is much slower. Example: GRANITEDOCLING_TRANSFORMERS
     vlm_model: ""
+
+    # Summarisation. A summariser writes a short context for each chunk and a
+    # summary for each document. Off entirely while summary_model is empty:
+    # nothing is fetched, nothing is called, and the read stack still runs with
+    # no endpoint configured at all. Naming a model turns both on and they are
+    # called at llm_url above — this is the only setting that sends document
+    # text off the instance, so it is opt-in. Naming a model the instance
+    # cannot reach is fatal when the summariser is first needed.
+    summary_model: ""
+    # WARNING — corpus-coupled, unlike every other profile setting except
+    # `embedder`. It folds each chunk's summary into what is embedded. The
+    # chunk's stored text is unchanged, so nothing on disk separates a folded
+    # corpus from a bare one; only the vectors differ, and both are the declared
+    # width. Turning it on therefore appends a `|summariser=` component to
+    # corpus identity, which refuses an existing store at startup and forces a
+    # reingest of every casefile. Left off here because it is the dominant cost
+    # of ingest: one LLM call per chunk. Write it unquoted — a quoted "false" is
+    # a non-empty string, reads as true, and is refused for that reason.
+    # chunk_summaries: false
+    # How many chunk-summary requests are in flight for one document, and how
+    # long one of them may take. They matter only once a model is named.
+    # summary_concurrency: 8
+    # summary_timeout_seconds: 60
 
     # Retrieval. These are read at query time and write nothing — no vector, no
     # chunk, no stored text — so changing one changes the next search and leaves

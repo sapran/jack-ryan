@@ -37,7 +37,7 @@
 - [ ] 4.1 Append the migration step to `_STEPS` adding `chunks.summary`, `documents.summary` and `documents.summary_by`, all `NOT NULL DEFAULT ''`; verify `SCHEMA_VERSION` recomputes itself and no test carries a literal version
 - [ ] 4.2 Add `summary` to `Chunk` and `summary`/`summary_by` to `Document`, both defaulted so every existing construction site compiles; verify the columns are absent from `chunks_fts` and `_SIDECAR_TRIGGER` is untouched
 - [ ] 4.3 Write `chunks.summary` in `replace_chunks`' existing INSERT and add both document columns to `upsert_document`'s INSERT and `DO UPDATE SET`; verify the overwrite-on-reingest comment gives the same reason `text_source` has
-- [ ] 4.4 Add the three columns to the baseline schema so a fresh store and a migrated one agree; verify `test_the_ladder_and_the_baseline_agree` passes
+- [ ] 4.4 Leave `_SCHEMA` alone. This task originally read "add the three columns to the baseline schema so a fresh store and a migrated one agree", and that was wrong: `_SCHEMA` is frozen at `_BASELINE_VERSION = 4` and `initialize` runs the baseline script *and then the full ladder* on every store including a brand-new one, so a column in both places makes step 6 raise `duplicate column name: summary` and no store can be created at all. `text_source` from step 5 is likewise absent from `_SCHEMA`, and `tests/test_migrations.py:386` pins the baseline columns literally with the message "it belongs in `_STEPS`, not in `_SCHEMA`". Parity is already satisfied by the ladder. Verify with `test_the_ladder_and_the_baseline_produce_the_same_schema` — note the name, since this task previously cited one that does not exist
 
 ## 5. The fold
 

@@ -34,12 +34,19 @@ dependencies = [
     # Outlook .msg, the one mail format with no standard-library reader.
     # GPLv3, which AGPL-3.0's compatibility clause admits.
     "extract-msg>=0.54",
+    # HTTP for the summarising seam. A pooled client rather than a hand-written
+    # urllib call: one summary per chunk is roughly 36,000 requests for a corpus
+    # the size of the one that exists, and without pooling that is 36,000 TCP and
+    # TLS handshakes. httpx already arrives with a runtime install — both
+    # huggingface-hub and docling depend on it — so this adds no package to
+    # resolve and instead records that this code depends on it directly rather
+    # than incidentally.
+    "httpx>=0.28",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
-    "httpx>=0.28",
 ]
 
 [project.scripts]

@@ -20,6 +20,8 @@ from .services.casefiles import CasefileService
 from .services.ingestion import IngestionService
 from .services.search import SearchService
 from .storage.sqlite import SqliteStore
+from .summarising import build_summariser
+from .summarising.port import SummariserPort
 
 
 @dataclass
@@ -41,6 +43,15 @@ class Context:
     casefiles: CasefileService
     ingestion: IngestionService
     search: SearchService
+    summariser_name: str = ""
+    """The summariser whose output is folded into what is embedded, or empty.
+
+    Empty when nothing is folded, which is the default — and empty is what keeps
+    `corpus_fingerprint` byte-identical to the value a corpus recorded before
+    summaries existed. Held here because it is the component of corpus identity
+    an operator cannot read off their own configuration: it carries a hash of
+    the shipped prompt as well as the model they named.
+    """
 
     def close(self) -> None:
         self.store.close()
@@ -51,6 +62,7 @@ def build_context(
     embedder: EmbedderPort | None = None,
     gate: QualityGate | None = None,
     reranker: RerankerPort | None = None,
+    summariser: SummariserPort | None = None,
 ) -> Context:
     """Open the store and construct the service layer over it.
 
@@ -63,6 +75,13 @@ def build_context(
     profile names one. Unlike the embedder it is not part of corpus identity: it
     writes nothing, so an instance can gain or lose one without the store having
     an opinion.
+
+    The summariser is injectable on the same terms again, and is absent unless
+    the profile names one. It sits between the other two: like the reranker it
+    is a deployment choice in the profile layer, and like the embedder it can
+    determine what a vector means — but only when `chunk_summaries` folds its
+    output into what is embedded. So it enters corpus identity exactly when
+    folding is on, and not merely when a model is named.
     """
     resolved = config or load_config()
     # The embedder is built first because it is part of corpus identity: the
@@ -100,7 +119,19 @@ def build_context(
             "corpus-coupled, so changing it is a new corpus identity and forces a "
             "reingest of every casefile."
         )
-    identity = corpus_fingerprint(resolved.contract, chosen.name)
+    chosen_summariser = summariser or build_summariser(resolved)
+    # Named is not the same as folded in. A summariser writing per-document
+    # summaries and nothing else moves no vector, so it must leave corpus
+    # identity alone and stay openable over an existing corpus; only folding
+    # changes what the embedder is given, and only folding may refuse a store.
+    folding = bool(resolved.profile.chunk_summaries and chosen_summariser is not None)
+    # Composed here rather than in the contract because the value carries a hash
+    # of the shipped prompt and sampling parameters, which an operator cannot
+    # know — see `corpus_fingerprint`. Empty when folding is off, and the
+    # component is then omitted entirely, so this string stays byte-identical to
+    # the one a corpus recorded before summaries existed.
+    summariser_name = chosen_summariser.name if folding else ""
+    identity = corpus_fingerprint(resolved.contract, chosen.name, summariser_name)
     store = SqliteStore(resolved.db_path)
     try:
         store.initialize(identity, resolved.contract.embed_dimensions)
@@ -118,8 +149,15 @@ def build_context(
         corpus_fingerprint=identity,
         embedder=chosen,
         casefiles=casefiles,
+        summariser_name=summariser_name,
         ingestion=IngestionService(
-            store, casefiles, chosen, resolved.contract, gate=chosen_gate
+            store,
+            casefiles,
+            chosen,
+            resolved.contract,
+            gate=chosen_gate,
+            summariser=chosen_summariser,
+            chunk_summaries=folding,
         ),
         search=SearchService(
             store,
