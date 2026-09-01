@@ -299,6 +299,36 @@ and why it was parked.
   version measures the ratio across a corpus and sets the ceiling from it, which
   needs a corpus this project does not yet have.
 
+- **The retrieval harness treats an absent baseline key as a mismatch for
+  `corpus` only, and five other load-bearing keys are still skipped.**
+  `conditions_match` in `scripts/evaluate_retrieval.py` compares eight keys and
+  skips any the baseline does not record. `embed-input-is-corpus-coupled` closed
+  that fail-open for `corpus`. Of the rest, `embedder` and `chunk_max_chars` are
+  genuinely subsumed by corpus identity, and `window_max_chars` is genuinely
+  readability-only — `measure()` scores `hit.chunk.text` and never reads the
+  window — but `reranker`, `query_set`, `queries`, `documents` and `limit` all
+  move the recorded figures and are all still skipped when absent. `reranker` is
+  the sharpest: it is a query-time profile setting, so it is outside corpus
+  identity by design, and this project's own measurement is that both available
+  rerankers made retrieval worse and took Ukrainian to zero. Parked: making them
+  required is one line, but it decides that every operator baseline recorded
+  before the change becomes incomparable until re-recorded, which is a call
+  about the harness's contract rather than a defect in this one.
+
+- **An incomparable run exits 0, so a stricter comparability check can convert a
+  detected regression into a green run.** `scripts/evaluate_retrieval.py` prints
+  "Not compared against the baseline" and returns 0, while the adjacent
+  no-metrics case returns 1 with an explicit comment that it must not pass by
+  default because it is the one thing that can see retrieval regress. Same class
+  of defect, opposite exit code. It matters now because
+  `embed-input-is-corpus-coupled` made an absent `corpus` key route every such
+  run down that branch: an operator holding a pre-change baseline had a regressed
+  run return 1 and now gets 0 until they re-record. The repository's own baseline
+  is annotated and pinned by a test, so the shipped gate cannot enter that state
+  silently. Parked: whether "cannot be compared" should be an error or a report
+  is the harness's contract, and changing it belongs with the decision, not
+  inside a change that only added a key.
+
 ## Fixed
 
 - **~~The store has no migration path.~~** Fixed by

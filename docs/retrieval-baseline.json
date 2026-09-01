@@ -2,6 +2,7 @@
   "recorded": "2026-08-28",
   "measured_on": "Darwin arm64, python 3.12.14",
   "conditions": {
+    "corpus": "chunk_max_chars=2000|chunk_overlap_chars=200|embed_model=intfloat/multilingual-e5-large|embed_dimensions=1024|embed_library=fastembed==0.8.0|embedder=model",
     "embedder": "model",
     "reranker": "none",
     "query_set": "built-in",
