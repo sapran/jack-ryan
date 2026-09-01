@@ -274,19 +274,59 @@ Slice 1 took the leg that needed no model. Slice 2 — the extraction quality ga
 |---|---|
 | ~~Cross-encoder rerank~~ | Built. The seam ships; no model does. Measured below. |
 | ~~Section-window expansion~~ | Built. A result's text is a window around the matched passage; the passage stays what is cited. |
-| The summarization layer | Per-chunk contextual summaries at ingest, then per-document map-reduce. The per-chunk switch is a **contract** value, not a profile one — the summary is folded into what is embedded, so turning it on invalidates an existing corpus — and it is off by default because it is the dominant ingest cost. |
+| ~~The summarization layer~~ | Built. Per-chunk contextual summaries folded into embed input, then a per-document map-reduce summary. The per-chunk switch is **corpus-coupled but lives in the profile**: the summariser's identity is *composed* into corpus identity exactly as `embedder` is, not declared in the `contract` block, because it is partly a hash of the shipped prompt and sampling parameters that no operator could know. Turning it on refuses an existing corpus; leaving it off keeps the identity string byte-identical, which is what lets the `bauman4` corpus survive this change. Off by default because it is the dominant ingest cost. The per-document summary folds nothing, so it moves no vector and is outside corpus identity. |
 | Mentions / NER | Classical NER plus pattern identifiers, as facets and pivots. Pattern extraction needs no model and could ship first. |
 
 Recommended order: ~~fix the fingerprint gap~~ (done twice, the library version
 then the embedder identity) → ~~OCR/VLM~~ (done) → ~~rerank and section-window
-together as a retrieval-quality slice~~ (done, measured, see below), then
-summaries, then mentions.
+together as a retrieval-quality slice~~ (done, measured, see below) →
+~~summaries~~ (done, see below), then mentions.
 
 **Retrieval quality is now measured**, which closes what this document called
 the single largest unaddressed gap in the project. What that measurement settles
 and what it does not is the next section.
 
 PST stays last, as `docs/design.md` § 10 has it.
+
+## What the summarization layer ships, and what it deliberately does not
+
+The `contextual-summaries` change built the summariser port, an
+OpenAI-compatible implementation, the fold into embed input behind
+`chunk_summaries`, and per-document summaries. Schema 6 adds `chunks.summary`,
+`documents.summary` and `documents.summary_by`.
+
+**The `bauman4` corpus survived it.** With the fold off, `corpus_fingerprint`
+produces the identity string that store already recorded, byte for byte, because
+the `|summariser=` component is appended only when folding is on. Verified
+against a copy of the real 435 MB file: it migrated 5 → 6, opened, kept all
+36,305 chunks, and reported the unchanged identity. Turn the fold on and the same
+store is refused with both strings named — which is correct, and costs a reingest
+of 1,760 documents through roughly 36,000 LLM calls.
+
+This is the first thing in the project that sends corpus text off the instance.
+It is opt-in and the read stack still runs offline with zero configured
+endpoints.
+
+**A reasoning model needs thinking off, and the request now says so.** Against
+the gdx boxes' Qwen3.8-27B, the first end-to-end run failed two documents: the
+model spent the recipe's whole 200-token budget on `reasoning_content` and
+returned an empty context. The fail-closed policy caught it — those documents
+failed rather than being embedded bare — but the fix is
+`chat_template_kwargs: {"enable_thinking": false}`, hashed into the recipe
+because it changes what the model produces. Same ingest afterwards: no failures,
+and 60 seconds instead of 178. An endpoint that ignores the key leaves a
+reasoning model thinking, and the error now names that cause specifically.
+
+**What is deliberately not done: whether folding actually improves retrieval.**
+That needs a summarised corpus and a re-recorded baseline annotated with the new
+identity, and `openspec/specs/retrieval-evaluation` requires recording a baseline
+to be a deliberate act. `scripts/evaluate_retrieval.py` was run and is at or
+above the baseline on every metric — which proves only that the default really is
+off, since a moved figure would have meant something was folded that should not
+have been. The measurement is the next reported piece of work on this leg, and
+the baseline must not be quietly overwritten to get it.
+
+**Mentions / NER is what remains in M3**, plus PST.
 
 ## Retrieval quality is measured now — and what it says about reranking
 

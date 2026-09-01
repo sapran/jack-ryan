@@ -86,6 +86,47 @@ Sampling is pinned at `temperature=0.0` rather than left to the endpoint's defau
 part of the recipe an operator can see, and two endpoints disagreeing on it would produce two corpora
 under one identity.
 
+### Thinking is disabled in the request, and that is part of the recipe
+
+The end-to-end check against a real endpoint found this, and it is the reason that check exists rather
+than a stub.
+
+The gdx boxes serve Qwen3.8-27B, a reasoning model. Asked for a chunk context at the recipe's
+`max_tokens=200`, it spends the budget on a trace: `reasoning_content` fills, and `content` arrives
+either empty or cut mid-word. Measured on one probe: 719 characters of reasoning, `finish_reason:
+length`, and a summary truncated at "awarded to three b". Over the `sectioned_corpus` fixture, two
+documents out of the set failed outright on an empty context.
+
+The fail-closed policy worked exactly as designed — those two documents failed rather than being
+embedded bare — but a feature that fails on random documents against the project's own inference boxes
+is not shipped. So the request now carries `chat_template_kwargs: {"enable_thinking": false}`, which
+llama.cpp, vLLM and SGLang accept. The same probe then returned a clean 24-token context with
+`finish_reason: stop`, and the live ingest went from two failures at 178 seconds to none at 60.
+
+**It is hashed into `_RECIPE`.** Thinking changes what the model produces, which is the stated criterion
+for what belongs in the recipe. Left out, a corpus summarised with thinking on and one summarised with
+it off would share an identity while holding vectors built from different text — the failure corpus
+identity exists to prevent. `RECIPE_FINGERPRINT` moved from `59268425f582` to `7d4b31a0ed4b` as a
+result, which costs nothing: no corpus has been built with folding on, and the two-argument identity
+string is untouched.
+
+**Raising `max_tokens` was considered and rejected.** It would reduce the frequency of the failure
+without removing it — a reasoning model can consume any budget — leaving a fault randomly distributed
+across documents, which is worse than a clear refusal. Reading `reasoning_content` as a fallback was
+rejected outright: a reasoning trace is not a context, and folding one into an embedding is worse than
+failing.
+
+The three endpoint behaviours are all safe, which is what makes sending the key unconditionally
+acceptable. An endpoint that honours it produces clean summaries. One that ignores it leaves a
+reasoning model thinking, which surfaces as an empty context and fails the document loudly — and the
+error names that cause specifically, because the remedy differs and an empty string does not
+distinguish it. One that rejects the unknown key fails in `check()`, naming the setting, before any
+document is read.
+
+The requirement is only asserted of a real summary, not in `_content`, because `check()` probes with a
+one-token budget and an endpoint stopped at one token may legitimately return nothing. Putting the
+check in the shared parser would have failed a healthy summariser at startup.
+
 ### A summariser failure fails the document, and does not degrade
 
 This inverts the reranker's transient-failure policy, and the inversion is the substance of the

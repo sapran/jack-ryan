@@ -42,8 +42,32 @@ language of the notes.
 
 {notes}"""
 
+SUMMARY_ENABLE_THINKING = False
+"""Whether the endpoint is asked to let the model think before answering.
+
+False, and sent explicitly rather than left to the endpoint's default. A
+reasoning model with thinking on spends its token budget on a trace that is
+discarded — `content` arrives empty or cut mid-word while `reasoning_content`
+holds the tokens — and this task has no use for one: the request is for a short
+standalone context, and measured against a local Qwen3 endpoint the answer is
+about twenty-four tokens.
+
+Sent as `chat_template_kwargs`, which llama.cpp, vLLM and SGLang accept. An
+endpoint that ignores the key leaves a reasoning model thinking, which surfaces
+as an empty context and fails the document loudly rather than folding a
+truncated one in. An endpoint that rejects the key fails in `check`, naming the
+setting, before any document is read. All three outcomes are safe; only the
+first is useful.
+
+Hashed into the recipe below because it changes what the model produces. Left
+out, a corpus summarised with thinking on and one summarised with it off would
+share an identity while holding vectors built from different text — which is
+the failure corpus identity exists to prevent.
+"""
+
 # What is hashed is exactly what determines the embedded text: the prompt, how
-# much of the document reaches it, and the sampling parameters. Editing any one of
+# much of the document reaches it, the sampling parameters, and whether the model
+# is asked to think first. Editing any one of
 # them changes `RECIPE_FINGERPRINT`, and therefore corpus identity, with nobody
 # having to remember to bump a version — a hand-maintained version number would be
 # a second copy of the recipe, and two copies can disagree.
@@ -57,6 +81,7 @@ _RECIPE = "|".join((
     f"document_chars={SUMMARY_DOCUMENT_CHARS}",
     f"max_tokens={SUMMARY_MAX_TOKENS}",
     f"temperature={SUMMARY_TEMPERATURE}",
+    f"enable_thinking={SUMMARY_ENABLE_THINKING}",
 ))
 RECIPE_FINGERPRINT = hashlib.sha256(_RECIPE.encode("utf-8")).hexdigest()[:12]
 
@@ -159,6 +184,10 @@ class OpenAICompatSummariser:
             "messages": [{"role": "user", "content": prompt}],
             "temperature": SUMMARY_TEMPERATURE,
             "max_tokens": max_tokens,
+            # Part of the hashed recipe. An endpoint that does not know this key
+            # ignores it, which leaves a reasoning model thinking and surfaces
+            # below as an empty context rather than as a truncated fold.
+            "chat_template_kwargs": {"enable_thinking": SUMMARY_ENABLE_THINKING},
         }
         try:
             response = client.post(self._completions_url, json=body)
@@ -203,6 +232,37 @@ class OpenAICompatSummariser:
             )
         return content.strip()
 
+    def _empty_context(self, payload, subject: str) -> SummaryError:
+        """The error for a completion that parsed but carried no text.
+
+        Built here rather than raised in `_content`, because `check` calls
+        `_content` with a one-token budget and an endpoint stopped at one token
+        may legitimately return nothing. Only a real summary is required to be
+        non-empty, so the requirement lives with the callers that need it.
+
+        Names which of the two causes it is, because the remedy differs and an
+        empty string does not distinguish them. The request already asks for
+        thinking to be off, so a reasoning trace here means the endpoint ignored
+        that key — which is the common case against a local reasoning model and
+        the one an operator can act on.
+        """
+        choice = payload.get("choices", [{}])[0] if isinstance(payload, dict) else {}
+        reasoning = (choice.get("message") or {}).get("reasoning_content") or ""
+        if reasoning:
+            return SummaryError(
+                f"summariser {self.name!r} returned no context for {subject}, having "
+                f"spent {len(reasoning)} characters of reasoning instead. The request "
+                "asks for thinking to be disabled, so this endpoint ignored "
+                "`chat_template_kwargs.enable_thinking`. Serve the model with thinking "
+                "off, or name a model that does not think."
+            )
+        return SummaryError(
+            f"summariser {self.name!r} returned an empty context for {subject} "
+            f"(finish_reason={choice.get('finish_reason')!r}). An empty context is not "
+            "a cheap fold: with chunk_summaries on it embeds the bare chunk, putting "
+            "one document inside the corpus built from a different kind of input."
+        )
+
     def summarise_chunks(
         self, document_text: str, chunk_texts: Sequence[str]
     ) -> list[str]:
@@ -230,37 +290,29 @@ class OpenAICompatSummariser:
             return [future.result() for future in futures]
 
     def _chunk_summary(self, client, document: str, chunk: str) -> str:
-        summary = self._content(
-            self._post(
-                client,
-                SUMMARY_PROMPT.format(document=document, chunk=chunk),
-                SUMMARY_MAX_TOKENS,
-            )
+        payload = self._post(
+            client,
+            SUMMARY_PROMPT.format(document=document, chunk=chunk),
+            SUMMARY_MAX_TOKENS,
         )
+        summary = self._content(payload)
         if not summary:
-            raise SummaryError(
-                f"summariser {self.name!r} returned an empty context for a chunk of "
-                f"{len(chunk)} characters. An empty context is not a cheap fold: with "
-                "chunk_summaries on it embeds the bare chunk, putting one document "
-                "inside the corpus built from a different kind of input."
-            )
+            raise self._empty_context(payload, f"a chunk of {len(chunk)} characters")
         return summary
 
     def summarise_document(self, chunk_summaries: Sequence[str]) -> str:
         if not chunk_summaries:
             return ""
         client = self._connect()
-        summary = self._content(
-            self._post(
-                client,
-                DOCUMENT_PROMPT.format(notes=_numbered_notes(chunk_summaries)),
-                SUMMARY_MAX_TOKENS,
-            )
+        payload = self._post(
+            client,
+            DOCUMENT_PROMPT.format(notes=_numbered_notes(chunk_summaries)),
+            SUMMARY_MAX_TOKENS,
         )
+        summary = self._content(payload)
         if not summary:
-            raise SummaryError(
-                f"summariser {self.name!r} returned an empty summary for a document of "
-                f"{len(chunk_summaries)} notes"
+            raise self._empty_context(
+                payload, f"a document of {len(chunk_summaries)} notes"
             )
         return summary
 
