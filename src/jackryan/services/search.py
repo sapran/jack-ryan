@@ -7,8 +7,9 @@ from dataclasses import replace
 
 from ..embedding.port import EmbedderPort
 from ..errors import AmbiguousReferenceError, ConfigError, NotFoundError, ValidationError
+from ..mentions import MENTION_KINDS
 from ..reranking.port import RerankError, RerankerPort
-from ..storage.port import Chunk, Document, SearchHit, StorePort, Window
+from ..storage.port import Chunk, Document, MentionFacet, SearchHit, StorePort, Window
 from .casefiles import CasefileService
 
 MAX_LIMIT = 100
@@ -42,6 +43,67 @@ MAX_RESPONSE_CHARS = 60_000
 # is handed; this bounds how far a single result may wander from what actually
 # matched, which is a different question.
 WINDOW_MAX_CHUNKS_EITHER_SIDE = 3
+
+
+DEFAULT_FACET_LIMIT = 50
+MAX_FACET_LIMIT = 500
+
+
+def _parsed_mention(reference: str) -> tuple[str, str]:
+    """Split a `--mention` argument into a kind and a value.
+
+    Accepts `<kind>:<value>` to mean that kind alone, and a bare `<value>` to
+    mean any kind. Returns `("", "")` for an empty argument, which is no filter.
+
+    An unrecognised kind is a `ValidationError` naming the kinds that exist,
+    never an empty result set. An empty result would tell the analyst this
+    casefile contains no such identifier, which is a different claim from "there
+    is no such kind of identifier" and, unlike it, false.
+
+    Split on the first colon only, because an identifier may contain one — a
+    value is not guaranteed to be colon-free and the kind is.
+    """
+    cleaned = (reference or "").strip()
+    if not cleaned:
+        return "", ""
+
+    head, separator, tail = cleaned.partition(":")
+    if separator and head.strip().lower() in MENTION_KINDS:
+        kind, value = head.strip().lower(), tail.strip()
+    elif separator and head.strip().lower() and not tail.strip():
+        # `email:` with nothing after it. Refused rather than read as a bare
+        # value, because the caller plainly meant to filter by kind and gave no
+        # value, and searching for the literal text "email:" is not it.
+        raise ValidationError(
+            f"--mention {cleaned!r} names a kind with no value. Write "
+            f"<kind>:<value>, or a value alone to match any kind."
+        )
+    else:
+        kind, value = "", cleaned
+
+    if separator and not kind and head.strip():
+        # Something that looks like a kind and is not one. Caught here rather
+        # than falling through to a value search, because `passport:12345` as a
+        # literal value matches nothing and would read as an answer.
+        raise ValidationError(
+            f"--mention names identifier kind {head.strip()!r}, which no extractor "
+            f"produces. Known kinds: {', '.join(MENTION_KINDS)}."
+        )
+    if not value:
+        raise ValidationError("--mention needs a value to match")
+    return kind, value
+
+
+def _validated_kind(kind: str) -> str:
+    """A facet's kind: one the registry produces, or empty for all of them."""
+    cleaned = (kind or "").strip().lower()
+    if cleaned and cleaned not in MENTION_KINDS:
+        raise ValidationError(
+            f"identifier kind {cleaned!r} is not one any extractor produces. "
+            f"Known kinds: {', '.join(MENTION_KINDS)}."
+        )
+    return cleaned
+
 
 # The same heading line the chunker reads when it builds a heading trail
 # (`src/jackryan/ingestion/chunker.py`). Markdown only, which is the limit of
@@ -227,7 +289,11 @@ class SearchService:
         return chunk, document
 
     def search(
-        self, casefile_reference: str, query: str, limit: int = DEFAULT_LIMIT
+        self,
+        casefile_reference: str,
+        query: str,
+        limit: int = DEFAULT_LIMIT,
+        mention: str = "",
     ) -> list[SearchHit]:
         """Search one casefile, returning ranked passages.
 
@@ -235,6 +301,20 @@ class SearchService:
         are never blended: keyword relevance and vector distance are not
         comparable quantities, and mixing them would need a weighting tuned per
         corpus.
+
+        `mention` narrows the search to passages carrying an identifier, as
+        `<kind>:<value>` or a bare value matching any kind. It is a predicate the
+        retrievers apply, not a filter over what they return, and the difference
+        is the whole of it: both are asked for a bounded `depth`, so removing
+        non-matching candidates afterwards would discard every matching passage
+        that ranked below that depth unfiltered. A caller pivoting on an
+        identifier that appears in one passage of ten thousand would be handed
+        nothing while the store held exactly what they asked for — and would read
+        it as "this casefile does not mention that".
+
+        It adds no rank leg and touches no score. It decides which passages are
+        candidates; fusion then ranks them exactly as it ranks any others, which
+        is also why reranking still only reorders what fusion produced.
         """
         casefile = self._casefiles.resolve(casefile_reference)
 
@@ -253,9 +333,17 @@ class SearchService:
         if self._reranker is not None:
             depth = max(depth, self._rerank_depth)
 
-        keyword_ids = self._store.search_keyword(casefile.id, cleaned, depth)
+        mention_kind, mention_value = _parsed_mention(mention)
+
+        keyword_ids = self._store.search_keyword(
+            casefile.id, cleaned, depth, mention_kind, mention_value
+        )
         vector_ids = self._store.search_vector(
-            casefile.id, self._embedder.embed_query(cleaned), depth
+            casefile.id,
+            self._embedder.embed_query(cleaned),
+            depth,
+            mention_kind,
+            mention_value,
         )
 
         keyword_rank = {cid: i + 1 for i, cid in enumerate(keyword_ids)}
@@ -316,6 +404,39 @@ class SearchService:
                 )
             )
         return self._widened(hits)
+
+    def mention_facets(
+        self,
+        casefile_reference: str,
+        kind: str = "",
+        limit: int = DEFAULT_FACET_LIMIT,
+    ) -> list[MentionFacet]:
+        """What identifiers a casefile contains, counted.
+
+        The question an analyst cannot otherwise ask. Search answers "does this
+        corpus mention X", which needs X in hand; this answers "what does it
+        mention", which is the step the role's own method calls *pivot* — the
+        corpus telling the analyst what it calls things.
+
+        Both counts are carried because neither substitutes for the other: an
+        identifier mentioned forty times in one document is a different fact from
+        one mentioned once in each of forty, and an analyst deciding where to
+        look has to be able to tell them apart.
+
+        A separate path rather than an envelope on `search`, which returns a bare
+        list of hits: an envelope would change three surfaces for a question none
+        of them asked.
+
+        The inventory is what was *found*, never a claim about what is *there*.
+        The shipped extractors prefer precision, so an identifier written without
+        its keyword or with a transposed digit is absent from this — and the
+        analyst pack's own rule that absence of evidence is not evidence of
+        absence applies to this list exactly.
+        """
+        casefile = self._casefiles.resolve(casefile_reference)
+        # Clamped rather than refused, as every other bound on this surface is.
+        bounded = max(1, min(int(limit), MAX_FACET_LIMIT))
+        return self._store.mention_facets(casefile.id, _validated_kind(kind), bounded)
 
     # -- reranking ---------------------------------------------------------
 

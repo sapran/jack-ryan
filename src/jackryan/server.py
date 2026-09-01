@@ -265,16 +265,45 @@ def create_app(context: Context | None = None) -> FastAPI:
 
     @app.get("/api/casefiles/{reference}/search")
     async def search(
-        request: Request, reference: str, q: str, limit: int = 10
+        request: Request, reference: str, q: str, limit: int = 10, mention: str = ""
     ) -> dict[str, Any]:
         ctx: Context = request.app.state.context
         # Embedding a query and two index scans are blocking work too.
-        hits = await run_in_threadpool(ctx.search.search, reference, q, limit)
+        # A keyword argument here, unlike the MCP surface's positional one:
+        # `run_in_threadpool` forwards keywords and `anyio.to_thread.run_sync`
+        # does not.
+        hits = await run_in_threadpool(
+            ctx.search.search, reference, q, limit, mention=mention
+        )
         return {
             "query": q,
+            "mention": mention,
             "total": len(hits),
             "ranking": hits[0].ranking if hits else "fusion",
             "results": [serialize_hit(h) for h in hits],
+        }
+
+    @app.get("/api/casefiles/{reference}/mentions")
+    async def mentions(
+        request: Request, reference: str, kind: str = "", limit: int = 50
+    ) -> dict[str, Any]:
+        """The identifiers a casefile contains, counted."""
+        ctx: Context = request.app.state.context
+        facets = await run_in_threadpool(
+            ctx.search.mention_facets, reference, kind, limit
+        )
+        return {
+            "kind": kind,
+            "total": len(facets),
+            "results": [
+                {
+                    "kind": f.kind,
+                    "value": f.value,
+                    "mentions": f.mentions,
+                    "documents": f.documents,
+                }
+                for f in facets
+            ],
         }
 
     return app

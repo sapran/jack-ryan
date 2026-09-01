@@ -38,15 +38,21 @@ Work in this order, and resist starting at the end:
 2. `case_casefile_overview` — learn how big it is and what it is made of
    before you search it. A search you cannot size is a search you cannot
    report coverage for.
-3. `case_search` — hybrid keyword and semantic retrieval. Start broad, then
+3. `case_mentions` — the identifiers the casefile actually contains: email
+   addresses, telephone numbers, bank accounts, registration numbers, each
+   with how many times and in how many documents. Ask before you guess what to
+   search for. It is an inventory of what was *found*, never a claim about what
+   is there.
+4. `case_search` — hybrid keyword and semantic retrieval. Start broad, then
    narrow. Read the `formatted` index first and pull bodies only where you
-   have committed.
-4. `case_get_passage` — a passage with the surrounding text of its section,
+   have committed. `mention` narrows a search to passages carrying one
+   identifier — that is how an entry from `case_mentions` becomes a pivot.
+5. `case_get_passage` — a passage with the surrounding text of its section,
    when a hit needs its surroundings to be intelligible. The passage stays the
    thing you cite; the surroundings are there to be read.
-5. `case_read_document` — the full text, bounded. Read this late; it is the
+6. `case_read_document` — the full text, bounded. Read this late; it is the
    most expensive thing you can do and rarely the fastest route to an answer.
-6. `case_cite` — turn a passage into a citation. Every factual claim you make
+7. `case_cite` — turn a passage into a citation. Every factual claim you make
    should resolve through this to a document and a span.
 
 Epistemics this corpus demands:
@@ -227,11 +233,15 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             "with identifiers for reading and citing. Read the formatted index first. "
             "`ranking` says what decided the order. A `rerank_score`, where present, is "
             "an uncalibrated value comparable only within this response — not a "
-            "confidence, and not comparable with another query's."
+            "confidence, and not comparable with another query's. "
+            "`mention` narrows the search to passages carrying one identifier, as "
+            "`kind:value` or a bare value — take one from `case_mentions`."
         ),
         annotations=_annotations_for("case_search"),
     )
-    async def case_search(casefile: str, query: str, limit: int = 10) -> dict[str, Any]:
+    async def case_search(
+        casefile: str, query: str, limit: int = 10, mention: str = ""
+    ) -> dict[str, Any]:
         # Clamped rather than refused: there is no validation layer above this
         # surface, and an over-large limit is a harmless mistake.
         # Clamp the value itself: `limit or 10` would treat an explicit 0 as
@@ -239,12 +249,70 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         bounded = max(1, min(int(limit), MAX_SEARCH_RESULTS))
         try:
             resolved = await off_loop(context.casefiles.resolve, casefile)
+            # Positional, and that is load-bearing: `anyio.to_thread.run_sync`
+            # passes only positional arguments through, so a keyword here would
+            # be a TypeError at the first filtered search rather than at import.
+            # Starlette's `run_in_threadpool` does forward keywords, so the REST
+            # route is free to use one — the asymmetry is easy to miss.
             hits = await anyio.to_thread.run_sync(
-                context.search.search, casefile, query, bounded
+                context.search.search, casefile, query, bounded, mention
             )
         except JackRyanError as exc:
             return from_exception(exc)
         return search_payload(hits, query=query, casefile_id=resolved.id)
+
+    @server.tool(
+        name="case_mentions",
+        description=(
+            "The identifiers this casefile contains — email addresses, telephone "
+            "numbers, bank accounts, company registration numbers — each with how many "
+            "times it is mentioned and in how many documents. Ask this before guessing "
+            "what to search for, then pass a value to `case_search`'s `mention` to pivot. "
+            "It inventories what was found: an identifier written unconventionally is "
+            "absent from it, so an empty result is not proof of absence."
+        ),
+        annotations=_annotations_for("case_mentions"),
+    )
+    async def case_mentions(
+        casefile: str, kind: str = "", limit: int = 50
+    ) -> dict[str, Any]:
+        try:
+            resolved = await off_loop(context.casefiles.resolve, casefile)
+            facets = await anyio.to_thread.run_sync(
+                context.search.mention_facets, casefile, kind, limit
+            )
+        except JackRyanError as exc:
+            return from_exception(exc)
+
+        rows = [
+            {
+                "kind": facet.kind,
+                # Corpus-derived, so collapsed like any other corpus value before
+                # it reaches a line-oriented block. An identifier has no sentences
+                # for an instruction to hide in and is bounded by its own format,
+                # which is why `listing_payload` is still the right builder — that
+                # stops being true the moment an entry carries surrounding prose.
+                "value": one_line(facet.value, 120),
+                "mentions": facet.mentions,
+                "documents": facet.documents,
+            }
+            for facet in facets
+        ]
+        formatted = (
+            "\n".join(
+                f"{r['mentions']:>5} × {r['documents']:>4} doc  {r['kind']:<20} {r['value']}"
+                for r in rows
+            )
+            or "No identifiers extracted from this casefile."
+        )
+        return listing_payload(
+            rows,
+            formatted=(
+                f"casefile {resolved.slug}\nmentions  docs  kind                 value\n"
+                + formatted
+            ),
+            total=len(rows),
+        )
 
     @server.tool(
         name="case_get_passage",

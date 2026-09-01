@@ -24,9 +24,12 @@ bottom.
 3. **Search** — `case_search`. Start broad, then narrow. Read the `formatted`
    index first and pull bodies only where you have committed. Try several
    phrasings: the corpus does not know your vocabulary.
-4. **Pivot** — follow names, dates, and identifiers you find into new searches.
-   The second search is usually better than the first, because the corpus has
-   told you what it calls things.
+4. **Pivot** — `case_mentions` to see what identifiers the casefile actually
+   contains, then `case_search --mention` to follow one into the passages that
+   carry it. Also follow names and dates you find into new searches. The second
+   search is usually better than the first, because the corpus has told you
+   what it calls things. Treat the inventory as what was found, not as what is
+   there: an identifier written unconventionally is absent from it.
 5. **Read in context** — `case_get_passage` when a hit needs its surroundings,
    `case_read_document` when the whole document genuinely matters. Read late.
 6. **Cite** — `case_cite`. Every factual claim you make resolves through this.

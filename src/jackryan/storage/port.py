@@ -186,6 +186,76 @@ class Casefile:
         return self.id[:8]
 
 
+@dataclass(frozen=True)
+class Mention:
+    """An identifier found in a chunk's text, addressed by that chunk.
+
+    A mention is derived from a chunk and keyed on it, so it is written by the
+    same call that writes the chunk and removed by the same deletion. It records
+    what was found, where, and by which extractor — never a judgement about what
+    the identifier means, which is the analyst's to make.
+    """
+
+    # The chunk this identifier was found in: what a citation resolves to, and
+    # what a deletion removes the mention by.
+    chunk_id: str
+    # The document and the casefile that chunk belongs to. Both are derivable
+    # from `chunk_id` and are carried anyway, which is denormalisation on
+    # purpose. The inventory counts distinct documents per identifier and every
+    # query is confined to one casefile, so these two are the grouping key and
+    # the filter key of every read this table exists to serve. Reaching them
+    # through a join back to `chunks` would put the leading column of both
+    # mention indexes out of reach and turn each of those reads into a scan of
+    # every mention in the store. Nothing writes them but the chunk being
+    # stored, so the copies cannot come to disagree.
+    document_id: str
+    casefile_id: str
+    # Which kind of identifier this is, as the extractor that found it declares
+    # it.
+    kind: str
+    # The text exactly as the chunk had it, so a quotation still shows what the
+    # document said rather than what normalisation made of it.
+    value: str
+    # The comparable form, and what a pivot matches on: one account written with
+    # spaces in one document and without them in another is one identifier.
+    normalised: str
+    # Where `value` sits in the chunk's text, never the document's. The chunk is
+    # the unit the store addresses and the unit a citation resolves to, so these
+    # offsets select the mention from the same text a hit carries.
+    char_start: int
+    char_end: int
+    # Which extractor found it. Recorded per mention rather than inferred from
+    # `kind`, because the registry is the seam a model-backed extractor arrives
+    # through and two extractors may then answer for one kind — at which point
+    # an analyst discounting a match needs to know which of them made it.
+    extractor: str
+    # How far the extractor stands behind this match. Every shipped extractor
+    # validates rather than guesses and so asserts 1.0; this exists for the
+    # model-backed extractor that will not be able to.
+    confidence: float = 1.0
+
+
+@dataclass(frozen=True)
+class MentionFacet:
+    """One line of a casefile's identifier inventory: an identifier and its weight.
+
+    An inventory of what was found, never a claim about what is there. An
+    identifier written without the keyword its extractor anchors on, or with a
+    transposed digit, is absent from this list and present in the corpus.
+    """
+
+    kind: str
+    # The normalised form, which is what the counts below are grouped by: two
+    # spellings of one account are one entry here, as they are one pivot.
+    value: str
+    # How many times it was mentioned, and in how many documents. Both, because
+    # neither substitutes for the other — an identifier mentioned forty times in
+    # one document is a different fact from one mentioned once in each of forty,
+    # and an analyst choosing where to look next has to tell them apart.
+    mentions: int
+    documents: int
+
+
 class StorePort(Protocol):
     """What the service layer requires of a store."""
 
@@ -239,9 +309,23 @@ class StorePort(Protocol):
     ) -> list[Document]: ...
 
     def replace_chunks(
-        self, document_id: str, chunks: list[Chunk], embeddings: list[list[float]]
+        self,
+        document_id: str,
+        chunks: list[Chunk],
+        embeddings: list[list[float]],
+        mentions: list[Mention],
     ) -> None:
-        """Replace a document's chunks and their vectors in one transaction."""
+        """Replace a document's chunks, their vectors and their mentions atomically.
+
+        Mentions are a parameter of this call rather than a method of their own,
+        and that is the whole of the reason they appear here. A chunk's
+        identifier is minted afresh on every reingest, so a separate write made
+        after the chunks were stored would attach its rows to identifiers that
+        had just been replaced. That failure is not detectable afterwards: the
+        rows are well-formed and reference identifiers that did once exist. A
+        seam that can be used in the wrong order eventually is, so the wrong
+        order is not offered.
+        """
         ...
 
     def find_chunks_by_id_prefix(self, casefile_id: str, prefix: str) -> list[Chunk]: ...
@@ -252,11 +336,37 @@ class StorePort(Protocol):
         self, document_id: str, ordinal: int, radius: int
     ) -> list[Chunk]: ...
 
-    def search_keyword(self, casefile_id: str, query: str, limit: int) -> list[str]: ...
+    def search_keyword(
+        self,
+        casefile_id: str,
+        query: str,
+        limit: int,
+        mention_kind: str = "",
+        mention_value: str = "",
+    ) -> list[str]: ...
 
     def search_vector(
-        self, casefile_id: str, embedding: list[float], limit: int
+        self,
+        casefile_id: str,
+        embedding: list[float],
+        limit: int,
+        mention_kind: str = "",
+        mention_value: str = "",
     ) -> list[str]: ...
+
+    def mention_facets(
+        self, casefile_id: str, kind: str, limit: int
+    ) -> list[MentionFacet]:
+        """Count a casefile's identifiers, most mentioned first.
+
+        An empty `kind` reports every kind. `limit` bounds the result, because a
+        corpus holds far more identifiers than a caller can read.
+
+        Counted by the store rather than by the service layer, which holds no
+        SQL: fetching a casefile's mentions in order to count them in Python
+        costs the whole table in memory for a handful of integers.
+        """
+        ...
 
     def get_chunks(self, chunk_ids: list[str]) -> dict[str, Chunk]: ...
 

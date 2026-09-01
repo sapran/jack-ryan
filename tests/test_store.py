@@ -94,7 +94,7 @@ def test_an_embedding_of_the_wrong_width_is_refused(tmp_path):
     document = make_document(store, casefile)
     chunk = make_chunk(document, casefile)
     with pytest.raises(ConfigError, match="width 3"):
-        store.replace_chunks(document.id, [chunk], [[0.1, 0.2, 0.3]])
+        store.replace_chunks(document.id, [chunk], [[0.1, 0.2, 0.3]], [])
     store.close()
 
 
@@ -110,7 +110,7 @@ def test_a_failed_chunk_write_leaves_nothing_behind(tmp_path):
         heading_path="", text="second", char_start=0, char_end=6,
     )
     with pytest.raises(Exception):
-        store.replace_chunks(document.id, [good, duplicate], [[0.0] * 4, [0.0] * 4])
+        store.replace_chunks(document.id, [good, duplicate], [[0.0] * 4, [0.0] * 4], [])
 
     assert store.search_keyword(casefile.id, "first", 10) == []
     assert store.search_vector(casefile.id, [0.0] * 4, 10) == []
@@ -122,10 +122,10 @@ def test_replacing_chunks_removes_the_previous_ones(tmp_path):
     casefile = make_casefile(store)
     document = make_document(store, casefile)
 
-    store.replace_chunks(document.id, [make_chunk(document, casefile, 0, "aardvark")], [[1.0, 0, 0, 0]])
+    store.replace_chunks(document.id, [make_chunk(document, casefile, 0, "aardvark")], [[1.0, 0, 0, 0]], [])
     assert store.search_keyword(casefile.id, "aardvark", 10)
 
-    store.replace_chunks(document.id, [make_chunk(document, casefile, 0, "buffalo")], [[0, 1.0, 0, 0]])
+    store.replace_chunks(document.id, [make_chunk(document, casefile, 0, "buffalo")], [[0, 1.0, 0, 0]], [])
     assert store.search_keyword(casefile.id, "aardvark", 10) == []
     assert store.search_keyword(casefile.id, "buffalo", 10)
     store.close()
@@ -135,7 +135,7 @@ def test_deleting_a_casefile_takes_its_documents_and_chunks(tmp_path):
     store = make_store(tmp_path, dimensions=4)
     casefile = make_casefile(store)
     document = make_document(store, casefile)
-    store.replace_chunks(document.id, [make_chunk(document, casefile, 0, "aardvark")], [[1.0, 0, 0, 0]])
+    store.replace_chunks(document.id, [make_chunk(document, casefile, 0, "aardvark")], [[1.0, 0, 0, 0]], [])
 
     store.delete_casefile(casefile.id)
     assert store.get_document(document.id) is None
