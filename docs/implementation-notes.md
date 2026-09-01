@@ -157,6 +157,44 @@ and why it was parked.
   `.python-version` would close it, and that is a repository change rather than a
   note, so it is not taken here.
 
+  **And the interpreter drift is not cosmetic, because `fastembed`'s own
+  requirements are keyed to it.** Its markers read
+  `numpy>=1.26; python_version == "3.12"` against
+  `numpy>=2.3.0; python_version >= "3.14"`, and
+  `onnxruntime>=1.17.0,!=1.20.0,!=1.24.0,!=1.24.1` for 3.12 against
+  `onnxruntime>=1.24.2` for 3.14. So letting uv pick the newer interpreter
+  silently swaps the numeric stack underneath the embedder, which is the code
+  that produces the vectors.
+
+- **`uv.lock` is not a gate anywhere: neither CI nor the container reads it.**
+  `.github/workflows/tests.yml:29` installs with `uv pip install -e ".[dev]"` —
+  the pip-compatible interface, which resolves fresh from `pyproject.toml` and
+  ignores the lockfile — with no `--locked` or `--frozen`, and the Dockerfile
+  installs with plain `pip install --no-cache-dir .`. Only a developer running
+  `uv sync` gets the locked set. So the lockfile pins one machine and the two
+  gates resolve whatever is current on the day they run.
+
+  That matters here rather than in general because of *what* is unpinned.
+  `pyproject.toml:21-27` pins `docling` and `fastembed` exactly, with a comment
+  explaining that fastembed 0.5.1 and 0.8.0 "embed the same model with different
+  pooling, producing vectors of the same width that are not comparable" — "the
+  one dependency change that can corrupt a corpus with no error anywhere". But
+  the library that actually performs the matrix multiplications is
+  `onnxruntime`, and nothing pins it: `>=1.17.0` with three exclusions admits
+  everything from 1.17 upward. The corpus contract records
+  `embed_library=fastembed==0.8.0` and is silent about it. So the documented
+  hazard is guarded one level above where the arithmetic happens.
+
+  Whether an onnxruntime minor actually moves the vectors is unmeasured, and it
+  is the measurement that should decide what to do — a probe embedding whose
+  hash is compared across two versions would settle it in minutes, and the
+  endpoint determinism check in the `embed_url` entry is the same technique.
+  Recorded for the corpus ingested 2026-09-02 so a later one can be compared:
+  **Python 3.12.14, fastembed 0.8.0, onnxruntime 1.29.0, numpy 2.5.2,
+  docling 2.122.0**. Parked: pinning onnxruntime, or adding it to the contract,
+  or having CI install from the lock, are three different answers with different
+  costs, and choosing needs the measurement first.
+
 - **Chunk identifiers are regenerated on every ingest, so nothing may be keyed to
   them across one.** `_rebuild_chunks` assigns `uuid.uuid4().hex` per chunk
   (`services/ingestion.py:370`) while the *document* id is deliberately reused
