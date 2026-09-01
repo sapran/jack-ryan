@@ -1,13 +1,4 @@
-# layered-configuration Specification
-
-## Purpose
-
-Defines how an instance is configured: a corpus-coupled `contract` whose values
-cannot change once documents exist, swappable infrastructure `profiles`, the
-precedence between sources, and the rule that a misconfiguration stops the
-instance rather than being silently replaced by a default.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Configuration is layered into a corpus contract and swappable profiles
 

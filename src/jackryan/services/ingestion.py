@@ -12,19 +12,20 @@ import shutil
 import tempfile
 import uuid
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import Contract
 from ..embedding.port import EmbedderPort
-from ..errors import ValidationError
+from ..errors import ConfigError, ValidationError
 from ..ingestion.budget import ExpansionBudget
 from ..ingestion.chunker import chunk_text
 from ..ingestion.extractors import ExtractionError
 from ..ingestion.quality_gate import QualityGate
 from ..ingestion.router import FormatRouter
 from ..storage.port import Chunk, Document, StorePort
+from ..summarising.port import SummariserPort, SummaryError
 from .casefiles import CasefileService
 
 MAX_FILE_BYTES = 512 * 1024 * 1024
@@ -99,6 +100,8 @@ class IngestionService:
         router: FormatRouter | None = None,
         budget: ExpansionBudget | None = None,
         gate: QualityGate | None = None,
+        summariser: SummariserPort | None = None,
+        chunk_summaries: bool = False,
     ) -> None:
         if router is not None and gate is not None:
             raise ValueError(
@@ -109,6 +112,14 @@ class IngestionService:
         self._casefiles = casefiles
         self._embedder = embedder
         self._contract = contract
+        self._summariser = summariser
+        # Whether the per-chunk summary is folded into what is embedded, decided
+        # at the composition root where the profile switch and the summariser are
+        # both known. Held as one boolean rather than re-derived here, because it
+        # is the same value that decided corpus identity: if this and the
+        # identity string could disagree, the store would be enforcing a rule the
+        # pipeline was not following.
+        self._fold_summaries = bool(chunk_summaries and summariser is not None)
         self._router = router or FormatRouter(gate=gate)
         # Held as limits rather than as a live budget: each ingest spends its
         # own. Injectable so a deployment can tune a ceiling without editing
@@ -162,6 +173,22 @@ class IngestionService:
         # stores them as empty documents, which is unrecoverable without
         # noticing and reingesting.
         self._router.gate.verify()
+
+        # The summariser gets the same treatment, and for a sharper reason: this
+        # is the one request in the run that carries no evidence. `check` sends a
+        # one-token probe, so it establishes that the endpoint answers, accepts
+        # the credential and knows the model *before* the first document's text
+        # leaves the machine. Without it the first thing a wrong endpoint
+        # receives is corpus text, and it receives it once per chunk for the
+        # whole casefile.
+        #
+        # Fatal for the run rather than per document, because it is a
+        # misconfiguration: `SummariserUnavailable` is a `ConfigError` and is
+        # deliberately not caught by `_ingest_work`. A thousand identical
+        # per-document failures report one setting a thousand times and fix it
+        # none of them.
+        if self._summariser is not None:
+            self._summariser.check()
 
         depth, descendants, extracted = self._limits
         budget = ExpansionBudget(
@@ -336,19 +363,57 @@ class IngestionService:
                 containment_path=work.containment_path,
                 identity_path=identity_path,
             )
+            # Everything that can fail happens before anything is written.
+            #
+            # `document.id` is already settled above — it is the existing row's
+            # id on a reingest and a fresh one otherwise — so chunking and
+            # summarising need no stored row, and `upsert_document` keeps the id
+            # it is given. That is what lets the whole fallible sequence run
+            # first.
+            #
+            # It has to be this way round. Persisting first and summarising after
+            # meant a summariser failure reported the document as failed while
+            # its row, its text and its chunks were already committed and
+            # searchable — and, because a failed document is not expanded, an
+            # archive whose summary failed was stored with its entries silently
+            # never ingested and the report still claiming to be complete. Every
+            # other per-document failure in this method leaves nothing behind,
+            # and this one now matches them.
+            prepared, embeddings, document_summary = self._prepare_chunks(document)
+            document = replace(
+                document,
+                summary=document_summary,
+                summary_by=self._summariser.name if document_summary else "",
+            )
+
             stored = self._store.upsert_document(document)
-            count = self._rebuild_chunks(stored)
+            self._store.replace_chunks(stored.id, prepared, embeddings)
             return (
                 IngestOutcome(
                     path=str(work.path),
                     status="reingested" if existing else "ingested",
                     document_id=stored.id,
-                    chunks=count,
+                    chunks=len(prepared),
                     containment_path=work.containment_path,
                 ),
                 stored,
             )
-        except (ValidationError, ExtractionError) as exc:
+        except ConfigError:
+            # A misconfiguration, whichever call raised it — a summariser that is
+            # named but cannot be reached is the case that arrives here. Re-raised
+            # rather than turned into a failed document: the split between fatal
+            # and per-document has to hold by type, not by which call came first,
+            # or reordering these clauses would silently convert one into the
+            # other. `SummariserUnavailable` is a `ConfigError` for this reason.
+            raise
+        except (ValidationError, ExtractionError, SummaryError) as exc:
+            # `SummaryError` joins the two existing per-document failures rather
+            # than degrading to an unsummarised embed. With folding on, a
+            # document embedded bare carries vectors built from different input
+            # from every other document's, all of the declared width and all
+            # well-formed, and nothing downstream can separate them. A document
+            # reported as failed can be reingested; one silently incomparable
+            # with the rest cannot be found again.
             return (
                 IngestOutcome(
                     path=str(work.path),
@@ -359,7 +424,17 @@ class IngestionService:
                 None,
             )
 
-    def _rebuild_chunks(self, document: Document) -> int:
+    def _prepare_chunks(
+        self, document: Document
+    ) -> tuple[list[Chunk], list[list[float]], str]:
+        """Chunk, summarise and embed a document, writing nothing.
+
+        Returns the chunks, their embeddings, and the document's summary — which
+        is empty whenever no summariser is configured. Deliberately free of
+        writes: every fallible step of a document's ingest happens here, so the
+        caller can persist only once all of them have succeeded and a failed
+        document leaves nothing behind.
+        """
         pieces = chunk_text(
             document.extracted_text,
             max_chars=self._contract.chunk_max_chars,
@@ -378,9 +453,54 @@ class IngestionService:
             )
             for piece in pieces
         ]
-        embeddings = self._embedder.embed_documents([c.text for c in chunks])
-        self._store.replace_chunks(document.id, chunks, embeddings)
-        return len(chunks)
+
+        if self._fold_summaries and chunks:
+            # One summary per chunk, in order, or a `SummaryError` — never a pad.
+            summaries = self._summariser.summarise_chunks(
+                document.extracted_text, [c.text for c in chunks]
+            )
+            if len(summaries) != len(chunks):
+                # Checked here as well as in the implementation, because this is
+                # the seam a summariser the pipeline does not control crosses.
+                # zip() below would otherwise pair the surviving summaries with
+                # the wrong chunks and drop the rest, silently.
+                raise SummaryError(
+                    f"summariser returned {len(summaries)} summaries for {len(chunks)} "
+                    f"chunks of {document.filename!r}; folding cannot be paired up"
+                )
+            chunks = [
+                replace(chunk, summary=summary)
+                for chunk, summary in zip(chunks, summaries)
+            ]
+
+        # The fold, and the whole corpus-coupling argument in two expressions:
+        # the embedder is given the summary and the text, and the caller's
+        # `replace_chunks` is given the text alone. A folded corpus and a bare one
+        # therefore hold identical `chunks.text` and different vectors, which is
+        # why the summariser's identity has to be in the corpus identity the store
+        # enforces — and why `chunks.summary` records what was folded in.
+        embed_input = [
+            f"{c.summary}\n\n{c.text}" if c.summary else c.text for c in chunks
+        ]
+        embeddings = self._embedder.embed_documents(embed_input)
+
+        return chunks, embeddings, self._document_summary(chunks)
+
+    def _document_summary(self, chunks: list[Chunk]) -> str:
+        """One summary of the whole document, or empty when none is configured.
+
+        Built from the chunk summaries when folding is on and from the chunk
+        texts when it is not, so a per-document summary is available without
+        turning on the fold that refuses an existing corpus.
+
+        A document with no chunks yields an empty summary without a request:
+        there is nothing to summarise, and asking a model to say so costs a call
+        per empty document.
+        """
+        if self._summariser is None or not chunks:
+            return ""
+        notes = [c.summary for c in chunks] if self._fold_summaries else [c.text for c in chunks]
+        return self._summariser.summarise_document(notes)
 
     # -- queries -----------------------------------------------------------
 

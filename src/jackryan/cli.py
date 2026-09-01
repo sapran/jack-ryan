@@ -53,6 +53,12 @@ def _render_document(document: Document) -> dict[str, Any]:
         row["found_at"] = document.containment_path
     if document.child_count:
         row["children"] = document.child_count
+    if document.summary:
+        # Added only when present, so a table for a corpus ingested without a
+        # summariser keeps the shape it has today. Model-written, so the producer
+        # travels with it rather than being inferred from current configuration.
+        row["summary"] = document.summary
+        row["summary_by"] = document.summary_by
     return row
 
 
@@ -67,6 +73,11 @@ def _render_hit(hit: SearchHit) -> dict[str, Any]:
         "keyword_rank": hit.keyword_rank,
         "vector_rank": hit.vector_rank,
         "heading_path": hit.chunk.heading_path,
+        # The context folded into what was embedded for this passage, empty
+        # unless folding was on. The stored text is deliberately unchanged by the
+        # fold, so this is the only place an operator can see what the vector was
+        # actually built from.
+        "summary": hit.chunk.summary,
         # The span returned, and the passage inside it that matched.
         "char_start": hit.char_start,
         "char_end": hit.char_end,

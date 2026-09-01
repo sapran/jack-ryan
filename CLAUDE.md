@@ -130,21 +130,56 @@ same width, which nothing downstream can detect.
   — no vector, no chunk, no stored text — so no store is ever refused for them.
   This is a stronger claim than the one extraction settings get, and it is why
   they are not in corpus identity.
-- **A setting that changes what is embedded without changing the stored text is
-  contract, not profile.** Per-chunk contextual summaries are the deferred case:
-  contextual retrieval folds the summary into the text that gets embedded, so the
-  vectors mean something different while staying the declared width, and a corpus
-  holding both kinds is undetectable. The qualifier is what separates this from
-  the extraction bullet below — extraction settings change the embedder's input
-  too, but they do it by changing the extracted text, which leaves the difference
-  legible and per-document `text_source` records which rung produced it. A fold
-  leaves the stored chunk identical and the vector different, and nothing records
-  it. The switch *and* the identity of whatever writes the summaries belong in
-  the contract — a boolean alone leaves the same hole one level down, since a
-  different model writes different summaries. `tests/test_embedding.py` asserts
-  that what reaches the embedder today is the chunk's own text, heading path
-  included but not folded in; that test failing is the signal to add the contract
-  value, not to update the test.
+- **A setting that changes what is embedded without changing the stored text
+  enters corpus identity — by composition, not necessarily in the contract.**
+  Per-chunk contextual summaries are the shipped case: the fold puts the summary
+  in front of the chunk before embedding, so the vectors mean something different
+  while staying the declared width, and a corpus holding both kinds is
+  undetectable. The qualifier is what separates this from the extraction bullet
+  below — extraction settings change the embedder's input too, but they do it by
+  changing the extracted text, which leaves the difference legible and
+  per-document `text_source` records which rung produced it. A fold leaves the
+  stored chunk identical and the vector different.
+  **`chunk_summaries` and `summary_model` live in the profile**, and
+  `corpus_fingerprint` appends a `|summariser=` component when and only when the
+  fold is on. That is composition, exactly as `embedder` is composed, and the
+  reason is the same one the spec gives for not duplicating the embedder into the
+  contract: the summariser's identity is its model plus a hash of the shipped
+  prompt, truncation limit and sampling parameters, so an operator could not write
+  it down and a declared copy could disagree with the code. Because the component
+  is omitted when empty, an instance with the fold off produces the identity
+  string a corpus recorded before summaries existed — which is what let the real
+  435 MB corpus survive this change.
+  `tests/test_embedding.py` asserts both branches: with the fold off the embedder
+  gets the chunk's own text, heading path included but not folded in; with it on
+  every embedded text is the stored summary joined to the stored text. A fold
+  appearing in the first branch is a defect, and the signal is that the fold must
+  enter corpus identity — never to update the test.
+- **The recipe is hashed, so nobody has to remember to bump a version.** Editing
+  `SUMMARY_PROMPT`, `SUMMARY_DOCUMENT_CHARS`, `SUMMARY_MAX_TOKENS`,
+  `SUMMARY_TEMPERATURE` or `SUMMARY_ENABLE_THINKING` moves `RECIPE_FINGERPRINT`
+  and therefore corpus identity. `DOCUMENT_PROMPT` is deliberately outside the
+  recipe because the per-document summary is stored and never embedded; if a
+  later change embeds it anywhere, that prompt moves inside the recipe in the
+  same change.
+- **A summariser failure fails the document; it never degrades.** This is
+  deliberately the opposite of the reranker's transient policy below. A reranker
+  only reorders, so serving the fused order is honest. A document embedded bare
+  inside a folded corpus is silently incomparable with every other document and
+  nothing downstream can detect it, so `SummaryError` fails that one document and
+  stores nothing for it. A short return from the summariser is a failure too,
+  never a pad. `SummariserUnavailable` is a `ConfigError` and stays fatal for the
+  whole run, and the split holds by type — `except ConfigError: raise` before the
+  per-document handler — so reordering the clauses cannot convert one into the
+  other.
+- **Summaries are the first thing that sends corpus text off the instance.**
+  `llm_url` was a declared setting reading nothing until M3. It is opt-in
+  (`summary_model` empty by default) and the read stack still runs with zero
+  configured endpoints, but a casefile is evidence and this is a change in the
+  tool's posture rather than a performance knob. A model's summary is untrusted
+  text: it is fenced, marked `derived_by`, and deliberately absent from
+  `chunks_fts` so it cannot answer a keyword search as though the document
+  contained it.
 - **A reranker has two failure modes and they are deliberately different.** One
   that is named but cannot be built stops the search, naming the setting: an
   instance quietly serving the fused order has hidden a misconfiguration. One

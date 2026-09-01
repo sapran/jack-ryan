@@ -54,6 +54,7 @@ def provenance(
     matched_chunk_id: str = "",
     matched_char_start: int | None = None,
     matched_char_end: int | None = None,
+    derived_by: str = "",
 ) -> dict[str, Any]:
     """Where a piece of text came from, so a claim can be traced back to it.
 
@@ -70,6 +71,13 @@ def provenance(
     to the same degree as the text it describes. Callers pass these through the
     same one-line collapse as any other corpus value before they reach a
     line-oriented block.
+
+    `derived_by` names what produced the text when a model wrote it rather than a
+    document containing it. A reader has to be able to tell a document's own
+    words from a model's, and `read_as` cannot carry that distinction:
+    recognition is a transcription of what is on the page, however unreliable,
+    whereas a summary is a claim about it. Emitted only when non-empty, so a
+    provenance block for a document's own text never asserts a producer.
     """
     block: dict[str, Any] = {
         "casefile_id": casefile_id,
@@ -96,6 +104,8 @@ def provenance(
         if matched_char_end is not None:
             matched["char_end"] = matched_char_end
         block["matched"] = matched
+    if derived_by:
+        block["derived_by"] = derived_by
     if heading_path:
         block["heading_path"] = heading_path
     return block
