@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from jackryan.config import Contract, corpus_fingerprint
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -248,6 +250,10 @@ def test_a_stand_in_run_is_marked_as_not_a_quality_claim(evaluated, capsys):
     assert "not retrieval quality" in printed
     assert "embedder=deterministic" in printed
     assert "reranker=none" in printed
+    # The published requirement has a reported figure name the corpus identity it
+    # was measured over, first among its conditions. It prints on its own line
+    # because the identity is far too long for the comma-joined one.
+    assert "Corpus: " in printed
 
 
 def test_a_real_embedder_run_is_not_marked_as_mechanism_only(evaluated, capsys):
@@ -333,12 +339,26 @@ def test_a_baseline_that_does_not_state_its_corpus_is_not_compared():
 
 def test_the_shipped_baseline_states_the_corpus_it_was_measured_over():
     """What stops a later --record or a hand edit from dropping the key and
-    quietly restoring the fail-open."""
+    quietly restoring the fail-open.
+
+    Equality rather than presence, because the shipped value was annotated by
+    hand rather than re-measured: a stale identity left behind by a contract
+    change would pass a truthiness check while making every real-embedder run
+    report "not compared" and exit 0. This failing means re-record the baseline,
+    not re-annotate it.
+    """
     shipped = json.loads(harness.BASELINE_PATH.read_text(encoding="utf-8"))
-    assert shipped["conditions"].get("corpus"), (
+    assert shipped["conditions"].get("corpus") == corpus_fingerprint(Contract(), "model"), (
         "the tracked baseline must state the corpus identity its figures were "
-        "measured over, or every run compares clean against it"
+        "measured over, and that identity must still be the default one — "
+        "otherwise every run reports 'not compared' and the gate goes quiet"
     )
+
+
+def test_every_required_condition_is_one_that_is_actually_compared():
+    """A required key absent from the compared tuple would never be reached, so
+    the constant would read as an enforcement list while enforcing nothing."""
+    assert set(harness.REQUIRED_CONDITIONS) <= set(harness.COMPARED_CONDITIONS)
 
 
 def run_harness(monkeypatch, *args) -> int:
@@ -351,11 +371,22 @@ def test_an_ordinary_run_leaves_the_baseline_untouched(tmp_path, monkeypatch, ca
     """Recording a baseline is a deliberate act, not something a run performs
     because the numbers changed."""
     baseline = tmp_path / "baseline.json"
-    original = {"conditions": _conditions(), "metrics": {"fused": {"recall@1": 0.1}}}
+    # The run's own corpus identity, so the comparison actually runs: with any
+    # other value the run takes the not-comparable branch and this test would
+    # assert that a run which refused to compare did not record, which is not
+    # what it is here to say.
+    original = {
+        "conditions": _conditions(corpus=corpus_fingerprint(Contract(), "deterministic")),
+        "metrics": {"fused": {"recall@1": 0.1}},
+    }
     baseline.write_text(json.dumps(original), encoding="utf-8")
 
     run_harness(monkeypatch, "--embedder", "deterministic", "--baseline", str(baseline))
-    capsys.readouterr()
+    printed = capsys.readouterr().out
+    # Without this the test passes just as well on the not-comparable branch,
+    # where nothing is compared and the baseline is trivially untouched — which
+    # is how a stricter comparability check silently voided this test once.
+    assert "Not compared against the baseline" not in printed
 
     assert json.loads(baseline.read_text(encoding="utf-8")) == original
 

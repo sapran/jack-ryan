@@ -159,11 +159,21 @@ def test_what_reaches_the_embedder_is_the_chunks_own_text(config, gate, sectione
     is the detection: it fails on the day the folding-in happens, and the fix is
     to declare the setting in the contract, not to update the test.
 
-    The expectation is recomputed from each document's extracted text rather
-    than read back from the store. Chunking is deterministic by spec, so this is
-    an independent expectation; comparing against the stored chunk texts would
-    compare the pipeline with itself and pass on any transformation applied
-    before both the store write and the embed call.
+    Two oracles, because one of them alone has a blind spot. The multiset
+    comparison recomputes the expectation with `chunk_text`, which catches
+    anything folded in between the chunker and the embed call — but it is the
+    same call the pipeline makes, so a fold applied *inside* the chunker moves
+    both sides together and the comparison stays green. That is exactly where
+    the heading path would be folded in, since the chunker is what computes it.
+    So the second oracle does not route through `chunk_text` at all: a chunk's
+    text is a verbatim slice of the document's extracted text, so every text the
+    embedder was handed must appear in some document's extracted text. That is
+    false for anything prepended or appended, wherever in the pipeline it was
+    inserted.
+
+    Neither oracle reads the stored chunk texts, which would compare the
+    pipeline with itself and pass on any transformation applied before both the
+    store write and the embed call.
     """
     embedder = _RecordingEmbedder(config.contract.embed_dimensions)
     ctx = build_context(config, embedder=embedder, gate=gate)
@@ -174,7 +184,12 @@ def test_what_reaches_the_embedder_is_the_chunks_own_text(config, gate, sectione
 
         expected: list[str] = []
         headed = 0
-        for document in ctx.ingestion.list_documents(casefile.short_id):
+        # `include_expanded=True`: expansions out of a container are chunked and
+        # embedded like anything else, so the default would compare a subset of
+        # the documents against all of the recorded texts and fail for a reason
+        # that has nothing to do with the rule this test defends.
+        documents = ctx.ingestion.list_documents(casefile.short_id, include_expanded=True)
+        for document in documents:
             for piece in chunk_text(
                 document.extracted_text,
                 max_chars=config.contract.chunk_max_chars,
@@ -194,6 +209,14 @@ def test_what_reaches_the_embedder_is_the_chunks_own_text(config, gate, sectione
             "show that the heading path is not folded into what is embedded — use a "
             "fixture whose documents have headings"
         )
+        # The oracle that does not route through the chunker.
+        sources = [document.extracted_text for document in documents]
+        for text in recorded:
+            assert text and any(text in source for source in sources), (
+                "a text handed to the embedder is not a verbatim slice of any "
+                "document's extracted text, so something was folded into it "
+                f"before it was embedded: {text[:120]!r}"
+            )
         # Sorted multisets, not positional: ingestion runs in a thread pool, so
         # the order of per-document embed calls is not guaranteed. Equality still
         # fails on any prefix, suffix or substitution, which is the assertion.

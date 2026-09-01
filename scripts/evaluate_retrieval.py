@@ -710,11 +710,27 @@ def compare(
     return fallen
 
 
+# The conditions a run is compared on. `queries` and `documents` are here because
+# a smaller corpus with fewer distractors is easier, so a run over one is not
+# comparable with a baseline recorded over the other however well the rest matches.
+COMPARED_CONDITIONS = (
+    "corpus",
+    "embedder",
+    "reranker",
+    "query_set",
+    "chunk_max_chars",
+    "window_max_chars",
+    "limit",
+    "queries",
+    "documents",
+)
+
 # Conditions whose absence from a baseline is itself a mismatch. `conditions_match`
 # skips any key the baseline does not record, which is right for a key added for
 # readability and fail-open for one that decides comparability: a baseline recorded
 # before corpus identity was carried would compare clean against a run over an
-# entirely different corpus.
+# entirely different corpus. A member absent from COMPARED_CONDITIONS would be
+# inert, which a test pins rather than a comment.
 REQUIRED_CONDITIONS = ("corpus",)
 
 
@@ -727,20 +743,7 @@ def conditions_match(measured: Measurement, baseline: Mapping[str, Any]) -> list
     """
     recorded = baseline.get("conditions", {})
     differing = []
-    # `queries` and `documents` are here because a smaller corpus with fewer
-    # distractors is easier, so a run over one is not comparable with a baseline
-    # recorded over the other however well the rest matches.
-    for key in (
-        "corpus",
-        "embedder",
-        "reranker",
-        "query_set",
-        "chunk_max_chars",
-        "window_max_chars",
-        "limit",
-        "queries",
-        "documents",
-    ):
+    for key in COMPARED_CONDITIONS:
         if key in recorded:
             if recorded[key] != measured.conditions.get(key):
                 differing.append(
@@ -749,7 +752,7 @@ def conditions_match(measured: Measurement, baseline: Mapping[str, Any]) -> list
         elif key in REQUIRED_CONDITIONS:
             differing.append(
                 f"{key}: run {measured.conditions.get(key)!r}, baseline records none — "
-                "a baseline that does not state the corpus it measured cannot be shown "
+                f"a baseline that does not state the {key} it measured cannot be shown "
                 "to be comparable"
             )
     return differing

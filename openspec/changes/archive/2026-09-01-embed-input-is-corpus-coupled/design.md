@@ -126,8 +126,15 @@ the point rather than a cost, but it must be legible: the test failing is the si
 contract value, not to update the test. The requirement text and the `CLAUDE.md` bullet both say so in
 those words, because a future session reads one of them and not the other.
 
-**A stricter harness is a louder harness.** Any run whose corpus identity differs from the baseline's
-now reports "not compared" where it previously compared on settings alone. This is the intended
-behaviour and it is fail-closed; the cost is that a deterministic-embedder run, which already differed
-on `embedder`, now differs on two keys. The harness is not a CI gate — CI runs pytest, gitleaks and a
-Docker build and nothing else — so no pipeline can break on it.
+**A stricter harness is a louder harness, and "not compared" exits 0.** Any run whose corpus identity
+differs from the baseline's now reports "not compared" where it previously compared on settings alone.
+That is fail-closed on the *comparison* — no figure is compared against one produced another way — but
+it is not fail-closed on the *exit code*: an incomparable run returns 0, which is pre-existing
+behaviour left deliberately unchanged. The consequence is worth stating plainly, because it is the one
+way this change can make something quieter: an operator holding a baseline recorded before corpus
+identity was carried had a genuinely regressed run return 1 on the settings the baseline did state,
+and now gets "not compared" and 0 until they re-record. The mitigation is that the shipped baseline is
+annotated in this change and a test pins its identity to the default, so the repository's own gate
+never enters that state silently. Whether an incomparable run should exit non-zero is a separate
+question about the harness's contract, recorded in `docs/implementation-notes.md` rather than decided
+here. CI is unaffected either way: it runs pytest, gitleaks and a Docker build and nothing else.

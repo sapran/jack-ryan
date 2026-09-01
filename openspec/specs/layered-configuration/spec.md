@@ -54,22 +54,30 @@ change stored text and are kept out of the contract on a deliberate trade;
 retrieval settings leave no residue at all.
 
 Enrich settings — whether a per-chunk contextual summary, the heading path above
-a chunk, or any other text is folded into what is embedded — SHALL live in the
-contract, together with the identity of whatever produces that text. The reason
-is the one already accepted for the embedding library version: folding context
-into a chunk before embedding it changes what the vector means, the vectors are
-the declared width and otherwise well-formed, and no later check can tell a
-corpus holding both kinds apart. The classification test is therefore not which
-pipeline stage a setting belongs to, but whether it changes the bytes handed to
-the embedder. A switch alone is not sufficient: a different summarising model
-writes different summaries, so the model that wrote them is corpus-coupled by
-the same argument.
+a chunk, or any other context is folded into what is embedded — SHALL live in
+the contract, together with the identity of whatever produces that text. The
+reason is the one already accepted for the embedding library version: folding
+context into a chunk before embedding it changes what the vector means, the
+vectors are the declared width and otherwise well-formed, and no later check can
+tell a corpus holding both kinds apart. A switch alone is not sufficient: a
+different summarising model writes different summaries, so the model that wrote
+them is corpus-coupled by the same argument.
+
+The classification test is therefore not which pipeline stage a setting belongs
+to, but whether it changes what the embedder is given *without changing the text
+the document stores*. That is what separates this case from extraction settings,
+which change what the embedder is given too — by changing the extracted text
+itself, which leaves the difference legible in the corpus and recorded per
+document. Folded-in context leaves the stored chunk exactly as it was and the
+vector different, and nothing records that it happened.
 
 The contract's coverage claim SHALL hold in both directions. That every declared
-value is one the pipeline reads is one half; the other is that every setting
-determining a stored vector is declared there, so that turning one on refuses an
-existing corpus and names a reingest rather than appending vectors built another
-way. A setting of this kind introduced into the profile layer would deliver the
+value is one the pipeline reads is one half; the other is that every setting able
+to change a stored vector without changing any stored text SHALL enter corpus
+identity — declared in the contract, or composed into the identity as the
+embedder above is. Turning such a setting on then refuses an existing corpus and
+names a reingest, rather than appending vectors built another way. A setting of
+this kind left in the profile layer and out of corpus identity would deliver the
 exact failure corpus identity exists to prevent, through the layer declared safe
 to change.
 
@@ -115,7 +123,7 @@ set, so a bare checkout runs on built-in defaults with no file present.
 #### Scenario: Every setting that changes what is embedded is in the contract
 
 - **WHEN** a document is ingested and the text handed to the embedder is inspected
-- **THEN** it is the chunk's own text, divided by the contract's chunk size and overlap, with no profile value folded into it
+- **THEN** it is the chunk's own text, divided by the contract's chunk size and overlap, with no context folded into it
 
 ### Requirement: Configuration fails loudly rather than substituting a default
 
