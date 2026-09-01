@@ -16,7 +16,7 @@ verified, what is not, and why.
 `main` is at the merge of M3 slice 2 plus a deadline-driven cleanup, and
 `measured-retrieval-quality` is built on top of it. The prototype (M0–M2), both
 earlier M3 slices and `corpus-identity-and-schema-migration` are archived,
-fifteen capabilities are published in `openspec/specs/`, and 420 tests pass with
+sixteen capabilities are published in `openspec/specs/`, and 475 tests pass with
 2 skipped behind `JACKRYAN_MODEL_TESTS=1`.
 
 Built and merged, and — since 2026-08-26 — exercised against real model
@@ -37,6 +37,10 @@ infrastructure for the first time; see the verification sections below:
 - **M3 slice 3** — retrieval quality, measured: an evaluation harness with a
   tracked baseline, section windows around a matched passage, and a rerank stage
   that ships disabled because measuring it said to. See the section below.
+- **M3 slice 4** — legacy binary Office formats: `.doc`, `.xls`, `.ppt` and
+  `.rtf` converted to their modern siblings and read by the extractor that
+  already owns each, recovering 258 documents that a folder walk had been
+  dropping without an outcome record. See the section below.
 
 **Archived on 2026-08-26:** `hard-formats-and-containers`, all 32 tasks done,
 now at `openspec/changes/archive/2026-08-26-hard-formats-and-containers`. It
@@ -636,6 +640,152 @@ documented, referenced in `docs/implementation-notes.md`, and broken.
 
 ---
 
+## Legacy binary Office formats: what ran, and what it settles — 2026-09-01
+
+`.doc`, `.xls`, `.ppt` and `.rtf` are registered formats. Each is converted to
+its modern sibling by shelling out to LibreOffice and handed to the extractor
+that already owns that suffix, so the corpus holds one rendering per kind of
+document rather than two.
+
+**Why it mattered more than it looked.** The 259 legacy files in the first real
+dump were not failing. A folder walk marks a file it found itself as not named
+directly, and the pre-filter in `services/ingestion.py` drops such a file with
+**no outcome record at all** — so the report read 1502 ingested, 0 failed, while
+a sixth of the material had never been offered to an extractor. A silent drop is
+worse than a failure for exactly the reason the punctuation-only guard exists:
+nothing tells you to look.
+
+### The four checks that needed the binary
+
+`scripts/verify_legacy_office.py` — **5 passed, 0 failed.** Fully synthetic and
+needs no model. It asks LibreOffice to convert HTML and a hand-written flat-ODF
+deck *into* genuine OLE2 and RTF files, then runs the real `FormatRouter` over
+each product and asserts a Cyrillic and a Latin sentinel both survive,
+`text_source` is `native`, the media type is the legacy one, and the extractor
+names the conversion. This is the only thing that exercises a real conversion:
+the suite cannot write a Word 97 file and no real corpus material may be
+committed as a fixture.
+
+Notably the `.ppt` case passes. The plan expected it to be uncorroborated,
+because `textutil` had returned implausible character counts for the dump's
+`.ppt` samples. That was `textutil`, not the format.
+
+**The legacy tail of the real dump — 258 of 259 ingested, 34m56s, 3316 chunks,
+5,716,813 characters that were previously unreachable.** Media types came back
+`application/msword` 168, `application/vnd.ms-excel` 81,
+`application/vnd.ms-powerpoint` 8, `application/rtf` 1 — every one the type the
+file on disk is, none the type it was read as. Extractor lineage came back
+`legacy-office+docling` 177, `legacy-office+spreadsheet` 79 and
+`legacy-office-passthrough+spreadsheet` 2, with no third literal; those two are
+the OOXML workbooks misnamed `.xls`, read directly with no conversion. The single
+failure is the one HTML file misnamed `.xls`, refused with `is named .xls but is
+neither an OLE2 nor an OOXML container` — the predicted file and the predicted
+message. A search over that casefile returns cited passages out of converted
+`.doc` files, so the loop closes end to end.
+
+**The container converts, offline.** `docker run --rm --network none` built a
+genuine `.xls` inside the image and read it back through the real router, both
+sentinels intact. Debian resolves `/usr/bin/libreoffice`, which is why
+`find_converter` tries `libreoffice` before `soffice` — the order was read out of
+docling's own source rather than guessed, and it matters.
+
+**Image size, re-measured rather than adjusted:** 6.49 GB without weights,
+10.7 GB with, from `docker images --format '{{.Size}}'`. LibreOffice costs about
+0.68 GB against the 5.81/10.2 GB measured on 2026-08-27.
+
+**The converter absent, through the shipped CLI.** LibreOffice was genuinely
+removed from the host — not monkeypatched — and `jackryan status` read
+`"legacy_office": "unavailable"` while a `.md` ingest still reported 1 ingested,
+0 failed. That is the claim that an absent converter fails documents rather than
+runs.
+
+### What it does not settle
+
+- **The full 1922-file dump was not re-ingested.** Two attempts were abandoned.
+  That run is dominated by a cost this change does not touch: one 6.8 MB workbook
+  in the dump extracts to 8.9 MB of text — about a sixth of the whole corpus —
+  and spends over twenty minutes being chunked and embedded. Re-establishing the
+  1502 baseline measures the embedder, not this. The legacy tail was ingested on
+  its own instead, which isolates the variable. **What is therefore unmeasured is
+  the interaction**: nothing has re-run the other 1663 files alongside these, and
+  the argument that they are unaffected rests on no existing extractor's suffix
+  map changing and on 475 passing tests, not on a run.
+- **Conversion fidelity is unmeasured.** A converted `.doc` reads as whatever
+  LibreOffice's DOCX writer made of it, which is not necessarily what Word 97
+  showed. `text_source` says `native` — truthfully, since no recognition ran — so
+  the `legacy-office+` prefix on `documents.extractor` is the only signal an
+  analyst has that a converter stood between the file and the text. See the note
+  in `docs/implementation-notes.md`.
+- **Concurrency is unexercised.** Conversions run one at a time. Each gets its
+  own `-env:UserInstallation` profile, which is what makes concurrency *possible*
+  — LibreOffice takes an exclusive lock on that directory — but nothing has run
+  two at once.
+- **`.dot`, `.xlt`, `.pot` and `.pps` are deliberately unregistered.** They
+  convert through the same path and would be one line each. None appears in this
+  dump, so none could be demonstrated.
+
+### Two things the plan got wrong, found only by building it
+
+Both are worth knowing because both would have passed review as written.
+
+**The passthrough could not delegate on the original path.** The plan said an
+OOXML file misnamed `.xls` should skip conversion and be handed to
+`SpreadsheetExtractor` directly. That extractor keys its media type off
+`path.suffix`, and `.xls` is not in its map — so `sheets.py` raises `KeyError`,
+which is not an `ExtractionError`, which means a whole-run abort in exactly the
+case the change adds. The file is copied into the scratch directory under its
+true suffix first.
+
+**A `.doc` that is really RTF was refused.** Ordinary Word and mail-merge output.
+LibreOffice converts it without complaint; the magic gate refused it as "neither
+an OLE2 nor an OOXML container" — the same class of silently-unread legacy file
+the change exists to eliminate. Caught by review, not by the plan or the tests.
+
+### What two reviewers caught that nine tests had not
+
+The change's central claim is that every failure path raises `ExtractionError`,
+because `_ingest_work` catches only that and anything else ends the run. Both
+reviewers independently reproduced holes in it:
+
+- A **delegate** can raise something else. `SpreadsheetExtractor` guards
+  `load_workbook` but not the lazy row iteration beneath it, so a workbook
+  truncated mid-sheet surfaces a bare `ParseError`. Reproduced end to end.
+- `tempfile.mkdtemp` sat outside every `try`, and the two `mkdir` calls under
+  none — so an `OSError` on a full scratch filesystem ended the run. Reachable
+  precisely because this change starts writing hundreds of LibreOffice profiles
+  into that filesystem.
+- **The conversion timeout killed one pid, and that pid is not the worker.**
+  `soffice` execs a launcher; Debian's `libreoffice` goes through `oosplash`. The
+  surviving `soffice.bin` could write into the scratch directory *after* the
+  `finally` had removed it, leaving converted evidence on disk. Now
+  `start_new_session` plus a process-group kill, with a test that backgrounds a
+  grandchild and asserts it never finishes its work.
+- **Nothing bounded the converted artefact.** Every other ceiling here measures
+  input the caller supplied; the converted file is what a delegate loads whole,
+  and a bounded `.xls` can expand without bound.
+
+Nine reintroduced defects each turned the matching test red with the reported
+symptom. Two of those tests did not exist before review: the scratch-directory
+test globbed a guessed temp root, where a disagreement with
+`tempfile.gettempdir()` would leave both sets empty and the assertion vacuous;
+and **no in-suite test asserted a successful conversion at all** — every one
+ended in a raise, so the `legacy-office+` lineage and the media-type override
+were pinned only by the out-of-suite script, which needs LibreOffice and does not
+run in CI.
+
+### One residual risk, stated plainly
+
+LibreOffice is a large, historically CVE-rich parser for OLE2, BIFF and RTF, and
+it is now handed files from untrusted dumps. In the container it runs as root
+with full network access; `--headless` is a UI switch, not a sandbox. This is
+widened, not opened — docling and the OCR stack already parse untrusted PDFs as
+root in the same image — and excluding the JRE via `--no-install-recommends` is a
+genuine reduction. Recorded in `docs/implementation-notes.md` rather than fixed,
+because giving the image a non-root user is its own change.
+
+---
+
+
 ## What this environment could not do, so you should not trust it was checked
 
 - **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real
@@ -658,9 +808,16 @@ documented, referenced in `docs/implementation-notes.md`, and broken.
   the `/data` volume is genuinely shared between the two services rather than
   each holding its own. The stack was then torn down.
 
-  Still unused: `--build-arg PREFETCH_MODELS=true`, so no offline-from-first-run
-  image has ever been built — see the note in `docs/implementation-notes.md`
-  about `check_real_embedder`, which would fail spuriously in exactly that image.
+  **~~Still unused: `--build-arg PREFETCH_MODELS=true`.~~ Built 2026-09-01**, in
+  the course of re-measuring the image for LibreOffice: 10.7 GB against 6.49 GB
+  without. So an offline-from-first-run image has now been built at least once.
+  What that does *not* settle is that it runs offline: nothing has started the
+  weights-bearing image with networking disabled and ingested a scan through it.
+  The note in `docs/implementation-notes.md` about `check_real_embedder` still
+  stands, and would still fail spuriously in exactly that image. A real
+  conversion *was* run offline in the weightless image with `--network none`, so
+  the LibreOffice half of the offline promise is checked and the model half is
+  not.
 - **~~No live agent.~~ Settled 2026-08-26 for stdio — see above.** Two vendors
   drove the surface and chose correctly. **The `/mcp` HTTP mount is still
   undriven by a live agent**, which is the transport that once returned 500 on

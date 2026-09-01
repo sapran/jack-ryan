@@ -6,6 +6,57 @@ and why it was parked.
 
 ## Parked
 
+- **A filename ending in a quote character defeats format routing entirely.**
+  Five documents in the first real dump (1,922 files, Russian institutional
+  material) are named `'…docx'` and `'…doc'` — the shell-style quotes are part
+  of the filename, baked in by whatever exported them. `FormatRouter` keys on
+  `Path.suffix`, which reads `.docx'`, so `Обновлён. Ответственные по БД.docx`
+  and four siblings are refused as an unknown format rather than read as the
+  DOCX they are. The refusal is honest and per-file, so nothing is lost
+  silently, but a corpus assembled by an export tool can carry a whole class of
+  these. Parked: the fix is content sniffing as a fallback when the suffix is
+  unknown, which is a wider change than trimming punctuation, and trimming
+  punctuation would be a guess about which characters are decoration.
+
+- **A `.docx` can fail inside docling with a conversion error, and the message
+  does not say what the document did wrong.** `Анкета для сверки персональных
+  данных.docx` raises `could not extract … with docling: Conver…` where its
+  three neighbours in the same dump raise the honest `produced no usable text`.
+  One file in 1,599 supported ones, so it is rare rather than structural, and it
+  is correctly reported as a failure rather than stored empty. Parked: worth a
+  look only if a second instance appears, since one sample cannot tell a
+  malformed document from an extractor bug.
+
+- **Fifteen page-bearing PDFs escalated through the recognition ladder and still
+  yielded nothing.** All from the first real dump, and the names say what they
+  are: `Брыкин.pdf`, `Романенков.pdf`, `Сенникова.pdf`, `Абдуллаев.pdf` and
+  similar — personal documents that were photographed rather than scanned.
+  `Брыкин.pdf` carries zero font objects and five embedded images, so it is
+  image-only, rung one had nothing to find, and `rapidocr` under `eslav`
+  returned nothing usable from the photograph. Others in the set (`3-4
+  курсы.pdf`, 36 font objects, no images) do carry text structure and still
+  produced nothing, which is the more interesting half. The designed answer to
+  the first half is rung three, and `vlm_model` is empty by default because it
+  downloads weights and is much slower. Parked: this is the measurement that
+  should decide whether rung three is worth recommending, and it needs the
+  scanned-documents slice of M3 rather than a note.
+
+- **A transport-level failure reaching Hugging Face kills an ingest instead of
+  falling back.** `fastembed`'s `download_model`
+  (`common/model_management.py:444`) catches only `EnvironmentError`,
+  `RepositoryNotFoundError` and `ValueError` before trying `url_source`, the
+  GCS tarball. `huggingface_hub` 1.29 talks `httpx`, which raises
+  `httpx.ConnectError` and does no Happy Eyeballs — so on a host whose IPv6 is
+  advertised but dead it takes the AAAA record, fails with `[Errno 65] No route
+  to host`, and the working GCS mirror is never attempted. `ModelEmbedder._load`
+  then reports `could not load embedding model`, which names the model and hides
+  the network. Found priming the cache on the development Mac 2026-08-31, worked
+  around by fetching the weights with `curl -4` straight into the cache layout;
+  fastembed's own first attempt is `local_files_only=True`, so a populated cache
+  needs no network at all. Parked: the honest fix is for the embedder to say
+  which host it could not reach, and it belongs with the prefetch story rather
+  than in a slice of its own.
+
 - **A FastAPI test client and the agent surface's servers, built in one test
   module, abort the interpreter at teardown.** On macOS the suite reports every
   test passing and the process then exits 134 with
@@ -199,6 +250,54 @@ and why it was parked.
   cosmetic, not a hole: a mismatch is still caught and still fails the run with
   an accurate message, verified by forcing one. Noted so nobody "fixes" the
   guard by weakening the one in `ModelEmbedder`.
+
+- **A LibreOffice conversion is a lossy round trip and nothing records that it
+  happened, beyond `documents.extractor`.** A `.doc` is read as whatever
+  LibreOffice's DOCX writer made of it, which is not necessarily what Word 97
+  would have shown. `text_source` says `native` — truthfully, since no
+  recognition ran — so an analyst weighing a converted quotation has only the
+  `legacy-office+` prefix to tell them a converter stood between the file and
+  the text. Parked: a fourth `text_source` value would be the honest fix, but
+  that vocabulary is published in `extraction-quality-gate` and consumed by the
+  MCP payloads, so widening it is its own change with its own spec delta.
+
+- **Legacy template and show suffixes are not registered.** `.dot`, `.xlt`,
+  `.pot` and `.pps` convert through exactly the same path and would each be one
+  line in `LEGACY_SUFFIXES` and `_TARGET`. None appears in the dump this change
+  was written against, so none could be demonstrated, and a suffix nobody can
+  check is a claim nobody can check. Parked deliberately: add them when a dump
+  contains one, not before.
+
+- **`accepts()` is suffix-based, so a legacy file with no suffix at all is still
+  invisible.** The container sniff runs inside `extract`, after the router has
+  already selected on `Path.suffix`. A file named `Договор` with OLE2 bytes is
+  dropped by the directory-walk pre-filter exactly as it was before this change.
+  This is the same root cause as the parked apostrophe-filename finding above:
+  content sniffing as a fallback when the suffix is unknown. Parked with it,
+  because they want one fix, not two.
+
+- **LibreOffice parses untrusted documents as root in the container.** The image
+  now carries `libreoffice-writer libreoffice-calc libreoffice-impress` — a
+  large, historically CVE-rich parser for OLE2, BIFF and RTF — and hands it files
+  from an untrusted dump. Neither the `Dockerfile` nor `docker-compose.yml` sets
+  `USER`, so it runs as root with the default seccomp profile, full network
+  access, and `/data` — the whole corpus and the SQLite store — writable.
+  `--headless` is a UI switch and suppresses dialogs; it restricts no file,
+  network or process access, so it is not a mitigation. Parked, and stated
+  plainly rather than fixed: this widens an existing exposure rather than opening
+  a new one, because docling and the OCR stack already parse untrusted PDFs as
+  root in the same image. Excluding the JRE and the desktop integration via
+  `--no-install-recommends` is a real reduction. The fix is a non-root user for
+  the image, which touches the volume permissions and the compose file and is its
+  own change.
+
+- **A converted file is read by the delegate with no ceiling of its own beyond a
+  flat byte limit.** `MAX_CONVERTED_BYTES` refuses a conversion that writes more
+  than 512 MB, which closes the unbounded case, but the number is the same as
+  `MAX_FILE_BYTES` by intent rather than by measurement — nothing has established
+  what expansion ratio real legacy files actually produce. Parked: the honest
+  version measures the ratio across a corpus and sets the ceiling from it, which
+  needs a corpus this project does not yet have.
 
 ## Fixed
 

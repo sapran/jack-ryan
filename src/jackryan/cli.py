@@ -13,6 +13,7 @@ import sys
 from typing import Any, Sequence
 
 from . import __version__
+from .ingestion.legacy_office import converter_status
 from .ingestion.quality_gate import read_as
 from .app import build_context
 from .errors import JackRyanError
@@ -184,6 +185,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "data_dir": str(context.config.data_dir),
                     "database": str(context.config.db_path),
                     "contract": context.corpus_fingerprint,
+                    # Reported rather than enforced at startup: a host that
+                    # ingests no legacy Office file must not be stopped by a
+                    # converter it will never use, so an operator finds out
+                    # here instead of 256 times into a run.
+                    "legacy_office": converter_status(),
                     "casefiles": len(context.casefiles.list()),
                 },
                 args.json,

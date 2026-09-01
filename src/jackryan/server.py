@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .ingestion.legacy_office import converter_status
 from .ingestion.quality_gate import read_as
 from .app import Context, build_context
 from .errors import (
@@ -172,6 +173,9 @@ def create_app(context: Context | None = None) -> FastAPI:
             # operator comparing this against a refusal must be looking at
             # the same string the guard compared.
             "contract": ctx.corpus_fingerprint,
+            # Same key and same two-valued vocabulary as `jackryan status`:
+            # one answer about the host, whichever surface is asked.
+            "legacy_office": converter_status(),
         }
 
     @app.get("/api/casefiles")
