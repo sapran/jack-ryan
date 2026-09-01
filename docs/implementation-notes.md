@@ -6,6 +6,41 @@ and why it was parked.
 
 ## Parked
 
+- **A filename ending in a quote character defeats format routing entirely.**
+  Five documents in the first real dump (1,922 files, Russian institutional
+  material) are named `'…docx'` and `'…doc'` — the shell-style quotes are part
+  of the filename, baked in by whatever exported them. `FormatRouter` keys on
+  `Path.suffix`, which reads `.docx'`, so `Обновлён. Ответственные по БД.docx`
+  and four siblings are refused as an unknown format rather than read as the
+  DOCX they are. The refusal is honest and per-file, so nothing is lost
+  silently, but a corpus assembled by an export tool can carry a whole class of
+  these. Parked: the fix is content sniffing as a fallback when the suffix is
+  unknown, which is a wider change than trimming punctuation, and trimming
+  punctuation would be a guess about which characters are decoration.
+
+- **A `.docx` can fail inside docling with a conversion error, and the message
+  does not say what the document did wrong.** `Анкета для сверки персональных
+  данных.docx` raises `could not extract … with docling: Conver…` where its
+  three neighbours in the same dump raise the honest `produced no usable text`.
+  One file in 1,599 supported ones, so it is rare rather than structural, and it
+  is correctly reported as a failure rather than stored empty. Parked: worth a
+  look only if a second instance appears, since one sample cannot tell a
+  malformed document from an extractor bug.
+
+- **Fifteen page-bearing PDFs escalated through the recognition ladder and still
+  yielded nothing.** All from the first real dump, and the names say what they
+  are: `Брыкин.pdf`, `Романенков.pdf`, `Сенникова.pdf`, `Абдуллаев.pdf` and
+  similar — personal documents that were photographed rather than scanned.
+  `Брыкин.pdf` carries zero font objects and five embedded images, so it is
+  image-only, rung one had nothing to find, and `rapidocr` under `eslav`
+  returned nothing usable from the photograph. Others in the set (`3-4
+  курсы.pdf`, 36 font objects, no images) do carry text structure and still
+  produced nothing, which is the more interesting half. The designed answer to
+  the first half is rung three, and `vlm_model` is empty by default because it
+  downloads weights and is much slower. Parked: this is the measurement that
+  should decide whether rung three is worth recommending, and it needs the
+  scanned-documents slice of M3 rather than a note.
+
 - **A transport-level failure reaching Hugging Face kills an ingest instead of
   falling back.** `fastembed`'s `download_model`
   (`common/model_management.py:444`) catches only `EnvironmentError`,
