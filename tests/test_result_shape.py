@@ -473,15 +473,27 @@ def test_every_surface_narrows_a_search_to_the_same_passages(
     assert rest["mention"] == PIVOT, "REST does not echo the filter it applied"
 
 
-def test_the_inventory_payload_is_a_listing_and_needs_no_fence(identified):
-    """Why `listing_payload` is the right builder here, asserted rather than assumed.
+def test_the_inventory_payload_is_a_listing_that_still_declares_its_content(identified):
+    """Why `listing_payload` is the right builder here, and what had to be added.
 
-    A facet entry carries a kind, a normalised identifier and two integers. That
-    is the condition under which an unfenced listing is correct, and it is
-    invisible from the call site: the moment an entry carries a surrounding
-    snippet the entry is corpus prose, an instruction can hide in it, and the
-    payload has to move to `search_payload`'s fencing. Pinning the key set is
-    what turns that condition into something a later change trips over.
+    A facet entry carries a kind, a normalised identifier and two integers, and
+    no facet value can forge a row: three kinds normalise to `[0-9+]` or
+    `[A-Z0-9]`, and the email charset admits no whitespace at all. That is what
+    makes an unfenced listing correct, and it is invisible from the call site —
+    the moment an entry carries a surrounding snippet it is corpus prose, an
+    instruction can hide in it, and the payload has to move to
+    `search_payload`'s fencing. Pinning the key set turns that condition into
+    something a later change trips over.
+
+    This test previously asserted `content_notice not in payload`, on the
+    argument that an identifier has no room for an instruction. A reviewer
+    disproved it: the email pattern's local part admitted `.`, `_`, `%`, `+` and
+    `-` as word separators with no length bound, so one match could be a
+    1,417-character sentence, planted at a repetition count that chose its rank
+    in a payload the surface tells an agent to read first. The pattern is now
+    bounded at RFC 5321's limits *and* the payload declares its content — a
+    length bound alone is not an argument that nothing objectionable fits, so the
+    notice is asserted here rather than its absence.
     """
     context, casefile = identified
     server = build_mcp_server(context)
@@ -489,8 +501,14 @@ def test_the_inventory_payload_is_a_listing_and_needs_no_fence(identified):
 
     assert "formatted" in payload and "results" in payload
     assert payload["results"], "an empty inventory would satisfy every assertion below"
+    # No per-value fence: the values are what a caller passes back as a filter,
+    # and fencing each one would make them unusable for that.
     assert "fence_nonce" not in payload
-    assert "content_notice" not in payload
+    assert payload.get("content_notice"), (
+        "the inventory does not declare that its values are corpus material. "
+        "Every value in it was written by whoever wrote the documents, and an "
+        "agent reading this payload first is told nothing about that"
+    )
 
     for row in payload["results"]:
         assert set(row) == {"kind", "value", "mentions", "documents"}, (

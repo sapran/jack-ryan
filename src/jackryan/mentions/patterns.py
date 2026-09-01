@@ -41,11 +41,34 @@ from .port import Found
 # letters. Requiring that last label is what keeps `user@localhost` out of the
 # facet, along with the `word@word` that recognition output produces from a
 # smudged page.
+#
+# Every quantifier is bounded, at RFC 5321's own limits: a local part of 64
+# octets, a domain label of 63, and a plausible ceiling on label count and
+# top-level length. Two separate defects were measured against the unbounded
+# version and both are closed by the bounds rather than by anything else.
+#
+# The first was cost. An unbounded greedy local part followed by a mandatory
+# `@`, and an unbounded `(label\.)+` followed by a mandatory letters-only label,
+# backtracks quadratically on text where neither ever satisfies: 4x per doubling
+# of input, 21 ms for one 2,000-character chunk against 0.23 ms bounded, and
+# 5.7 s per megabyte of crafted text against 0.05 s benign. A chunk is
+# adversary-controlled and nothing gates extraction, so that was a free
+# amplification for anyone who could get a document ingested.
+#
+# The second was worse and less obvious. An unbounded local part admits `.`,
+# `_`, `%`, `+` and `-` as word separators, so a single match could be a
+# 1,417-character sentence — and `case_mentions` reports facet values to an
+# agent that the surface's own instructions tell it to read first. An adversary
+# who controlled a document controlled the line content, and through the
+# frequency ordering the line order too. Bounded, the longest an address can be
+# is short enough not to carry a paragraph; the payload also states that its
+# values are corpus material, because a bound alone is not an argument that
+# nothing objectionable fits.
 _EMAIL = re.compile(
-    r"[A-Za-z0-9._%+\-]+"
+    r"[A-Za-z0-9._%+\-]{1,64}"
     r"@"
-    r"(?:[A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?\.)+"
-    r"[A-Za-z]{2,}"
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.){1,12}"
+    r"[A-Za-z]{2,24}"
 )
 
 

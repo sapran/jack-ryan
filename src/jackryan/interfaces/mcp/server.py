@@ -288,10 +288,28 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             {
                 "kind": facet.kind,
                 # Corpus-derived, so collapsed like any other corpus value before
-                # it reaches a line-oriented block. An identifier has no sentences
-                # for an instruction to hide in and is bounded by its own format,
-                # which is why `listing_payload` is still the right builder — that
-                # stops being true the moment an entry carries surrounding prose.
+                # it reaches a line-oriented block.
+                #
+                # An earlier version of this comment argued that `listing_payload`
+                # needs no fence here because "an identifier has no sentences for
+                # an instruction to hide in and is bounded by its own format".
+                # Both halves were false, and a reviewer built the counterexample:
+                # the email pattern's local part admits `.`, `_`, `%`, `+` and `-`
+                # as word separators and had no length bound, so one match could
+                # be a 1,417-character sentence. Planted at chosen repetition
+                # counts — the ordering is by frequency, so the adversary chooses
+                # the line order too — legible directives came back through this
+                # payload, which the surface's own instructions tell an agent to
+                # read first.
+                #
+                # Two things changed rather than one. The pattern is now bounded
+                # at RFC 5321's limits, so a value cannot carry a paragraph; and
+                # this payload states that its values are corpus material, because
+                # a length bound is not an argument that nothing objectionable
+                # fits. What is still true, and is why the values are not fenced
+                # individually, is that no facet value can forge a row: three
+                # kinds normalise to `[0-9+]` or `[A-Z0-9]`, and the email charset
+                # admits no whitespace at all.
                 "value": one_line(facet.value, 120),
                 "mentions": facet.mentions,
                 "documents": facet.documents,
@@ -305,14 +323,18 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             )
             or "No identifiers extracted from this casefile."
         )
-        return listing_payload(
+        payload = listing_payload(
             rows,
             formatted=(
-                f"casefile {resolved.slug}\nmentions  docs  kind                 value\n"
-                + formatted
+                f"casefile {one_line(resolved.slug, 40)}\n"
+                "mentions  docs  kind                 value\n" + formatted
             ),
             total=len(rows),
         )
+        # Every value below was written by whoever wrote the documents, so the
+        # notice belongs here even though the payload carries no passage.
+        payload["content_notice"] = NOTICE
+        return payload
 
     @server.tool(
         name="case_get_passage",

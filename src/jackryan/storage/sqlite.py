@@ -175,6 +175,13 @@ _STEPS: tuple[_Step, ...] = (
             " casefile_id TEXT NOT NULL REFERENCES casefiles(id) ON DELETE CASCADE,"
             " kind TEXT NOT NULL, value TEXT NOT NULL, normalised TEXT NOT NULL,"
             " char_start INTEGER NOT NULL, char_end INTEGER NOT NULL,"
+            # Where the identifier sits in the document, as opposed to in the
+            # chunk. Chunks overlap by the contract's overlap, so one textual
+            # occurrence near a boundary is extracted from two chunks; counting
+            # rows would then report it twice and "how many times it was
+            # mentioned" would be wrong by the overlap. The facet counts
+            # distinct (document, offset) pairs instead.
+            " document_offset INTEGER NOT NULL DEFAULT 0,"
             " extractor TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 1.0)",
             "CREATE INDEX IF NOT EXISTS idx_mentions_facet ON mentions(casefile_id, kind, normalised)",
             "CREATE INDEX IF NOT EXISTS idx_mentions_pivot ON mentions(casefile_id, normalised)",
@@ -884,25 +891,61 @@ class SqliteStore:
                 # `executemany`, because nothing has to be read back per row —
                 # unlike the chunk inserts above, each of which needs its own
                 # rowid in order to address the two sidecars.
-                db.executemany(
-                    "INSERT INTO mentions (chunk_id, document_id, casefile_id, kind,"
-                    " value, normalised, char_start, char_end, extractor, confidence)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
+                #
+                # `document_id`, `casefile_id` and the document offset are taken
+                # from the chunk this mention names, not from the mention itself.
+                # The foreign keys prove only that those ids exist somewhere;
+                # nothing makes them agree with the chunk. A row whose
+                # denormalised casefile disagreed would appear in another
+                # casefile's inventory — a compartment breach, and a casefile is
+                # the compartment. Reviewed and demonstrated: a mention naming a
+                # chunk in one casefile and a `casefile_id` in another was
+                # accepted, and the second casefile's facet then advertised an
+                # identifier that existed only in the first's text. Deriving them
+                # here makes that unreachable rather than merely unused, which
+                # matters because this registry is advertised as the seam a
+                # second, model-backed producer arrives through.
+                by_id = {chunk.id: chunk for chunk in chunks}
+                rows = []
+                for mention in mentions:
+                    parent = by_id.get(mention.chunk_id)
+                    if parent is None:
+                        # Named a chunk that is not being written. The foreign
+                        # key would refuse it; refused here instead so the
+                        # message names the mention rather than the constraint.
+                        raise ConfigError(
+                            f"a {mention.kind} mention names chunk "
+                            f"{mention.chunk_id!r}, which is not among the "
+                            f"{len(chunks)} chunks being written for this document"
+                        )
+                    rows.append(
                         (
                             mention.chunk_id,
-                            mention.document_id,
-                            mention.casefile_id,
+                            parent.document_id,
+                            parent.casefile_id,
                             mention.kind,
                             mention.value,
                             mention.normalised,
                             mention.char_start,
                             mention.char_end,
+                            # Where this identifier sits in the *document*, so a
+                            # facet can count textual occurrences rather than
+                            # rows. Chunks overlap by the contract's overlap, so
+                            # an identifier near a boundary is extracted from two
+                            # chunks of one document and would otherwise be
+                            # counted twice — making "how many times it was
+                            # mentioned" wrong by exactly the overlap.
+                            parent.char_start + mention.char_start,
                             mention.extractor,
                             mention.confidence,
                         )
-                        for mention in mentions
-                    ),
+                    )
+                db.executemany(
+                    "INSERT INTO mentions (chunk_id, document_id, casefile_id, kind,"
+                    " value, normalised, char_start, char_end, document_offset,"
+                    " extractor, confidence)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    rows,
                 )
                 db.commit()
             except Exception:
@@ -1072,12 +1115,22 @@ class SqliteStore:
         produce, and anything comparing this list with a previous one — a test,
         or a surface showing a table an analyst expects to be the same between
         two looks — would disagree with itself for no reason it could see.
+
+        `mentions` counts distinct textual occurrences, not rows. Chunks overlap
+        by the contract's overlap, so an identifier near a boundary is extracted
+        from two chunks of one document and `COUNT(*)` reported it twice — which
+        made "how many times it was mentioned" wrong by exactly the overlap, and
+        wrong invisibly, since nothing in the number said which occurrences were
+        the same one seen twice. Counting distinct `(document_id,
+        document_offset)` pairs is exact: one occurrence has one offset in its
+        document however many chunks it lands in.
         """
         clause = " AND kind = ?" if kind else ""
         selection = (casefile_id, kind) if kind else (casefile_id,)
         with self._lock:
             rows = self._db.execute(
-                "SELECT kind, normalised AS value, COUNT(*) AS mentions,"
+                "SELECT kind, normalised AS value,"
+                "       COUNT(DISTINCT document_id || ':' || document_offset) AS mentions,"
                 "       COUNT(DISTINCT document_id) AS documents"
                 " FROM mentions"
                 f" WHERE casefile_id = ?{clause}"

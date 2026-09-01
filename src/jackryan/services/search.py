@@ -7,7 +7,7 @@ from dataclasses import replace
 
 from ..embedding.port import EmbedderPort
 from ..errors import AmbiguousReferenceError, ConfigError, NotFoundError, ValidationError
-from ..mentions import MENTION_KINDS
+from ..mentions import MENTION_KINDS, default_extractors
 from ..reranking.port import RerankError, RerankerPort
 from ..storage.port import Chunk, Document, MentionFacet, SearchHit, StorePort, Window
 from .casefiles import CasefileService
@@ -101,7 +101,38 @@ def _parsed_mention(reference: str) -> tuple[str, str]:
         )
     if not value:
         raise ValidationError("--mention needs a value to match")
-    return kind, value
+    return kind, _normalised_like_the_store(value, kind)
+
+
+def _normalised_like_the_store(value: str, kind: str) -> str:
+    """The caller's value in the form the store actually holds.
+
+    Without this the two sides of the comparison are produced by different
+    rules: the store holds `normalised`, and the caller types whatever the
+    document showed them. An analyst who copies `Billing@Acme.example` out of
+    the passage they just read, or `GB82 WEST 1234 5698 7654 32` off a
+    statement, would get nothing back and no error — the silent empty result
+    that reads as "this casefile does not mention that", which is the exact
+    failure this whole feature is arranged to prevent. Three of the four kinds
+    are affected; only `registration_number` normalises to itself.
+
+    Done by asking the extractors rather than by reimplementing their rules
+    here, so a fifth extractor is normalised correctly by existing. An
+    extractor's answer is taken only when it recognises the *whole* value:
+    a partial match would silently search for something narrower than what was
+    asked for, which is a wrong answer rather than a missing one.
+
+    A value no extractor recognises is passed through unchanged. It may be an
+    identifier written in a form nothing extracts, in which case nothing was
+    stored for it either and an empty result is the honest answer.
+    """
+    for extractor in default_extractors():
+        if kind and extractor.kind != kind:
+            continue
+        for found in extractor.find(value):
+            if found.value == value.strip():
+                return found.normalised
+    return value
 
 
 def _validated_kind(kind: str) -> str:

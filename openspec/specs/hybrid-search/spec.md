@@ -279,7 +279,7 @@ such identifier", which is a different claim and a false one.
 #### Scenario: A filter changes which passages are candidates and not how they rank
 
 - **WHEN** the same query is run filtered and unfiltered
-- **THEN** the passages present in both are ranked relative to each other identically, and no score differs
+- **THEN** the passages present in both are ranked relative to each other identically, and every score is the reciprocal-rank sum of the ranks the retrievers reported, with no term contributed by the filter
 
 #### Scenario: A value alone matches any kind
 

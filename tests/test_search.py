@@ -206,6 +206,11 @@ def test_the_fused_order_does_not_change_when_the_identifiers_do(loaded, monkeyp
 
 IBAN_GOOD = "GB82 WEST 1234 5698 7654 32"
 IBAN_NORMALISED = "GB82WEST12345698765432"
+# Synthetic, and the odd one out among the vectors in this suite: the IBAN is
+# ISO 13616's own example and the addresses use RFC 2606's reserved `.example`,
+# but Ukraine publishes no reserved subscriber range. Kyiv area code with a
+# sequential subscriber number, chosen to be obviously a placeholder. No real
+# case material ever enters this repository.
 PHONE_RAW = "+38 (044) 123-45.67"
 PHONE_NORMALISED = "+380441234567"
 
@@ -295,6 +300,61 @@ def test_a_filtered_search_returns_a_passage_that_ranks_below_the_unfiltered_dep
         "a passage carrying the filtered identifier was not returned even "
         "though the store holds it — the predicate is being applied to the "
         "retrievers' output rather than inside their queries"
+    )
+
+
+def test_a_pivot_on_the_spelling_the_document_used_finds_the_passage(mention_loaded):
+    """The caller's value must be normalised the way the stored one was.
+
+    Found by a reviewer, and it is the same failure the filter placement exists
+    to prevent, arriving by a different route. The store holds `normalised`; the
+    analyst types what the passage showed them. Left unnormalised, the two sides
+    of the comparison are produced by different rules, so copying
+    `+38 (044) 123-45.67` out of the document you just read returned nothing —
+    silently, with no error, reading as "this casefile does not mention that".
+
+    Three of the four kinds are affected; only `registration_number` normalises
+    to itself, which is why a test using it alone would have proved nothing.
+
+    The oracle is the raw and normalised spellings agreeing, rather than either
+    of them being non-empty on its own: the normalised form already worked, so
+    only the comparison between them can fail.
+    """
+    context, casefile = mention_loaded
+
+    raw = context.search.search(casefile.short_id, "payment", limit=10, mention=PHONE_RAW)
+    normalised = context.search.search(
+        casefile.short_id, "payment", limit=10, mention=PHONE_NORMALISED
+    )
+
+    assert normalised, (
+        "the normalised spelling returned nothing, so the fixture carries no "
+        "mention and this test cannot distinguish the defect from an empty corpus"
+    )
+    assert [h.chunk.id for h in raw] == [h.chunk.id for h in normalised], (
+        "pivoting on the spelling the document used returned "
+        f"{len(raw)} passages against {len(normalised)} for the normalised form. "
+        "An analyst copies the identifier out of the passage they just read, so "
+        "the unnormalised spelling is the likely one — and it is the one that "
+        "silently returned nothing"
+    )
+
+
+def test_a_kinded_pivot_normalises_the_callers_value_too(mention_loaded):
+    """The kind-qualified form takes the same path.
+
+    Asserted separately because the normalisation is skipped for any extractor
+    whose kind does not match, so a fix that normalised only the bare form would
+    leave this one broken and the bare-form test would not notice.
+    """
+    context, casefile = mention_loaded
+
+    hits = context.search.search(
+        casefile.short_id, "payment", limit=10, mention=f"phone:{PHONE_RAW}"
+    )
+    assert hits, (
+        "a kind-qualified pivot on the document's own spelling returned nothing, "
+        "so the caller's value was compared unnormalised against the stored one"
     )
 
 
