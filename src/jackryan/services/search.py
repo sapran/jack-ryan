@@ -60,8 +60,18 @@ def _parsed_mention(reference: str) -> tuple[str, str]:
     casefile contains no such identifier, which is a different claim from "there
     is no such kind of identifier" and, unlike it, false.
 
-    Split on the first colon only, because an identifier may contain one — a
-    value is not guaranteed to be colon-free and the kind is.
+    A value containing a colon is refused rather than searched for. The reviewer
+    of this change found the docstring here claiming the opposite, so it is worth
+    being exact: anything before the first colon is read as a kind, and if it is
+    not one of them the whole argument is refused. `a:b@example.com` is therefore
+    an error naming kind `a`, not a search for that address.
+
+    That is the deliberate trade. Falling through to a value search would make
+    `passport:12345` return nothing and read as an answer, which is the failure
+    this function exists to prevent — and it is the more likely mistake by far.
+    An identifier that genuinely contains a colon cannot be filtered on until
+    this grows an escape, and no extractor currently produces one: three of the
+    four normalise to `[0-9+]` or digits, and an email address has no colon.
     """
     cleaned = (reference or "").strip()
     if not cleaned:

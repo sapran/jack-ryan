@@ -384,6 +384,19 @@ and why it was parked.
   than breakage. Parked: found while writing `embed-input-is-corpus-coupled`,
   which had no business editing that line.
 
+- **`test_a_timeout_kills_the_whole_converter_tree_not_just_the_launcher` is
+  flaky, roughly one run in four.** Found while running the suite for the
+  `mentions-and-facets` change and parked, not fixed: that change touches
+  neither the test nor the legacy-office converter, and the flake reproduces on
+  `origin/develop` at the same rate, so it is pre-existing rather than a
+  regression. It fails as `FileNotFoundError: … /grandchild.pid` — the test
+  reads the grandchild's pid file before the grandchild has written it, so the
+  race is in the test's own setup rather than in the process-tree kill it is
+  checking. The fix is to wait for the file with a bounded poll instead of
+  assuming it is there. It matters because the assertion it guards is a real
+  one: a converter timeout must kill the whole tree, and a test that fails at
+  random teaches the reader to re-run rather than to look.
+
 ## Fixed
 
 - **~~The store has no migration path.~~** Fixed by
