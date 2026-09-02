@@ -311,6 +311,32 @@ same width, which nothing downstream can detect.
   an OOXML file still named `.xls` raises `KeyError` — which is not an
   `ExtractionError`, so it would abort the whole run instead of failing one
   document. Never "simplify" the copy away.
+- **Content routing is a fallback, and it lives at `extractor_for` — never at
+  `extract` alone.** A file the registry cannot name by suffix is identified by
+  its bytes and routed to that format's extractor. The seam matters more than
+  the feature: `services/ingestion.py:217` skips any file whose `extractor_for`
+  is `None` *before* `extract` is called, so a fallback taught only to `extract`
+  is inert on every folder walk — which is the only case it exists for. That is
+  also why there is one resolution behind both, rather than a second predicate
+  answering "can this be read": two answers to that question can disagree, and
+  the disagreeing one wins at the pre-filter. `tests/test_content_routing.py`
+  pins it with a mutation that restores the suffix-only pre-filter.
+- **"Decodes as text" is not a signature, and admitting one would be the whole
+  mistake.** Only a positive signature routes: OOXML by the part it carries,
+  OLE2 by its stream names, and the unambiguous magic numbers. A text fallback
+  would sweep the `.bat`, `.ics` and `.p7s` files of a real dump into the corpus
+  as documents, which is the same failure as storing text that carries no
+  letters or digits — it looks ingested and is worth less than a refusal. Every
+  suffix the sniffer can return must be one a shipped extractor declares, and a
+  test derives that from the live registry rather than a literal list.
+- **A content-routed file is copied under the resolved suffix before the
+  delegate sees it** — the same reason the legacy passthrough copies, one bullet
+  up, and the same `KeyError`-ends-the-run consequence if it is simplified away.
+  Its lineage is `content-routed+<delegate>`, which nests:
+  `content-routed+legacy-office+docling` is a real and correct value. The
+  filename stays what is on disk, quotes included, and the media type stays the
+  delegate's — reading a file as something other than its name is a disclosure,
+  not a correction of the evidence.
 - **LibreOffice is reported, never required at startup.** Unlike the recognition
   engine, an absent converter fails only the documents that need it, so
   `jackryan status` and `GET /health` both carry `legacy_office`. Both read one

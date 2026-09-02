@@ -7,21 +7,11 @@ and why it was parked.
 ## Parked
 
 - **A filename ending in a quote character defeats format routing entirely.**
-  Five documents in the first real dump (1,922 files, Russian institutional
-  material) are named `'…docx'` and `'…doc'` — the shell-style quotes are part
-  of the filename, baked in by whatever exported them. `FormatRouter` keys on
-  `Path.suffix`, which reads `.docx'`, so `Обновлён. Ответственные по БД.docx`
-  and four siblings are refused as an unknown format rather than read as the
-  DOCX they are. Parked: the fix is content sniffing as a fallback when the
-  suffix is unknown, which is a wider change than trimming punctuation, and
-  trimming punctuation would be a guess about which characters are decoration.
-
-  **This entry used to claim "the refusal is honest and per-file, so nothing is
-  lost silently". That was wrong, and the entry below says why** — a routing
-  refusal is recorded in `IngestReport.refusals` and printed by no surface, so
-  these five files were dropped from the 2026-09-02 reingest without appearing
-  in its report at all. The cost of this bug in the one real corpus is therefore
-  five documents *and* no notice of them.
+  The routing half of this is **fixed** — see `## Fixed` below. What stays
+  parked is the half the entry below owns: these five files were dropped from
+  the 2026-09-02 reingest without appearing in its report at all, and a routing
+  refusal is still invisible on every surface. Fixing routing narrowed the set
+  of files that can vanish; it did not make a vanishing visible.
 
 - **A routing refusal is invisible on every surface, so the ingest report
   overstates coverage.** `IngestReport` carries `refusals`
@@ -625,6 +615,26 @@ and why it was parked.
   random teaches the reader to re-run rather than to look.
 
 ## Fixed
+
+- **~~A filename ending in a quote character defeats format routing
+  entirely.~~** Fixed by `content-routing` on 2026-09-02. Selection stays
+  suffix-first; where the registry claims nothing, the file's bytes are read and
+  a format they positively identify is routed to its extractor. The five real
+  files now ingest — four as `content-routed+docling`, the OLE2 one as
+  `content-routed+legacy-office+docling`, 357k characters between them — and
+  their `.bat`, `.ics`, `.p7s` and `.mp3` siblings are still refused, because
+  there is deliberately no text fallback: "decodes as UTF-8" is not a signature.
+
+  Two things worth carrying forward. The fallback had to go at
+  `FormatRouter.extractor_for`, not `.extract`: `services/ingestion.py:217`
+  skips a file whose `extractor_for` is `None` before `extract` is ever called,
+  so a fallback known only to `extract` would have been inert on every folder
+  walk — the one case it exists for. A mutation test pins that shape, and a
+  second pins that a file with a claimed suffix is never sniffed. And a
+  content-routed file is copied into a scratch directory under the resolved
+  suffix before the delegate sees it, because every extractor keys its media
+  type off `path.suffix` and a `KeyError` there is not an `ExtractionError` —
+  it would end the run rather than fail one document.
 
 - **~~The store has no migration path.~~** Fixed by
   `corpus-identity-and-schema-migration` on 2026-08-28. The baseline is frozen
