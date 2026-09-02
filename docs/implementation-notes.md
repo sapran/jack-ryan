@@ -120,6 +120,31 @@ and why it was parked.
   `embed_url` entry), an incremental re-run is the cheapest large win available
   without touching the embedder at all.
 
+  **"Idempotent in outcome" is true of the counts and false of the bytes.**
+  Established 2026-09-02 by reingesting the same 1,922-file folder on the same
+  pinned `docling==2.122.0` and diffing the result against the previous corpus,
+  matched on `content_hash` rather than filename. The document set is identical —
+  1,760 documents, 0 hashes on either side alone — and every derived count is
+  exact: **36,305 chunks against 36,305**, and all six extractors matching to the
+  document (`docling` 1137, `spreadsheet` 227, `legacy-office+docling` 177,
+  `image` 138, `legacy-office+spreadsheet` 79, passthrough 2). But **42 documents
+  came back with more extracted text**, 1,248 characters in total, every delta a
+  multiple of 16, and the diff says exactly what they are: `\n<!-- image -->\n`
+  placeholders, 78 of them, that the earlier run did not emit for the same input.
+  No document's *prose* changed; only docling's markers for where embedded images
+  sit. The cause is not established — same version, same profile — so treat
+  docling's picture detection as run-dependent rather than deterministic.
+
+  Two consequences worth carrying. First, an incremental re-run keyed on
+  `content_hash` (parked above) is *not* threatened by this: the hash is of the
+  source bytes, which do not move. Second, `chunking-and-embedding`'s
+  reproducibility requirement is unharmed — it says the same *text* and contract
+  produce the same chunks, and the text is what varied, one level upstream. But it
+  does mean a corpus rebuilt from the same folder is not byte-comparable to its
+  predecessor, so a retrieval measurement taken across a reingest boundary is
+  comparing two slightly different corpora. Small here: 78 placeholders in 61.5 M
+  characters, and the chunk count did not move at all.
+
 - **`CoreMLExecutionProvider` is available and is 4.5x *slower* than CPU.**
   Measured 2026-09-01 on an M3 Max, same `intfloat/multilingual-e5-large` weights
   through `fastembed`'s `providers=` argument: **1,866 ms per chunk on CoreML
