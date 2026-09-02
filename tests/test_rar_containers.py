@@ -33,6 +33,7 @@ _HEAD_FILE = 2
 _HEAD_CRYPT = 4
 _HEAD_ENDARC = 5
 
+_HAS_EXTRA = 0x0001
 _HAS_DATA = 0x0002
 
 
@@ -60,9 +61,12 @@ def _vint(value: int) -> bytes:
 def _block(kind: int, flags: int, body: bytes, data: bytes = b"", extra: bytes = b"") -> bytes:
     """One RAR5 block: a CRC over everything from the size field onward."""
     core = _vint(kind) + _vint(flags)
-    if extra:
+    # Keyed off the flags, not off whether the areas are non-empty: a file
+    # header declaring HAS_DATA must carry a data-size field even when the size
+    # is zero, which is exactly the case a link entry is.
+    if flags & _HAS_EXTRA:
         core += _vint(len(extra))
-    if data:
+    if flags & _HAS_DATA:
         core += _vint(len(data))
     core += body + extra
     header = _vint(len(core)) + core
@@ -278,6 +282,7 @@ def test_an_oversized_entry_is_excluded_on_what_was_read(tmp_path, monkeypatch):
     monkeypatch.setattr(containers, "MAX_ENTRY_BYTES", 64)
     out = bytearray(_SIGNATURE)
     out += _block(_HEAD_MAIN, 0, _vint(0))
+    out += _file_block("before.txt", b"FIRST")
     out += _file_block("liar.txt", b"A" * 400, declared=5)
     out += _file_block("honest.txt", b"kept")
     out += _block(_HEAD_ENDARC, 0, _vint(0))
@@ -286,7 +291,13 @@ def test_an_oversized_entry_is_excluded_on_what_was_read(tmp_path, monkeypatch):
 
     children = list(RarExtractor().iter_children(archive))
 
-    assert [c.name for c in children] == ["honest.txt"]
+    assert [c.name for c in children] == ["before.txt", "honest.txt"]
+    # The payloads matter as much as the names. Stopping mid-entry leaves that
+    # entry's block stream unconsumed, and the reader's cursor is shared and
+    # forward-only: if abandoning one entry desynchronised it, the casualty
+    # would be the *next* entry, arriving short or shifted rather than absent.
+    # Asserting names alone would not notice that.
+    assert [c.data for c in children] == [b"FIRST", b"kept"]
 
 
 # -- laziness --------------------------------------------------------------
@@ -316,7 +327,8 @@ def test_an_encrypted_rar_fails_the_document_naming_encryption(tmp_path):
         RarExtractor().extract(bundle)
 
     assert "locked.rar" in str(raised.value)
-    assert "ncryption" in str(raised.value)
+    assert "encrypted" in str(raised.value)
+    assert "password" in str(raised.value)
 
 
 def test_an_encrypted_rar_is_not_stored_as_a_container_with_no_children(
@@ -440,3 +452,242 @@ def test_an_absent_reader_reports_unavailable_rather_than_raising(monkeypatch):
 
 def test_the_reader_is_reported_on_this_host():
     assert rar_status() != containers.RAR_UNAVAILABLE
+
+
+# -- the file is handled on what it is, not what it is named ---------------
+
+
+@pytest.mark.parametrize("builder", ["zip", "tar", "gzip"])
+def test_another_archive_format_behind_a_rar_suffix_is_refused(tmp_path, builder):
+    """Found by a security review, and it was storing a falsehood.
+
+    libarchive's reader defaults to trying every format it knows, so before the
+    signature check a ZIP or tar named `.rar` was read by this extractor and
+    stored asserting `application/vnd.rar`. Two harms, not one: the media type
+    was a false statement about the evidence, and a ZIP was routed around
+    `ZipExtractor`, whose symlink refusal this extractor does not reproduce.
+    """
+    import gzip as gziplib
+    import io
+    import tarfile
+    import zipfile
+
+    path = tmp_path / "disguised.rar"
+    if builder == "zip":
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("inner.txt", "zip content")
+    elif builder == "tar":
+        with tarfile.open(path, "w") as archive:
+            info = tarfile.TarInfo("inner.txt")
+            payload = b"tar content"
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+    else:
+        path.write_bytes(gziplib.compress(b"plain stream"))
+
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(path)
+
+    assert "not a RAR archive" in str(raised.value)
+    assert "disguised.rar" in str(raised.value)
+
+
+def test_a_rar3_archive_is_read_by_the_reader_that_handles_it(tmp_path):
+    """Both generations are accepted, and each names its own reader.
+
+    Pinning only RAR5 would refuse a genuine older archive, and libarchive's
+    RAR5 reader does not read RAR3. The dump that motivated this change is
+    entirely RAR5, but a `.rar` from 2005 in an investigative dump is not an
+    exotic hypothetical.
+    """
+    from jackryan.ingestion.containers import _rar_format
+
+    rar5 = _rar(tmp_path / "modern.rar", [("a.txt", "alpha")])
+    legacy = tmp_path / "legacy.rar"
+    legacy.write_bytes(b"Rar!\x1a\x07\x00" + b"\x00" * 16)
+
+    assert _rar_format(rar5) == "rar5"
+    assert _rar_format(legacy) == "rar"
+
+
+def test_an_empty_file_named_rar_is_refused_naming_what_was_expected(tmp_path):
+    path = tmp_path / "hollow.rar"
+    path.write_bytes(b"")
+
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(path)
+
+    assert "not a RAR archive" in str(raised.value)
+
+
+# -- entries that are pointers, not files ---------------------------------
+
+
+_EXTRA_REDIRECTION = 5
+
+_REDIRECT_SYMLINK = 1
+_REDIRECT_WINDOWS_SYMLINK = 2
+_REDIRECT_HARDLINK = 4
+
+
+def _link_block(name: str, kind: int, target: bytes) -> bytes:
+    """A RAR5 entry that is a redirection rather than content.
+
+    The redirection lives in the file header's extra area. `HAS_DATA` is set
+    with a zero length because libarchive's reader requires the data-size field
+    to be present and refuses the whole archive without it.
+    """
+    record = _vint(_EXTRA_REDIRECTION) + _vint(kind) + _vint(0) + _vint(len(target)) + target
+    encoded = name.encode()
+    body = (
+        _vint(0x0004)
+        + _vint(0)
+        + _vint(0)
+        + struct.pack("<I", zlib.crc32(b"") & 0xFFFFFFFF)
+        + _vint(0)
+        + _vint(0)
+        + _vint(len(encoded))
+        + encoded
+    )
+    return _block(
+        _HEAD_FILE, _HAS_EXTRA | _HAS_DATA, body, data=b"", extra=_vint(len(record)) + record
+    )
+
+
+def test_a_link_entry_is_refused_as_not_a_regular_file(tmp_path):
+    """Found by a security review, and `entry.isreg` alone did not catch it.
+
+    libarchive's RAR5 reader sets `AE_IFREG` on a **hardlink** unconditionally,
+    so a hardlink arrives with `isreg=True`, `islnk=True` and an attacker-chosen
+    `linkpath` — and an `isreg` test admits it as a zero-byte file. A symlink is
+    excluded by `isreg`, but was excluded silently, where `TarExtractor` reports
+    the same thing.
+
+    A test built on a tar fixture cannot stand in for this: the tar reader
+    promotes a hardlink to `AE_IFREG` only when the entry has a non-zero size,
+    which is the opposite behaviour.
+    """
+    out = bytearray(_SIGNATURE)
+    out += _block(_HEAD_MAIN, 0, _vint(0))
+    out += _file_block("real.txt", b"alpha")
+    out += _link_block("hard.txt", _REDIRECT_HARDLINK, b"../../etc/passwd")
+    out += _link_block("sym.txt", _REDIRECT_SYMLINK, b"/etc/passwd")
+    out += _link_block("winsym.txt", _REDIRECT_WINDOWS_SYMLINK, b"..\\..\\secrets")
+    out += _block(_HEAD_ENDARC, 0, _vint(0))
+    archive = tmp_path / "links.rar"
+    archive.write_bytes(bytes(out))
+
+    extraction = RarExtractor().extract(archive)
+
+    assert extraction.text.splitlines() == ["real.txt"]
+    assert {r.split(":")[0] for r in extraction.refusals} == {"hard.txt", "sym.txt", "winsym.txt"}
+    assert all("not a regular file" in r for r in extraction.refusals)
+    # Reported, not merely absent: an entry the archive calls a pointer must not
+    # be silently dropped, or the listing overstates what was read.
+    assert [c.name for c in RarExtractor().iter_children(archive)] == ["real.txt"]
+
+
+# -- encryption that leaves the headers readable ---------------------------
+
+
+_EXTRA_CRYPT = 1
+
+
+def _data_encrypted_rar(path, name="secret.txt", payload=b"CIPHERTEXT"):
+    """An archive in WinRAR's *default* password mode.
+
+    Entry data is encrypted and the headers stay readable — the mode you get
+    without ticking "encrypt file names". The record is what marks it.
+    """
+    record = _vint(_EXTRA_CRYPT) + _vint(0) + _vint(0) + b"\x00" * 40
+    encoded = name.encode()
+    body = (
+        _vint(0x0004)
+        + _vint(len(payload))
+        + _vint(0)
+        + struct.pack("<I", zlib.crc32(payload) & 0xFFFFFFFF)
+        + _vint(0)
+        + _vint(0)
+        + _vint(len(encoded))
+        + encoded
+    )
+    out = bytearray(_SIGNATURE)
+    out += _block(_HEAD_MAIN, 0, _vint(0))
+    out += _block(
+        _HEAD_FILE, _HAS_EXTRA | _HAS_DATA, body, data=payload,
+        extra=_vint(len(record)) + record,
+    )
+    out += _block(_HEAD_ENDARC, 0, _vint(0))
+    path.write_bytes(bytes(out))
+    return path
+
+
+def test_a_data_encrypted_archive_fails_rather_than_yielding_ciphertext(tmp_path):
+    """The worse half of the encryption case, and libarchive cannot answer it.
+
+    Header encryption is refused by libarchive itself. Data-only encryption —
+    WinRAR's default — is not: on 3.7.4, which is both this host and Debian
+    trixie, the RAR5 reader skips the per-entry crypt record as an unsupported
+    attribute, `archive_entry_is_data_encrypted` returns 0, and the listing pass
+    succeeds. Before this check the container was stored and `iter_children`
+    handed back **ciphertext as the document's content**, to be chunked,
+    embedded and indexed as though it were text. That is worse than the empty
+    container it was mistaken for, because nothing downstream can detect it.
+    """
+    archive = _data_encrypted_rar(tmp_path / "locked.rar")
+
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(archive)
+
+    assert "encrypted" in str(raised.value)
+    assert "password" in str(raised.value)
+
+
+def test_both_password_modes_report_the_same_way(tmp_path):
+    header = _rar(tmp_path / "h.rar", [("a.txt", "x")], header_encrypted=True)
+    data = _data_encrypted_rar(tmp_path / "d.rar")
+
+    for archive in (header, data):
+        with pytest.raises(ExtractionError) as raised:
+            RarExtractor().extract(archive)
+        assert "encrypted" in str(raised.value)
+
+
+def test_the_encryption_scan_does_not_refuse_an_ordinary_archive(tmp_path):
+    """Positive detection only.
+
+    The scan may add a refusal; it must never be the reason a readable archive
+    is rejected. A hand-written header walk that guessed wrong would refuse real
+    evidence, so every path through it returns "not encrypted" unless it has
+    positively identified a crypt record.
+    """
+    from jackryan.ingestion.containers import _rar5_encrypted_reason
+
+    plain = _rar(tmp_path / "plain.rar", [("a.txt", "alpha"), ("sub/b.txt", "beta")])
+    truncated = tmp_path / "cut.rar"
+    truncated.write_bytes(plain.read_bytes()[: len(_SIGNATURE) + 9])
+
+    assert _rar5_encrypted_reason(plain) is None
+    assert _rar5_encrypted_reason(truncated) is None
+
+
+# -- names that are not UTF-8 ----------------------------------------------
+
+
+def test_a_non_utf8_entry_name_is_decoded_not_repr_ed():
+    """A RAR3 archive written on Windows with Cyrillic names is this shape.
+
+    `libarchive-c` returns `bytes` for a name it cannot decode. `str()` on that
+    gives the Python repr, whose suffix ends in a quote and matches no
+    extractor — so the child is refused as unroutable and the container's
+    listing carries a repr as searchable text.
+    """
+    from jackryan.ingestion.containers import _entry_name
+
+    class _RawName:
+        pathname = "договор.pdf".encode("cp1251")
+
+    name = _entry_name(_RawName())
+
+    assert not name.startswith("b'")
+    assert name.endswith(".pdf"), "the suffix must survive, or the child cannot route"

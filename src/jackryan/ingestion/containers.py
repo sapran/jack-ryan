@@ -118,7 +118,7 @@ class ZipExtractor:
             media_type="application/zip",
             extractor=self.name,
             metadata={"entries": str(len(listing))},
-            is_container=False,
+            is_container=True,
             refusals=tuple(refusals),
         )
 
@@ -185,18 +185,23 @@ class RarExtractor:
             )
 
         reader = _libarchive()
+        fmt = _rar_format(path)
+        if fmt == "rar5":
+            encrypted = _rar5_encrypted_reason(path)
+            if encrypted is not None:
+                raise ExtractionError(
+                    f"{path.name} is encrypted ({encrypted}); it cannot be read "
+                    "without its password — supply the decrypted archive"
+                )
         refusals: list[str] = []
         listing: list[str] = []
         try:
-            with reader.file_reader(str(path)) as archive:
+            with reader.file_reader(str(path), format_name=fmt) as archive:
                 for entry in archive:
-                    if not entry.isreg:
-                        # Directories carry no bytes, and a link or device is
-                        # something a corpus has no use for and following one is
-                        # how an archive escapes its extraction root.
-                        continue
-                    name = str(entry.pathname)
-                    reason = _unsafe_reason(name)
+                    if entry.isdir:
+                        continue  # no bytes, so no content identity
+                    name = _entry_name(entry)
+                    reason = _not_a_file_reason(entry) or _unsafe_reason(name)
                     if reason is not None:
                         refusals.append(f"{name}: {reason}")
                         continue
@@ -222,27 +227,57 @@ class RarExtractor:
 
     def iter_children(self, path: Path) -> Iterator[Child]:
         reader = _libarchive()
-        with reader.file_reader(str(path)) as archive:
+        with reader.file_reader(str(path), format_name=_rar_format(path)) as archive:
             for entry in archive:
-                if not entry.isreg:
+                if entry.isdir:
                     continue
-                name = str(entry.pathname)
-                if _unsafe_reason(name) is not None:
+                name = _entry_name(entry)
+                # The same two tests as the listing pass, in the same order, so
+                # the two cannot disagree about what an entry is.
+                if _not_a_file_reason(entry) is not None or _unsafe_reason(name) is not None:
                     continue
-                # Accumulated block by block and stopped one byte past the
+                # Accumulated a block at a time and stopped one block past the
                 # bound, never trusted from `entry.size`: a declared size is
                 # chosen by whoever built the archive, and checking it alone
-                # would make the ceiling advisory. The blocks must be consumed
+                # would make the ceiling advisory. The blocks are consumed
                 # before the cursor advances, which is why this reads here
-                # rather than yielding a lazy handle.
-                data = bytearray()
+                # rather than yielding a lazy handle — and abandoning one
+                # part-read is safe, because libarchive skips any unconsumed
+                # remainder when it advances to the next header.
+                blocks: list[bytes] = []
+                size = 0
                 for block in entry.get_blocks():
-                    data += block
-                    if len(data) > MAX_ENTRY_BYTES:
+                    blocks.append(block)
+                    size += len(block)
+                    if size > MAX_ENTRY_BYTES:
                         break
-                if len(data) > MAX_ENTRY_BYTES:
+                if size > MAX_ENTRY_BYTES:
                     continue
-                yield Child(name=name, data=bytes(data))
+                # Joined once rather than grown then copied: an entry near the
+                # ceiling would otherwise cost twice its size in transient
+                # memory.
+                yield Child(name=name, data=b"".join(blocks))
+
+
+def _entry_name(entry) -> str:  # noqa: ANN001 - libarchive's own type
+    """The entry's name as text, whatever encoding the archive used.
+
+    `libarchive-c` hands back `bytes` when a stored name is not valid UTF-8,
+    keeping the raw bytes rather than guessing. `str()` on that yields the
+    Python *repr* — `b'\\xe4\\xee...\\xf2.pdf'` — whose suffix is `.pdf'` with a
+    trailing quote, which matches no extractor. The child is then refused as
+    unroutable and the container's listing carries a repr as searchable text.
+
+    This is not a hypothetical for this corpus: a RAR3 archive written on
+    Windows with Cyrillic names and no Unicode flag is exactly that shape, and
+    it is the same class of defect as the filename-ending-in-a-quote routing bug
+    already parked. `replace` rather than `surrogateescape`, because the result
+    is stored in SQLite and a surrogate would fail to encode there.
+    """
+    raw = entry.pathname
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return str(raw)
 
 
 def _libarchive():  # noqa: ANN202 - the module type is not importable when absent
@@ -259,6 +294,14 @@ def _libarchive():  # noqa: ANN202 - the module type is not importable when abse
         import libarchive.ffi
 
         libarchive.ffi.version_number()
+    except ImportError as exc:
+        # A different remedy, so a different message. Telling an operator to
+        # install a system library when the Python package is what is missing
+        # sends them after the wrong thing.
+        raise ExtractionError(
+            "reading a rar archive needs the libarchive-c package, which is not "
+            f"installed ({exc}); reinstall the project's dependencies"
+        ) from exc
     except Exception as exc:  # noqa: BLE001 - see `find_rar_reader`
         raise ExtractionError(
             "reading a rar archive needs libarchive, which is unavailable "
@@ -273,6 +316,157 @@ _VOLUME_SUFFIX = re.compile(r"\.part\d+$", re.IGNORECASE)
 def _is_multi_volume(path: Path) -> bool:
     """Whether this names one volume of a split archive."""
     return _VOLUME_SUFFIX.search(path.stem) is not None
+
+
+def _not_a_file_reason(entry) -> str | None:  # noqa: ANN001 - libarchive's own type
+    """Why this entry is not a regular file, or None if it is.
+
+    `entry.isreg` alone is not the test, and this was found by a security review
+    rather than by reading the format. RAR5 carries redirections in a file
+    header's extra area, and libarchive's RAR5 reader sets `AE_IFREG` on a
+    **hardlink** unconditionally — so a hardlink entry arrives with
+    `isreg=True`, `islnk=True` and an attacker-chosen `linkpath` such as
+    `../../etc/passwd`, and an `isreg` test admits it as a zero-byte file. A
+    symlink arrives as `AE_IFLNK` and is excluded by `isreg`, but silently,
+    where `TarExtractor` reports the same thing as a refusal.
+
+    The tar reader behaves differently here, which is why a test built on a tar
+    fixture proves nothing about this: it promotes a hardlink to `AE_IFREG` only
+    when the entry has a non-zero size.
+
+    Nothing downstream would follow such a link — `_expand` writes the child's
+    bytes under a generated name and never creates a link — so the consequence
+    was a phantom empty document rather than a traversal. It is still an entry
+    reported as a file when the archive says it is a pointer, and the corpus
+    should say so.
+    """
+    if entry.issym or entry.islnk:
+        return "not a regular file"
+    if not entry.isreg:
+        return "not a regular file"
+    return None
+
+
+# The two RAR generations, and the libarchive reader each needs.
+_RAR_MAGIC = ((b"Rar!\x1a\x07\x01\x00", "rar5"), (b"Rar!\x1a\x07\x00", "rar"))
+
+
+def _rar_format(path: Path) -> str:
+    """Which libarchive reader this file needs, decided on its signature.
+
+    Naming the format is not a micro-optimisation, it is the correctness of the
+    stored media type. `file_reader` defaults to `format_name="all"`, which makes
+    libarchive try every format it knows — so a ZIP or a tar named `.rar` is read
+    quite happily by this extractor and stored asserting `application/vnd.rar`.
+    That is a false statement about evidence, and it also routes a ZIP around
+    `ZipExtractor`, whose symlink refusal and rendering this extractor does not
+    reproduce. One corpus would then hold two renderings of the same kind of
+    archive, which surfaces as retrieval quality rather than as an error.
+
+    So the file is handled on what it is rather than on what it is named, and a
+    file that is neither generation is refused naming what was expected — the
+    same rule, for the same reason, as the legacy Office formats.
+    """
+    with path.open("rb") as handle:
+        head = handle.read(8)
+    for magic, fmt in _RAR_MAGIC:
+        if head.startswith(magic):
+            return fmt
+    raise ExtractionError(
+        f"{path.name} is not a RAR archive: expected a RAR signature, found "
+        f"{head[:8]!r}"
+    )
+
+
+# RAR5 block and record types, and how far into a file the walk below will look.
+_RAR5_HEAD_CRYPT = 4
+_RAR5_HEAD_FILE = 2
+_RAR5_EXTRA_CRYPT = 1
+_RAR5_HAS_EXTRA = 0x0001
+_RAR5_HAS_DATA = 0x0002
+_RAR5_SCAN_BYTES = 1024 * 1024
+
+
+def _rar5_encrypted_reason(path: Path) -> str | None:
+    """Why this RAR5 archive's contents cannot be read, or None.
+
+    Positive detection only, and deliberately so: any malformed or unfamiliar
+    byte makes this return None and hand the file to libarchive, which refuses
+    it properly. This function may add a refusal; it must never be the reason a
+    readable archive is rejected.
+
+    It exists because libarchive cannot answer the question on the version that
+    ships. WinRAR's *default* password mode encrypts entry data and leaves the
+    headers readable — the mode you get without ticking "encrypt file names" —
+    and libarchive 3.7.4's RAR5 reader skips the per-entry `EX_CRYPT` record as
+    an unsupported attribute. Measured on 3.7.4, which is both this host and
+    Debian trixie: `archive_entry_is_data_encrypted` returns 0 for such an entry
+    and `archive_read_has_encrypted_entries` never leaves "don't know". So the
+    listing pass succeeds, the container is stored, and `iter_children` hands
+    back **ciphertext as document content** — which is then chunked, embedded and
+    indexed as though it were the document's text. Nothing downstream can detect
+    that, which makes it worse than the empty container it was mistaken for.
+
+    Header encryption is checked here too, though libarchive does refuse that
+    one, so that both password modes produce the same message rather than two.
+    """
+    try:
+        with path.open("rb") as handle:
+            blob = handle.read(_RAR5_SCAN_BYTES)
+    except OSError:
+        return None
+
+    at = len(_RAR_MAGIC[0][0])
+
+    def vint(pos: int) -> tuple[int, int]:
+        value = shift = 0
+        while pos < len(blob):
+            byte = blob[pos]
+            value |= (byte & 0x7F) << shift
+            pos += 1
+            if not byte & 0x80:
+                return value, pos
+            shift += 7
+            if shift > 63:
+                raise ValueError("vint too long")
+        raise ValueError("truncated vint")
+
+    try:
+        while at < len(blob):
+            _crc, at = at + 4, at + 4  # the header CRC, not verified here
+            header_size, at = vint(at)
+            if header_size <= 0:
+                return None
+            header_end = at + header_size
+            kind, at = vint(at)
+            if kind == _RAR5_HEAD_CRYPT:
+                return "the archive header is encrypted"
+            flags, at = vint(at)
+            extra_size = 0
+            data_size = 0
+            if flags & _RAR5_HAS_EXTRA:
+                extra_size, at = vint(at)
+            if flags & _RAR5_HAS_DATA:
+                data_size, at = vint(at)
+            if kind == _RAR5_HEAD_FILE and extra_size:
+                # The extra area sits at the end of the header, so it is found
+                # from the header's end rather than by walking the body's fields
+                # — which differ between block types and are not needed here.
+                pos = header_end - extra_size
+                while pos < header_end:
+                    record_size, after = vint(pos)
+                    if record_size <= 0:
+                        break
+                    record_type, _ = vint(after)
+                    if record_type == _RAR5_EXTRA_CRYPT:
+                        return "its entries are encrypted"
+                    # The size vint counts the record's content, which starts
+                    # where the vint ended.
+                    pos = after + record_size
+            at = header_end + data_size
+    except (ValueError, IndexError):
+        return None
+    return None
 
 
 class TarExtractor:

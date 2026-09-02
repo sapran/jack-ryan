@@ -390,3 +390,41 @@ def test_search_still_reaches_text_the_listing_hides(context, casefile, tmp_path
     ]
     hits = context.search.search(casefile.short_id, "buried tariff clause", limit=5)
     assert any(h.document.filename == "buried.txt" for h in hits)
+
+
+# -- a container with no text of its own ------------------------------------
+
+
+def test_an_empty_zip_is_still_stored_as_a_container(context, casefile, tmp_path):
+    """`is_container` is load-bearing, and nothing asserted it for ZIP.
+
+    A container is exempt from the rule that a document must yield usable text,
+    because an archive's value is in its entries and refusing it would leave
+    those entries with no parent. An archive holding nothing has no listing and
+    therefore no text at all, so it is the only case where the exemption is what
+    decides the outcome — and it was untested, which let a stray edit flip the
+    flag with the whole suite still green.
+    """
+    bundle = _zip(tmp_path / "hollow.zip", [])
+
+    report = context.ingestion.ingest(casefile.short_id, bundle)
+
+    assert report.failed == 0
+    documents = context.store.list_documents(casefile.id)
+    assert [d.filename for d in documents] == ["hollow.zip"]
+    assert documents[0].extracted_text == ""
+    assert documents[0].child_count == 0
+
+
+def test_an_empty_tar_is_still_stored_as_a_container(context, casefile, tmp_path):
+    """The same claim for tar, for the same reason."""
+    bundle = tmp_path / "hollow.tar"
+    with tarfile.open(bundle, "w"):
+        pass
+
+    report = context.ingestion.ingest(casefile.short_id, bundle)
+
+    assert report.failed == 0
+    documents = context.store.list_documents(casefile.id)
+    assert [d.filename for d in documents] == ["hollow.tar"]
+    assert documents[0].extracted_text == ""
