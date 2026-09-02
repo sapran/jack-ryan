@@ -12,11 +12,52 @@ and why it was parked.
   of the filename, baked in by whatever exported them. `FormatRouter` keys on
   `Path.suffix`, which reads `.docx'`, so `Обновлён. Ответственные по БД.docx`
   and four siblings are refused as an unknown format rather than read as the
-  DOCX they are. The refusal is honest and per-file, so nothing is lost
-  silently, but a corpus assembled by an export tool can carry a whole class of
-  these. Parked: the fix is content sniffing as a fallback when the suffix is
-  unknown, which is a wider change than trimming punctuation, and trimming
-  punctuation would be a guess about which characters are decoration.
+  DOCX they are. Parked: the fix is content sniffing as a fallback when the
+  suffix is unknown, which is a wider change than trimming punctuation, and
+  trimming punctuation would be a guess about which characters are decoration.
+
+  **This entry used to claim "the refusal is honest and per-file, so nothing is
+  lost silently". That was wrong, and the entry below says why** — a routing
+  refusal is recorded in `IngestReport.refusals` and printed by no surface, so
+  these five files were dropped from the 2026-09-02 reingest without appearing
+  in its report at all. The cost of this bug in the one real corpus is therefore
+  five documents *and* no notice of them.
+
+- **A routing refusal is invisible on every surface, so the ingest report
+  overstates coverage.** `IngestReport` carries `refusals`
+  (`services/ingestion.py:55`), populates it from four places (`:224`, `:296`,
+  `:304`, `:328`), and defines `complete` as
+  `self.exhausted_by is None and not self.refusals` (`:75`) — so the object knows
+  it is incomplete. No surface says so. The CLI's human output iterates
+  `report.outcomes` and prints `"{ingested} ingested, {failed} failed"`
+  (`cli.py:253-259`); its `--json` branch emits `ingested`, `failed` and
+  `outcomes[]` (`:236-252`); the REST route returns `ingested` and `failed`
+  (`server.py:237-240`). `refusals` and `complete` appear in none of the three.
+
+  Measured on the 2026-09-02 reingest, and the reconciliation is exact:
+  **1,922 source files = 1,760 stored + 98 tried-and-failed + 64 refused by
+  routing.** The report said `1760 ingested, 98 failed`, which invites the reader
+  to conclude 1,858 files were considered. The 64 were dropped in silence — grep
+  the whole run log for `.ics`, `.rar`, `.bat`, `.mp3`, `.p7s` or a quote-suffixed
+  name and it returns nothing. They are: `.ics` 29, `.rar` 26, `.docx'` 4,
+  `.bat` 2, `.mp3` 1, `.p7s` 1, `.doc'` 1. The 98 failures, by contrast, are each
+  reported with a reason and are honest.
+
+  Why this is worse than a missing log line. The MCP surface's own `INSTRUCTIONS`
+  teach an agent that "a coverage claim names what was searched" and that
+  "absence of evidence is not evidence of absence" — and the ingest report is the
+  only place an operator learns what the corpus is made of. Twenty-six RAR
+  archives are the sharp end: the container extractors cover ZIP, tar and
+  mailboxes, RAR is not among them, so whatever those hold was never examined and
+  a search for it returns an honest-looking empty result. `docs/design.md` § 5
+  lists container recursion as "(ZIP, mailboxes, PST)", so RAR is a gap in the
+  design rather than a regression, but the corpus does contain 26 of them.
+
+  Parked, as three separable pieces: print `refusals` and `complete` on all three
+  surfaces, which is small and closes the misrepresentation; add a RAR extractor,
+  which is a dependency decision (`rarfile` needs an external `unrar`); and the
+  quote-suffix routing bug above. The first is the one that matters, because
+  without it every future corpus silently under-reports what it skipped.
 
 - **A `.docx` can fail inside docling with a conversion error, and the message
   does not say what the document did wrong.** `Анкета для сверки персональных
