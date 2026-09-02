@@ -38,10 +38,10 @@ yielding the entries of the first volume as though they were the whole archive.
 - **WHEN** a RAR archive holds an entry whose name is absolute or traverses upward
 - **THEN** that entry is refused and the archive's other entries are still ingested
 
-#### Scenario: An entry larger than the bound is caught by what was read
+#### Scenario: An oversized entry is judged on what was read, not on what was declared
 
 - **WHEN** a RAR archive holds an entry whose content exceeds the accepted size
-- **THEN** it is excluded on the bytes actually read rather than on the size the archive declared
+- **THEN** the decision is made on the bytes actually read rather than on the size the archive declares
 
 ### Requirement: An archive that cannot be opened fails, and never reads as empty
 
