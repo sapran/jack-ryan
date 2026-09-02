@@ -72,13 +72,15 @@ RUN pip install --no-cache-dir .
 # its first run rather than downloading models mid-ingest. This is what makes
 # the local-first promise true for a fresh container.
 #
-# Measured on arm64, 2026-09-01, from `docker images --format '{{.Size}}'`:
-# 6.49GB without weights, 10.7GB with. Both figures rose when LibreOffice joined
-# the system layer — from 5.81GB and 10.2GB measured on 2026-08-27 — so that
-# capability costs about 0.68GB. Re-measured rather than adjusted by arithmetic,
-# which is why the two deltas do not match exactly. Most of the base is still
-# the CUDA stack that `docling` pulls in through torch and that an arm64
-# container cannot use; see docs/implementation-notes.md.
+# Measured on arm64, 2026-09-02, from `docker images --format '{{.Size}}'`:
+# 6.5GB without weights, against 6.49GB on 2026-09-01 before libarchive was
+# built from source — so that capability costs essentially nothing in the image,
+# because the compiler and the -dev headers are purged in the same layer that
+# used them. Both figures rose when LibreOffice joined the system layer, from
+# 5.81GB measured on 2026-08-27, so that one costs about 0.68GB. Re-measured
+# rather than adjusted by arithmetic. Most of the base is still the CUDA stack
+# that `docling` pulls in through torch and that an arm64 container cannot use;
+# see docs/implementation-notes.md.
 #
 # Off by default so the CI gate can prove the image builds without pulling
 # gigabytes of weights it never uses. A released image is built with it on:
