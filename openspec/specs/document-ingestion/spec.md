@@ -14,6 +14,35 @@ Each SHALL declare what it accepts, and the router SHALL select one by
 inspecting the file. An extractor SHALL NOT know about another, and adding a
 format SHALL be registering an extractor rather than editing the pipeline.
 
+Selection SHALL be by the file's declared type first. Where no registered
+extractor claims that type, the router SHALL read the file's leading bytes and,
+if they positively identify a format the registry already handles, SHALL route
+the file to that format's extractor. A file whose declared type is *accepted* by
+an extractor SHALL NOT be routed by its content, so content routing cannot
+change how any file the registry already reads is read. Accepted rather than
+merely declared: an extractor MAY advertise a type and still refuse a given
+file, and it is the refusal that decides.
+
+A signature SHALL identify a format affirmatively. That a file's bytes decode as
+text SHALL NOT be treated as a signature: admitting it would draw every
+unhandled text-shaped file into the corpus as a document, which is the same
+failure as storing text that carries no letters or digits — it looks ingested and
+is worth less than a refusal.
+
+The single question "can this file be read" SHALL have one answer used
+everywhere, so that a caller deciding whether to attempt a file and a caller
+extracting it cannot disagree.
+
+Where a file is routed by its content, the extractor SHALL be given the file
+under the type it was identified as, so that no extractor is handed a declared
+type it cannot key on. A document routed by its content SHALL record that it
+was, and SHALL keep the name it carries on disk: reading a file as something
+other than its name is a disclosure to the analyst, not a correction of the
+evidence.
+
+The declared type advertised as supported SHALL remain what the registry
+declares. Content routing is a recovery path and SHALL NOT widen it.
+
 Every extractor SHALL return a normalised result carrying the extracted text,
 whatever structure it recovered, the file's native metadata, how the text was
 obtained, and whether the file holds further files, so that everything
@@ -34,8 +63,9 @@ photographed or scanned page arrives as an image file in a real dump as often as
 it arrives inside a PDF, and refusing it would put that evidence out of reach of
 the corpus entirely.
 
-When no registered extractor accepts a file, ingestion SHALL fail with a typed
-error naming the file and its type rather than storing an empty document.
+When no registered extractor accepts a file by its declared type and its content
+identifies no handled format, ingestion SHALL fail with a typed error naming the
+file and its type rather than storing an empty document.
 
 Text SHALL count as usable only if it carries at least one letter or digit in
 some script. Text that is whitespace and punctuation alone SHALL be refused as
@@ -54,7 +84,7 @@ its children have a parent to hang from.
 
 #### Scenario: An unsupported format is refused
 
-- **WHEN** a file no extractor accepts is ingested
+- **WHEN** a file no extractor accepts, whose content identifies no handled format, is ingested
 - **THEN** ingestion fails with a typed error naming the file and its type
 
 #### Scenario: A file yielding no usable text is refused
@@ -81,6 +111,31 @@ its children have a parent to hang from.
 
 - **WHEN** an archive with no text of its own but with extractable entries is ingested
 - **THEN** the archive is stored and its entries become its children
+
+#### Scenario: A file whose declared type no extractor claims is read on its content
+
+- **WHEN** a file carrying a decorated or absent extension holds a format the registry handles
+- **THEN** it is routed to that format's extractor and ingested, rather than refused as an unsupported type
+
+#### Scenario: A file with a claimed declared type is never routed on content
+
+- **WHEN** a file's declared type is accepted by a registered extractor
+- **THEN** that extractor reads it and the file's content is not consulted to select another
+
+#### Scenario: A content-routed document discloses how it was read
+
+- **WHEN** a file is routed by its content rather than its declared type
+- **THEN** the stored document records that route and keeps the filename it carries on disk
+
+#### Scenario: A text-shaped file is not drawn in by decoding alone
+
+- **WHEN** a file no extractor claims carries no identifying signature, though its bytes decode as text
+- **THEN** it is refused, rather than stored as a plain-text document
+
+#### Scenario: Attempting a file and extracting it agree
+
+- **WHEN** the pipeline decides whether any extractor can read a file
+- **THEN** the decision is the one extraction itself would make, so a file judged readable is not skipped before extraction
 
 ### Requirement: A document's identity is its content, and survives reingest
 

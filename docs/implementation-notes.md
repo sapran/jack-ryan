@@ -6,22 +6,59 @@ and why it was parked.
 
 ## Parked
 
-- **A filename ending in a quote character defeats format routing entirely.**
-  Five documents in the first real dump (1,922 files, Russian institutional
-  material) are named `'…docx'` and `'…doc'` — the shell-style quotes are part
-  of the filename, baked in by whatever exported them. `FormatRouter` keys on
-  `Path.suffix`, which reads `.docx'`, so `Обновлён. Ответственные по БД.docx`
-  and four siblings are refused as an unknown format rather than read as the
-  DOCX they are. Parked: the fix is content sniffing as a fallback when the
-  suffix is unknown, which is a wider change than trimming punctuation, and
-  trimming punctuation would be a guess about which characters are decoration.
+- **The pre-filter sniffs before `_check_readable`, and the fix so far is
+  per-symptom rather than a moved gate — so the next thing on this path
+  inherits the gap.** `services/ingestion.py:217` asks `extractor_for` — which
+  now opens the file — before `_ingest_work` reaches the readability checks at
+  `:339`. The root cause is that ordering, not any single symptom of it. The
+  symlink symptom is closed at source (`sniff_suffix` declines a symlink before
+  opening anything, so the guard no longer stands alone), but that is a patch
+  on one case, not a moved check: `MAX_FILE_BYTES` still does not bound the
+  sniff, and a zip's whole central directory is still parsed before any size
+  check. Measured by review: an 18 MB archive of 200,000 entries costs ~7x its
+  size in peak RSS, and `namelist()` correctly does not decompress, so the entry
+  table is the cost rather than a classic bomb. `MemoryError` is caught by the
+  net in `sniff_suffix`, so the run survives; what is left is transient memory
+  pressure and, at multi-gigabyte sizes, an OOM kill no in-process handler can
+  prevent. Bounded by file size, needs a hostile multi-gigabyte archive, and the
+  analyst chooses the dump path — so it is parked rather than blocking. The
+  fix is to run the symlink and size checks *before* the pre-filter, once, so
+  every file on this path is covered rather than each symptom as it is found;
+  it is a change to the service's ordering rather than to routing, and it wants
+  its own change so the refusal semantics for every file are decided together.
 
-  **This entry used to claim "the refusal is honest and per-file, so nothing is
-  lost silently". That was wrong, and the entry below says why** — a routing
-  refusal is recorded in `IngestReport.refusals` and printed by no surface, so
-  these five files were dropped from the 2026-09-02 reingest without appearing
-  in its report at all. The cost of this bug in the one real corpus is therefore
-  five documents *and* no notice of them.
+- **One file is resolved three or four times per ingest.** `_resolve` is reached
+  from the pre-filter (`services/ingestion.py:217`), from `extract`, from
+  `_expand`'s own `extractor_for` and from `iter_children` — measured at 3 for a
+  content-routed document and 4 for a content-routed container, each a fresh
+  open and, for a zip, a fresh central-directory parse. The pre-existing code
+  already resolved as often by suffix, so this is not new; what is new is that
+  each resolution can now do I/O. Bounded and acceptable at the real dump's
+  scale (1,922 files, 64 unroutable, ~32 KB read each now that only OLE2 pays
+  for the megabyte prefix). Parked: if it ever matters the fix is to carry the
+  resolved `(extractor, suffix)` on `_Work` from the pre-filter, not to cache
+  inside the router — a cache keyed on a path would have to decide when a file
+  changed underneath it.
+
+- **A delegate's exception text now reaches the unauthenticated REST ingest
+  response for files that never reached a delegate before.** `_extract_as`
+  wraps a delegate failure as `{name}, read as {suffix}: {type}: {message}`,
+  which becomes `IngestOutcome.detail` and is returned by `server.py:247` — a
+  route `summarising/model.py:30-32` already names as an unauthenticated
+  disclosure channel. The filename half was already there via the
+  `no extractor accepts {path.name}` refusal; the new half is content-derived
+  text from docling, openpyxl, `extract-msg` or Pillow. The lineage string
+  itself is safe and never reaches the agent surface at all — nothing under
+  `interfaces/` reads `.extractor`, `.refusals` or `.detail`. Parked as
+  informational: it belongs with whatever change decides what that route is
+  allowed to say, not with routing.
+
+- **A filename ending in a quote character defeats format routing entirely.**
+  The routing half of this is **fixed** — see `## Fixed` below. What stays
+  parked is the half the entry below owns: these five files were dropped from
+  the 2026-09-02 reingest without appearing in its report at all, and a routing
+  refusal is still invisible on every surface. Fixing routing narrowed the set
+  of files that can vanish; it did not make a vanishing visible.
 
 - **A routing refusal is invisible on every surface, so the ingest report
   overstates coverage.** `IngestReport` carries `refusals`
@@ -60,8 +97,8 @@ and why it was parked.
   without it every future corpus silently under-reports what it skipped.
 
 - **A `.docx` can fail inside docling with a conversion error, and the message
-  does not say what the document did wrong.** `Анкета для сверки персональных
-  данных.docx` raises `could not extract … with docling: Conver…` where its
+  does not say what the document did wrong.** One personal-data form in the
+  first real dump raises `could not extract … with docling: Conver…` where its
   three neighbours in the same dump raise the honest `produced no usable text`.
   One file in 1,599 supported ones, so it is rare rather than structural, and it
   is correctly reported as a failure rather than stored empty. Parked: worth a
@@ -69,18 +106,17 @@ and why it was parked.
   malformed document from an extractor bug.
 
 - **Fifteen page-bearing PDFs escalated through the recognition ladder and still
-  yielded nothing.** All from the first real dump, and the names say what they
-  are: `Брыкин.pdf`, `Романенков.pdf`, `Сенникова.pdf`, `Абдуллаев.pdf` and
-  similar — personal documents that were photographed rather than scanned.
-  `Брыкин.pdf` carries zero font objects and five embedded images, so it is
-  image-only, rung one had nothing to find, and `rapidocr` under `eslav`
-  returned nothing usable from the photograph. Others in the set (`3-4
-  курсы.pdf`, 36 font objects, no images) do carry text structure and still
-  produced nothing, which is the more interesting half. The designed answer to
-  the first half is rung three, and `vlm_model` is empty by default because it
-  downloads weights and is much slower. Parked: this is the measurement that
-  should decide whether rung three is worth recommending, and it needs the
-  scanned-documents slice of M3 rather than a note.
+  yielded nothing.** All from the first real dump, and the shape says what they
+  are: single-surname filenames — personal identity documents that were
+  photographed rather than scanned. One carries zero font objects and five
+  embedded images, so it is image-only, rung one had nothing to find, and
+  `rapidocr` under `eslav` returned nothing usable from the photograph. Others
+  in the set do carry text structure (one has 36 font objects and no images) and
+  still produced nothing, which is the more interesting half. The designed
+  answer to the first half is rung three, and `vlm_model` is empty by default
+  because it downloads weights and is much slower. Parked: this is the
+  measurement that should decide whether rung three is worth recommending, and
+  it needs the scanned-documents slice of M3 rather than a note.
 
 - **`embed_url`, `llm_url` and `api_key` are read into `Profile` and consumed by
   nothing.** `grep` finds them only in `config.py`. They are reserved seams, and
@@ -625,6 +661,26 @@ and why it was parked.
   random teaches the reader to re-run rather than to look.
 
 ## Fixed
+
+- **~~A filename ending in a quote character defeats format routing
+  entirely.~~** Fixed by `content-routing` on 2026-09-02. Selection stays
+  suffix-first; where the registry claims nothing, the file's bytes are read and
+  a format they positively identify is routed to its extractor. The five real
+  files now ingest — four as `content-routed+docling`, the OLE2 one as
+  `content-routed+legacy-office+docling`, 357k characters between them — and
+  their `.bat`, `.ics`, `.p7s` and `.mp3` siblings are still refused, because
+  there is deliberately no text fallback: "decodes as UTF-8" is not a signature.
+
+  Two things worth carrying forward. The fallback had to go at
+  `FormatRouter.extractor_for`, not `.extract`: `services/ingestion.py:217`
+  skips a file whose `extractor_for` is `None` before `extract` is ever called,
+  so a fallback known only to `extract` would have been inert on every folder
+  walk — the one case it exists for. A mutation test pins that shape, and a
+  second pins that a file with a claimed suffix is never sniffed. And a
+  content-routed file is copied into a scratch directory under the resolved
+  suffix before the delegate sees it, because every extractor keys its media
+  type off `path.suffix` and a `KeyError` there is not an `ExtractionError` —
+  it would end the run rather than fail one document.
 
 - **~~The store has no migration path.~~** Fixed by
   `corpus-identity-and-schema-migration` on 2026-08-28. The baseline is frozen
