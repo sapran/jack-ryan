@@ -1329,10 +1329,11 @@ def test_the_header_walk_refuses_an_encrypted_entry_when_libarchive_is_silent(
 ):
     """The first net, isolated, and the reason it cannot be dropped either.
 
-    libarchive's flag is 0 for a data-encrypted RAR5 entry on 3.7.4, which is
-    the version Debian trixie ships and the one this reader may still be pointed
-    at by `LIBARCHIVE`. Silencing the flag models that, and the walk must still
-    refuse both generations.
+    libarchive's flag is 0 for a data-encrypted RAR5 entry on both libraries in
+    scope — 3.7.4, which Debian trixie ships, and 3.8.9, measured on this
+    fixture and on real WinRAR archives. So for RAR5 the flag is never the
+    answer and silencing it is not a hypothetical: it is what the reader does.
+    The walk must still refuse both generations.
     """
     monkeypatch.setattr(containers, "_entry_data_encrypted", lambda reader, entry: False)
     modern = _data_encrypted_rar(tmp_path / "modern.rar")

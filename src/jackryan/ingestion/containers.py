@@ -423,13 +423,17 @@ def _entry_data_encrypted(reader, entry) -> bool:  # noqa: ANN001 - libarchive's
     nothing, and delivered raw ciphertext through `read_data`, which was stored
     as the document's text.
 
-    Measured on both libraries in scope, on fixtures built in the test module.
-    For RAR3 the flag is 1 on 3.7.4 and on 3.8.9, so this is the reliable answer
-    for that generation. For RAR5 it is 1 only from 3.8.9; on 3.7.4 the reader
-    skips the per-entry crypt record as an unsupported attribute and answers 0.
-    That is why both checks exist and why neither can be dropped in favour of
-    the other — the walk covers the version this reader may still be pointed at,
-    and this covers the generation the walk's format does not describe.
+    Measured on both libraries in scope, on fixtures built in the test module
+    and re-measured against real WinRAR archives. For RAR3 the flag is 1 on
+    3.7.4 and on 3.8.9, so this is the reliable answer for that generation. For
+    RAR5 it is 0 on both — including 3.8.9, on a synthetic fixture and on real
+    archives alike, which `bsdtar` from the same 3.8.9 refuses to extract as
+    encrypted. So this check answers only for RAR3, and for RAR5 the walk is the
+    sole detection. That is why both exist and why neither can be dropped: the
+    walk is the only thing that refuses an encrypted RAR5 at any version, and
+    this is the only thing that refuses a RAR3 whose block layout the walk could
+    not parse. Do not drop the walk for RAR5 on the strength of a newer reader —
+    that was measured and is not what it does.
 
     Any failure answers False rather than raising: this may add a refusal and
     must never be the reason a readable archive is rejected, which is the same
