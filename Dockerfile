@@ -25,17 +25,42 @@ WORKDIR /app
 # still runs and every other format still ingests — a legacy file simply fails
 # with a message naming the remedy.
 #
-# libarchive, which is how RAR archives are read. `libarchive-c` is a ctypes
-# binding and carries no library of its own, so without this the import
-# succeeds and the first symbol lookup fails. Two packages from `main`
-# (libxml2 arrives with it), against 117 for `unar` or a non-free component for
-# any unRAR-derived reader. Same posture as LibreOffice above: without it the
-# container still runs and every other format still ingests.
+# libarchive, which is how RAR archives are read — built from source rather
+# than installed from `main`, which is the one departure from this file's
+# otherwise-apt-only policy and needs its reason recorded.
+#
+# `libarchive-c` is a ctypes binding carrying no library of its own, so a
+# system library is required: without one the import succeeds and the first
+# symbol lookup fails. Trixie ships 3.7.4, whose RAR5 reader carries
+# CVE-2026-14164, a double free reachable by a crafted archive. Debian marks it
+# vulnerable with no security update planned for trixie, so pinning the apt
+# package or upgrading it never resolves this — and the crash is `SIGABRT`,
+# which no `except` catches and which would take the API server down, because
+# ingestion runs in a thread pool inside it. The alternative to building was
+# mixing in a package from sid, which pulls a newer libc into a stable image.
+#
+# The code enforces the same floor (`MIN_LIBARCHIVE`), so an image built
+# without this step does not silently read archives with a vulnerable parser —
+# it reports the reader as unavailable and every other format still ingests.
+ARG LIBARCHIVE_VERSION=3.8.9
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libgl1 libglib2.0-0 \
-        libarchive13t64 \
         libreoffice-writer libreoffice-calc libreoffice-impress \
+    && apt-get install -y --no-install-recommends \
+        curl ca-certificates build-essential pkg-config \
+        libxml2-dev liblzma-dev libbz2-dev zlib1g-dev libzstd-dev liblz4-dev \
+    && curl -fsSL "https://github.com/libarchive/libarchive/releases/download/v${LIBARCHIVE_VERSION}/libarchive-${LIBARCHIVE_VERSION}.tar.xz" \
+        -o /tmp/libarchive.tar.xz \
+    && tar -xJf /tmp/libarchive.tar.xz -C /tmp \
+    && cd "/tmp/libarchive-${LIBARCHIVE_VERSION}" \
+    && ./configure --prefix=/usr/local --disable-static --without-openssl \
+    && make -j"$(nproc)" && make install \
+    && ldconfig \
+    && cd / && rm -rf /tmp/libarchive* \
+    && apt-get purge -y --auto-remove \
+        curl build-essential pkg-config \
+        libxml2-dev liblzma-dev libbz2-dev zlib1g-dev libzstd-dev liblz4-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Dependency layer first so source edits do not invalidate the install.

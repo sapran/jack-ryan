@@ -24,6 +24,26 @@ from .extractors import Child, Extraction, ExtractionError
 # lives in the ingestion service; this is the per-entry floor beneath it, and it
 # is what stops one declared-enormous member being read into memory at all.
 MAX_ENTRY_BYTES = 512 * 1024 * 1024
+# The oldest libarchive whose RAR5 reader this code will hand an archive to.
+#
+# 3.8.9 is the floor because 3.7.4 carries CVE-2026-14164, a double free in the
+# RAR5 reader: `filtered_buf` is left stale when the unpacking state is
+# reinitialised and is freed a second time when the next entry is processed.
+# That is precisely the loop this extractor drives — the listing pass walks
+# every entry, then `iter_children` walks every entry again and reads its
+# blocks — and the input is an archive a third party handed the analyst.
+#
+# It is a floor rather than a warning because the failure is not catchable. A
+# glibc double free raises `SIGABRT`, which no `except` sees, and ingestion runs
+# in a thread pool inside the API server process, so one crafted archive would
+# take the server down with it. Debian marks trixie's 3.7.4 vulnerable with no
+# security update planned, so an unpinned `apt-get upgrade` never resolves it.
+#
+# The consequence is deliberate: on a host below the floor, RAR reading is
+# unavailable and says so, and every other format still ingests. A quietly
+# vulnerable parser is worse than an absent one, because only one of the two
+# tells the operator.
+MIN_LIBARCHIVE = 3_008_009
 
 # The literal an operator sees when no archive reader resolves. Defined once and
 # read by every surface that reports the capability, so the two adapters cannot
@@ -51,13 +71,22 @@ def find_rar_reader() -> str | None:
     try:
         import libarchive.ffi
 
-        return str(libarchive.ffi.version_number())
+        version = libarchive.ffi.version_number()
     except Exception:  # noqa: BLE001 - see the docstring; the type is not knowable
         return None
+    if version < MIN_LIBARCHIVE:
+        return None
+    return str(version)
 
 
 def rar_status() -> str:
-    """What the operator-facing surfaces report: the libarchive version, or `unavailable`."""
+    """What the operator-facing surfaces report: the libarchive version, or `unavailable`.
+
+    A host below `MIN_LIBARCHIVE` reports `unavailable`, exactly as one with no
+    library at all does. An operator does not need to know which of the two it
+    is to know that archives will not be read; `jackryan ingest` says which,
+    because that is where the remedy belongs.
+    """
     return find_rar_reader() or RAR_UNAVAILABLE
 
 
@@ -293,7 +322,7 @@ def _libarchive():  # noqa: ANN202 - the module type is not importable when abse
         import libarchive
         import libarchive.ffi
 
-        libarchive.ffi.version_number()
+        version = libarchive.ffi.version_number()
     except ImportError as exc:
         # A different remedy, so a different message. Telling an operator to
         # install a system library when the Python package is what is missing
@@ -307,7 +336,23 @@ def _libarchive():  # noqa: ANN202 - the module type is not importable when abse
             "reading a rar archive needs libarchive, which is unavailable "
             f"({exc}); install the system libarchive library"
         ) from exc
+    if version < MIN_LIBARCHIVE:
+        # Named exactly, with the remedy, because this is the one refusal an
+        # operator will want to argue with: the library is present and the
+        # archive is readable, and we are declining anyway.
+        raise ExtractionError(
+            f"reading a rar archive needs libarchive {_version_text(MIN_LIBARCHIVE)} "
+            f"or newer; this host has {_version_text(version)}, whose RAR5 reader "
+            "carries a double-free (CVE-2026-14164) reachable by a crafted archive "
+            "and not catchable in process. Install a newer libarchive, or point "
+            "the LIBARCHIVE environment variable at one"
+        )
     return libarchive
+
+
+def _version_text(number: int) -> str:
+    """libarchive's packed version number as it is written down."""
+    return f"{number // 1_000_000}.{number // 1_000 % 1_000}.{number % 1_000}"
 
 
 _VOLUME_SUFFIX = re.compile(r"\.part\d+$", re.IGNORECASE)
@@ -384,7 +429,14 @@ _RAR5_HEAD_FILE = 2
 _RAR5_EXTRA_CRYPT = 1
 _RAR5_HAS_EXTRA = 0x0001
 _RAR5_HAS_DATA = 0x0002
-_RAR5_SCAN_BYTES = 1024 * 1024
+# One header is read at a time into a window this big, and at most this many
+# headers are walked. A fixed prefix read cannot work: an entry's data sits
+# between headers, so a first entry larger than the prefix would push every
+# later header out of view and a crypt record behind it would be missed. The
+# walk therefore seeks past each data area, and the count is what bounds it on a
+# hostile file instead.
+_RAR5_HEADER_WINDOW = 64 * 1024
+_RAR5_MAX_HEADERS = 4096
 
 
 def _rar5_encrypted_reason(path: Path) -> str | None:
@@ -410,15 +462,9 @@ def _rar5_encrypted_reason(path: Path) -> str | None:
     Header encryption is checked here too, though libarchive does refuse that
     one, so that both password modes produce the same message rather than two.
     """
-    try:
-        with path.open("rb") as handle:
-            blob = handle.read(_RAR5_SCAN_BYTES)
-    except OSError:
-        return None
+    magic = _RAR_MAGIC[0][0]
 
-    at = len(_RAR_MAGIC[0][0])
-
-    def vint(pos: int) -> tuple[int, int]:
+    def vint(blob: bytes, pos: int) -> tuple[int, int]:
         value = shift = 0
         while pos < len(blob):
             byte = blob[pos]
@@ -432,39 +478,49 @@ def _rar5_encrypted_reason(path: Path) -> str | None:
         raise ValueError("truncated vint")
 
     try:
-        while at < len(blob):
-            _crc, at = at + 4, at + 4  # the header CRC, not verified here
-            header_size, at = vint(at)
-            if header_size <= 0:
-                return None
-            header_end = at + header_size
-            kind, at = vint(at)
-            if kind == _RAR5_HEAD_CRYPT:
-                return "the archive header is encrypted"
-            flags, at = vint(at)
-            extra_size = 0
-            data_size = 0
-            if flags & _RAR5_HAS_EXTRA:
-                extra_size, at = vint(at)
-            if flags & _RAR5_HAS_DATA:
-                data_size, at = vint(at)
-            if kind == _RAR5_HEAD_FILE and extra_size:
-                # The extra area sits at the end of the header, so it is found
-                # from the header's end rather than by walking the body's fields
-                # — which differ between block types and are not needed here.
-                pos = header_end - extra_size
-                while pos < header_end:
-                    record_size, after = vint(pos)
-                    if record_size <= 0:
-                        break
-                    record_type, _ = vint(after)
-                    if record_type == _RAR5_EXTRA_CRYPT:
-                        return "its entries are encrypted"
-                    # The size vint counts the record's content, which starts
-                    # where the vint ended.
-                    pos = after + record_size
-            at = header_end + data_size
-    except (ValueError, IndexError):
+        with path.open("rb") as handle:
+            handle.seek(len(magic))
+            for _ in range(_RAR5_MAX_HEADERS):
+                base = handle.tell()
+                window = handle.read(_RAR5_HEADER_WINDOW)
+                if len(window) < 5:
+                    return None
+                at = 4  # the header CRC, not verified here
+                header_size, at = vint(window, at)
+                if header_size <= 0:
+                    return None
+                header_end = at + header_size
+                kind, at = vint(window, at)
+                if kind == _RAR5_HEAD_CRYPT:
+                    return "the archive header is encrypted"
+                flags, at = vint(window, at)
+                extra_size = 0
+                data_size = 0
+                if flags & _RAR5_HAS_EXTRA:
+                    extra_size, at = vint(window, at)
+                if flags & _RAR5_HAS_DATA:
+                    data_size, at = vint(window, at)
+                if kind == _RAR5_HEAD_FILE and extra_size:
+                    # The extra area ends the header, so it is found from the
+                    # header's end rather than by walking the body's fields,
+                    # which differ between block types and are not needed here.
+                    pos = header_end - extra_size
+                    if pos < 0 or header_end > len(window):
+                        return None  # header larger than the window; defer
+                    while pos < header_end:
+                        record_size, after = vint(window, pos)
+                        if record_size <= 0:
+                            break
+                        record_type, _ = vint(window, after)
+                        if record_type == _RAR5_EXTRA_CRYPT:
+                            return "its entries are encrypted"
+                        # The size vint counts the record's content, which
+                        # starts where the vint ended.
+                        pos = after + record_size
+                # Seek rather than index: the data area may be gigabytes, and
+                # this is the step a prefix read cannot take.
+                handle.seek(base + header_end + data_size)
+    except (OSError, ValueError, IndexError):
         return None
     return None
 

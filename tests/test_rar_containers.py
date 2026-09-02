@@ -37,6 +37,56 @@ _HAS_EXTRA = 0x0001
 _HAS_DATA = 0x0002
 
 
+def _real_libarchive_version() -> int:
+    """The host's actual libarchive version, read once before any fixture runs.
+
+    Captured at import deliberately. The autouse fixture below raises the
+    reported version to the floor, so a test that asked the library at call time
+    would be handed the patched answer — its expectation computed by the very
+    thing it exists to check, which is a guard that cannot fail.
+    """
+    try:
+        import libarchive.ffi
+
+        return int(libarchive.ffi.version_number())
+    except Exception:  # noqa: BLE001 - absent library; the floor test says so
+        return 0
+
+
+_REAL_LIBARCHIVE = _real_libarchive_version()
+
+
+@pytest.fixture(autouse=True)
+def _reader_at_the_floor(monkeypatch):
+    """Exercise this module's logic, not libarchive's patch level.
+
+    `MIN_LIBARCHIVE` is a deployment control: it stops a real instance handing
+    *untrusted* archives to a parser with a known double free. These tests are
+    about what this extractor does with an archive once it can read one, and
+    every fixture they use is built in this file rather than supplied by anyone.
+
+    The alternative was to skip the reader-dependent tests below the floor. That
+    was rejected: CI is the only gate guarding this repository, its runner's
+    system library is older than the floor, and skipping would mean the whole
+    RAR feature ships with no functional coverage — a regression in the
+    extractor would pass green. Losing that coverage is itself a security
+    problem, and a bigger one than exercising a benign self-built fixture on an
+    older library.
+
+    Two things keep it honest: `test_the_host_reader_satisfies_the_floor_when_required`
+    asserts the real version when `JACKRYAN_REQUIRE_RAR=1`, and the Docker build
+    gate builds a patched library, which is what proves the floor is satisfiable
+    rather than merely asserted. Tests that are *about* the floor patch the
+    version themselves and so override this.
+    """
+    import libarchive.ffi
+
+    if libarchive.ffi.version_number() < containers.MIN_LIBARCHIVE:
+        monkeypatch.setattr(
+            libarchive.ffi, "version_number", lambda: containers.MIN_LIBARCHIVE
+        )
+
+
 @pytest.fixture
 def casefile(context):
     return context.casefiles.create("Archive Inquiry")
@@ -450,7 +500,24 @@ def test_an_absent_reader_reports_unavailable_rather_than_raising(monkeypatch):
     assert rar_status() == containers.RAR_UNAVAILABLE
 
 
-def test_the_reader_is_reported_on_this_host():
+def test_the_host_reader_satisfies_the_floor_when_required():
+    """The one test that looks at the real host rather than the patched value.
+
+    Set `JACKRYAN_REQUIRE_RAR=1` to demand a genuinely patched library — the
+    check to run in an image build or a release gate, where "the tests passed"
+    must mean the shipped configuration works rather than that a fixture stood
+    in for it.
+    """
+    import os
+
+    # `_REAL_LIBARCHIVE`, not a call to the library: the autouse fixture has
+    # already raised what the library reports, so asking it now would hand this
+    # test the answer it is supposed to be checking.
+    if os.environ.get("JACKRYAN_REQUIRE_RAR") == "1":
+        assert _REAL_LIBARCHIVE >= containers.MIN_LIBARCHIVE, (
+            f"JACKRYAN_REQUIRE_RAR=1 but this host has libarchive "
+            f"{_REAL_LIBARCHIVE}, below the {containers.MIN_LIBARCHIVE} floor"
+        )
     assert rar_status() != containers.RAR_UNAVAILABLE
 
 
@@ -691,3 +758,65 @@ def test_a_non_utf8_entry_name_is_decoded_not_repr_ed():
 
     assert not name.startswith("b'")
     assert name.endswith(".pdf"), "the suffix must survive, or the child cannot route"
+
+
+# -- the reader's version is a floor, not a preference ---------------------
+
+
+def _pretend_version(monkeypatch, number: int) -> None:
+    import libarchive.ffi
+
+    monkeypatch.setattr(libarchive.ffi, "version_number", lambda: number)
+
+
+def test_a_vulnerable_libarchive_is_refused_naming_the_advisory(tmp_path, monkeypatch):
+    """A quietly vulnerable parser is worse than an absent one.
+
+    3.7.4's RAR5 reader carries CVE-2026-14164, a double free reachable by a
+    crafted archive. The crash is `SIGABRT`, so no `except` sees it and the
+    process dies — and ingestion runs in a thread pool inside the API server.
+    Reading archives with it and hoping is not a policy, so the reader declines
+    and says why.
+    """
+    archive = _rar(tmp_path / "a.rar", [("a.txt", "alpha")])
+    _pretend_version(monkeypatch, 3_007_004)
+
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(archive)
+
+    message = str(raised.value)
+    assert "3.8.9 or newer" in message
+    assert "3.7.4" in message
+    assert "CVE-2026-14164" in message
+
+
+def test_a_vulnerable_libarchive_reports_unavailable(monkeypatch):
+    _pretend_version(monkeypatch, 3_007_004)
+
+    assert rar_status() == containers.RAR_UNAVAILABLE
+
+
+def test_the_floor_itself_is_accepted(monkeypatch, tmp_path):
+    """Exactly at the floor must pass, or the boundary is off by one."""
+    archive = _rar(tmp_path / "a.rar", [("a.txt", "alpha")])
+    _pretend_version(monkeypatch, containers.MIN_LIBARCHIVE)
+
+    assert RarExtractor().extract(archive).metadata["entries"] == "1"
+    assert rar_status() == str(containers.MIN_LIBARCHIVE)
+
+
+def test_a_vulnerable_reader_fails_the_archive_not_the_run(
+    context, casefile, tmp_path, monkeypatch
+):
+    folder = tmp_path / "dump"
+    folder.mkdir()
+    _rar(folder / "bundle.rar", [("a.txt", "alpha")])
+    (folder / "plain.md").write_text("# Memo\n\nThe tariff was deferred.")
+    _pretend_version(monkeypatch, 3_007_004)
+
+    report = context.ingestion.ingest(casefile.short_id, folder)
+
+    assert report.failed == 1
+    names = {d.filename for d in context.store.list_documents(casefile.id, include_expanded=True)}
+    assert "plain.md" in names
+    assert "bundle.rar" not in names
