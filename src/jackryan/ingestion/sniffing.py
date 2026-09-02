@@ -127,6 +127,15 @@ def _ole2_suffix(path: Path, prefix: bytes) -> str | None:
     The directory is read where the header points, which is exact. The byte scan
     behind it catches a file whose directory is chained beyond the first sector —
     a bounded fallback, so a miss is a refusal rather than a wrong answer.
+
+    That fallback masks its own partner: with the scan in place, a broken offset
+    still returns the right suffix from here, so nothing asserted through
+    `sniff_suffix` can detect one. Three mutations of the arithmetic in
+    `_ole2_directory_names` left the composed tests entirely green. Test that
+    function directly, and place the stream past the first 512 bytes of the
+    sector — a wrong offset reads 3584 bytes low on a 4096-byte sector, which is
+    a whole number of 128-byte entries and therefore still overlaps a stream
+    sitting at offset 0.
     """
     names = _ole2_directory_names(path, prefix)
     for stream, suffix in _OLE2_STREAMS:

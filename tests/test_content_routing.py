@@ -30,7 +30,11 @@ from openpyxl import Workbook
 from jackryan.ingestion.extractors import ExtractionError, default_extractors
 from jackryan.ingestion.quality_gate import QualityGate
 from jackryan.ingestion.router import CONTENT_ROUTED, FormatRouter
-from jackryan.ingestion.sniffing import sniff_suffix
+from jackryan.ingestion.sniffing import (
+    PREFIX_BYTES,
+    _ole2_directory_names,
+    sniff_suffix,
+)
 
 # The name that started this: shell quotes baked into the filename by whatever
 # exported it, so `Path.suffix` reads `.xlsx'` and the registry claims nothing.
@@ -62,27 +66,55 @@ def _ooxml(path: Path, part: str) -> Path:
     return path
 
 
-def _ole2(path: Path, stream: str, *, reachable_directory: bool = True) -> Path:
+def _ole2(
+    path: Path,
+    stream: str,
+    *,
+    reachable_directory: bool = True,
+    sector_shift: int = 9,
+    entry_index: int = 1,
+) -> Path:
     """A compound file whose directory names one stream.
+
+    The directory opens with `Root Entry`, as a real one does, and the named
+    stream sits at `entry_index`. That is not decoration: with the stream at
+    offset 0 a misaligned directory read still overlaps it, so a fixture shaped
+    that way masks an offset bug — which is exactly what the first version of
+    these tests did.
 
     With `reachable_directory` the header points at the directory sector, which
     is how a real file is read. Without it the header declares no directory, so
     only the bounded byte scan can find the name — the fallback path.
+
+    `sector_shift` is 9 for 512-byte sectors and 12 for 4096-byte ones.
     """
-    header = bytearray(512)
+    sector_size = 1 << sector_shift
+    if (entry_index + 1) * 128 > sector_size:
+        raise ValueError(
+            f"entry {entry_index} does not fit a {sector_size}-byte sector"
+        )
+
+    # The header occupies the whole first sector whatever its size, which is
+    # what the offset arithmetic under test depends on.
+    header = bytearray(sector_size)
     header[0:8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
-    struct.pack_into("<H", header, 30, 9)  # 512-byte sectors
-    struct.pack_into(
-        "<I", header, 48, 0 if reachable_directory else 0xFFFFFFFF
-    )
+    struct.pack_into("<H", header, 30, sector_shift)
+    struct.pack_into("<I", header, 48, 0 if reachable_directory else 0xFFFFFFFF)
 
-    entry = bytearray(128)
-    encoded = stream.encode("utf-16-le")
-    entry[0 : len(encoded)] = encoded
-    struct.pack_into("<H", entry, 64, len(encoded) + 2)  # counts the trailing NUL
-    sector = bytes(entry) + bytes(512 - 128)
+    directory = bytearray(sector_size)
 
-    path.write_bytes(bytes(header) + sector)
+    def place(index: int, name: str) -> None:
+        entry = bytearray(128)
+        encoded = name.encode("utf-16-le")
+        entry[0 : len(encoded)] = encoded
+        # The length counts the trailing NUL that terminates the name.
+        struct.pack_into("<H", entry, 64, len(encoded) + 2)
+        directory[index * 128 : (index + 1) * 128] = entry
+
+    place(0, "Root Entry")
+    place(entry_index, stream)
+
+    path.write_bytes(bytes(header) + bytes(directory))
     return path
 
 
@@ -120,6 +152,45 @@ def test_an_ole2_file_is_identified_by_its_stream_names(tmp_path):
     assert sniff_suffix(_ole2(tmp_path / "b.bin", "Workbook")) == ".xls"
     assert sniff_suffix(_ole2(tmp_path / "c.bin", "PowerPoint Document")) == ".ppt"
     assert sniff_suffix(_ole2(tmp_path / "d.bin", "__substg1.0_0037001F")) == ".msg"
+
+
+def test_the_ole2_directory_is_found_where_the_header_points(tmp_path):
+    """The sector arithmetic, asserted on the unit that performs it.
+
+    Deliberately not through `sniff_suffix`, and the fixture is deliberately
+    shaped. Two things mask an offset bug here, both found by mutation:
+
+    The byte scan behind the header read recovers the same answer from the
+    prefix, so a wrong offset still yields the right suffix and any test written
+    at the composed level passes while the arithmetic is broken.
+
+    And with a 4096-byte sector the natural mistake — `512 + n * sector_size`,
+    assuming a fixed-size header — reads exactly 3584 bytes low, which is a
+    multiple of the 128-byte entry stride, so a misaligned read still overlaps
+    the directory's first 512 bytes. A stream placed at offset 0 is found
+    anyway. Placing it past that window is what makes the read's correctness
+    observable at all.
+
+    512-byte sectors cannot distinguish that mutation: `(n+1)*512` and
+    `512+n*512` are the same expression. Only the 4096 case carries the proof,
+    which is why it is here and not left to the dump that happened to arrive.
+    """
+    beyond_the_overlap = 5  # 640 bytes into the sector, past the low read's reach
+    path = _ole2(
+        tmp_path / "big-sectors.bin",
+        "WordDocument",
+        sector_shift=12,
+        entry_index=beyond_the_overlap,
+    )
+    names = _ole2_directory_names(path, path.read_bytes()[:PREFIX_BYTES])
+    assert "WordDocument" in names
+    assert names[0] == "Root Entry"
+
+
+def test_an_ole2_file_with_four_kilobyte_sectors_resolves(tmp_path):
+    """The other sector size the format defines, end to end."""
+    path = _ole2(tmp_path / "big-sectors.bin", "WordDocument", sector_shift=12)
+    assert sniff_suffix(path) == ".doc"
 
 
 def test_an_ole2_directory_beyond_the_first_sector_still_resolves(tmp_path):
