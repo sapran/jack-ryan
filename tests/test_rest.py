@@ -29,6 +29,20 @@ def test_health_reports_profile_and_contract(client, context):
     )
 
 
+def test_both_surfaces_report_one_archive_reader(client):
+    """One answer about the host, whichever surface is asked.
+
+    The value comes from a single function precisely so the CLI and REST cannot
+    drift into describing the same host in two vocabularies. Comparing them
+    against each other is what would catch a second definition being introduced.
+    """
+    from jackryan.ingestion.containers import rar_status
+
+    body = client.get("/health").json()
+
+    assert body["rar"] == rar_status()
+
+
 def test_create_and_fetch_a_casefile(client):
     created = client.post("/api/casefiles", json={"title": "Harbour Leases"})
     assert created.status_code == 201

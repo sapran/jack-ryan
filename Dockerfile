@@ -24,9 +24,17 @@ WORKDIR /app
 # JRE and the desktop integration are not pulled in. Without it the container
 # still runs and every other format still ingests — a legacy file simply fails
 # with a message naming the remedy.
+#
+# libarchive, which is how RAR archives are read. `libarchive-c` is a ctypes
+# binding and carries no library of its own, so without this the import
+# succeeds and the first symbol lookup fails. Two packages from `main`
+# (libxml2 arrives with it), against 117 for `unar` or a non-free component for
+# any unRAR-derived reader. Same posture as LibreOffice above: without it the
+# container still runs and every other format still ingests.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libgl1 libglib2.0-0 \
+        libarchive13t64 \
         libreoffice-writer libreoffice-calc libreoffice-impress \
     && rm -rf /var/lib/apt/lists/*
 

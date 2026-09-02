@@ -26,6 +26,9 @@ def test_status_reports_configuration(capsys):
     code, out, _ = run(["status"], capsys)
     assert code == 0
     assert "profile" in out
+    # Reported rather than enforced at startup, so this is where an operator
+    # finds out before starting an hour-long run rather than 26 archives into it.
+    assert "rar" in out
 
 
 def test_create_then_list(capsys):

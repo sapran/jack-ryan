@@ -42,6 +42,16 @@ dependencies = [
     # resolve and instead records that this code depends on it directly rather
     # than incidentally.
     "httpx>=0.28",
+    # RAR archives, through the system libarchive. A ctypes binding rather than
+    # a subprocess wrapper, because the expansion budget has to be able to
+    # refuse an archive partway: every subprocess reader for this format either
+    # extracts whole archives to a directory — which puts the full expansion on
+    # disk before any ceiling applies — or derives from RARLAB's unRAR source,
+    # which puts it in non-free. libarchive's RAR5 reader is an independent
+    # BSD-2-clause implementation carrying none of that code, which is why it is
+    # the one that ships in Debian main. The binding is CC0-1.0; neither it nor
+    # the library disturbs this project's AGPL-3.0-or-later position.
+    "libarchive-c>=5.3",
 ]
 
 [project.optional-dependencies]

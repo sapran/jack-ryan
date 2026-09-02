@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .ingestion.containers import rar_status
 from .ingestion.legacy_office import converter_status
 from .ingestion.quality_gate import read_as
 from .app import Context, build_context
@@ -185,6 +186,8 @@ def create_app(context: Context | None = None) -> FastAPI:
             # Same key and same two-valued vocabulary as `jackryan status`:
             # one answer about the host, whichever surface is asked.
             "legacy_office": converter_status(),
+            # Same key and same two-valued vocabulary as `jackryan status`.
+            "rar": rar_status(),
         }
 
     @app.get("/api/casefiles")
