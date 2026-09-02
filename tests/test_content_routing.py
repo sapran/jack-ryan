@@ -320,27 +320,35 @@ def test_document_text_is_not_mistaken_for_a_stream_name(tmp_path):
         struct.pack_into("<H", entry, 64, len(encoded) + 2)
         directory[index * 128 : (index + 1) * 128] = entry
 
-    # A document's own text, ending in the word that names a stream and then
-    # running into the NUL padding of its buffer. Both halves matter: the
-    # trailing NULs mean the terminator check alone cannot reject this, so
-    # alignment is the only thing that does — and the string is placed off a
-    # 128-byte boundary, where prose falls and a directory entry never does.
+    # Two documents, because the scan has two discriminators and a fixture that
+    # exercises only one leaves the other free to rot. Each of these isolates
+    # one, verified by mutation: remove either check and exactly one goes red.
     #
-    # An earlier version of this test put " tab" after the word, which the
-    # terminator check rejected on its own; removing the alignment check left
-    # the test green and the defect open.
-    prose = bytearray(512)
-    prose[7:] = "see the Workbook".encode("utf-16-le").ljust(505, b"\x00")[:505]
+    # (a) Unaligned. The word lands off a 128-byte boundary, where prose falls
+    # and a directory entry never does, and runs into NUL padding — so the
+    # terminator alone cannot reject it and alignment must.
+    unaligned = bytearray(512)
+    unaligned[7:] = "see the Workbook".encode("utf-16-le").ljust(505, b"\x00")[:505]
+    a = tmp_path / "unaligned.unknown"
+    a.write_bytes(bytes(header) + bytes(directory) + bytes(unaligned))
+    at = a.read_bytes().find("Workbook".encode("utf-16-le"))
+    assert at % 128 != 0, at
+    assert sniff_suffix(a) is None
 
-    path = tmp_path / "drawing.unknown"
-    path.write_bytes(bytes(header) + bytes(directory) + bytes(prose))
-
-    # Where the word actually lands, so the test states its own premise rather
-    # than depending on arithmetic a reader has to redo.
-    workbook_at = bytes(path.read_bytes()).find("Workbook".encode("utf-16-le"))
-    assert workbook_at % 128 != 0, workbook_at
-
-    assert sniff_suffix(path) is None
+    # (b) Aligned by chance, followed by a space rather than a NUL. This is the
+    # realistic case the first fixture could not reach: the alignment check
+    # passes, so only the terminator rejects it. A genuine entry's name is
+    # NUL-terminated; prose continuing into the next word is not.
+    aligned = bytearray(512)
+    sentence = "Workbook tab is over here".encode("utf-16-le")
+    aligned[0 : len(sentence)] = sentence  # "Workbook" at offset 0 of this sector
+    b = tmp_path / "aligned.unknown"
+    b.write_bytes(bytes(header) + bytes(directory) + bytes(aligned))
+    at = b.read_bytes().find("Workbook".encode("utf-16-le"))
+    assert at % 128 == 0, at
+    after = b.read_bytes()[at + 16 : at + 18]
+    assert after != b"\x00\x00", after
+    assert sniff_suffix(b) is None
 
 
 def test_a_signature_its_extractor_would_refuse_is_not_routed(monkeypatch, tmp_path):

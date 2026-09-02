@@ -6,22 +6,26 @@ and why it was parked.
 
 ## Parked
 
-- **Content sniffing runs before `_check_readable`, so that guard's promises do
-  not hold during the sniff.** `services/ingestion.py:217` asks
-  `extractor_for` — which now opens the file — before `_ingest_work` reaches the
-  readability checks at `:339`. The symlink half is closed (`sniff_suffix`
-  declines a symlink outright, so no out-of-root read happens), but two remain:
-  `MAX_FILE_BYTES` does not bound the sniff, and a zip's whole central directory
-  is parsed before any size check. Measured by review: an 18 MB archive of
-  200,000 entries costs +127.9 MB peak RSS, an amplification of 7.1x, and
-  `namelist()` correctly does not decompress so a classic zip bomb is not the
-  issue — the entry table is. `MemoryError` is now caught by the net in
-  `sniff_suffix`, so the run survives; what is left is transient memory
+- **The pre-filter sniffs before `_check_readable`, and the fix so far is
+  per-symptom rather than a moved gate — so the next thing on this path
+  inherits the gap.** `services/ingestion.py:217` asks `extractor_for` — which
+  now opens the file — before `_ingest_work` reaches the readability checks at
+  `:339`. The root cause is that ordering, not any single symptom of it. The
+  symlink symptom is closed at source (`sniff_suffix` declines a symlink before
+  opening anything, so the guard no longer stands alone), but that is a patch
+  on one case, not a moved check: `MAX_FILE_BYTES` still does not bound the
+  sniff, and a zip's whole central directory is still parsed before any size
+  check. Measured by review: an 18 MB archive of 200,000 entries costs ~7x its
+  size in peak RSS, and `namelist()` correctly does not decompress, so the entry
+  table is the cost rather than a classic bomb. `MemoryError` is caught by the
+  net in `sniff_suffix`, so the run survives; what is left is transient memory
   pressure and, at multi-gigabyte sizes, an OOM kill no in-process handler can
-  prevent. Parked: the fix is to run the symlink and size checks before the
-  pre-filter, which is a change to the service's ordering rather than to
-  routing, and it wants its own change so the refusal semantics for *every*
-  file are considered together rather than as a side effect of sniffing.
+  prevent. Bounded by file size, needs a hostile multi-gigabyte archive, and the
+  analyst chooses the dump path — so it is parked rather than blocking. The
+  fix is to run the symlink and size checks *before* the pre-filter, once, so
+  every file on this path is covered rather than each symptom as it is found;
+  it is a change to the service's ordering rather than to routing, and it wants
+  its own change so the refusal semantics for every file are decided together.
 
 - **One file is resolved three or four times per ingest.** `_resolve` is reached
   from the pre-filter (`services/ingestion.py:217`), from `extract`, from

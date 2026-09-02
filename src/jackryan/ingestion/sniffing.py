@@ -142,15 +142,18 @@ def sniff_suffix(path: Path) -> str | None:
     `BadZipFile` nor an `OSError`, both craftable in a hundred bytes, and each
     measured to abort an ingest that `develop` completes.
     """
-    if path.is_symlink():
-        # The service refuses a symlink before it would ever be stored, so
-        # identifying one buys nothing and reading it means opening a file
-        # outside the dump. Declining here keeps that read from happening at
-        # all, which is what the pre-filter used to do for a name it could not
-        # read.
-        return None
-
     try:
+        if path.is_symlink():
+            # The service refuses a symlink before it would ever be stored, so
+            # identifying one buys nothing and reading it means opening a file
+            # outside the dump. Declining here keeps that read from happening at
+            # all, which is what the pre-filter used to do for a name it could
+            # not read. Inside the try because `Path.is_symlink` re-raises
+            # `PermissionError` — pathlib swallows only ENOENT/ENOTDIR/EBADF/
+            # ELOOP — and a file in an unsearchable directory would otherwise
+            # raise straight past the net the docstring promises.
+            return None
+
         with path.open("rb") as handle:
             header = handle.read(HEADER_BYTES)
             # Only the OLE2 byte scan looks past the header, so only it pays
