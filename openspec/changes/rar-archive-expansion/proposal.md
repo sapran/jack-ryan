@@ -47,7 +47,16 @@ same router, bounded by the same budget, guarded by the same path rules.
 - **An encrypted archive fails that document, naming encryption.** One of the 26
   is header-encrypted. It must not present as an empty archive: "this archive
   holds nothing" and "this archive could not be opened" are different claims,
-  and only one of them is true.
+  and only one of them is true. This holds for both generations of the format
+  and both of WinRAR's password modes, and for the expansion pass as well as
+  the listing pass — libarchive delivers a data-encrypted RAR3 entry as
+  ciphertext without an error, which is worse than the empty container it would
+  otherwise be mistaken for, because nothing downstream can detect it.
+- **An archive that cannot be accounted for fails rather than reading as
+  empty.** The RAR5 reader answers a truncated header with end-of-archive, so a
+  cut archive arrives as zero entries and no exception. An archive that opens
+  and genuinely holds nothing is still stored as a container with no children;
+  that is the claim being protected.
 - **An absent library fails only the RAR documents**, with a message naming the
   remedy, and the capability is reported on `jackryan status` and `GET /health`
   in one vocabulary on both. This follows the LibreOffice precedent rather than
@@ -57,9 +66,10 @@ same router, bounded by the same budget, guarded by the same path rules.
 **Not in this slice.** `.ics` (29 files in that dump) and the five files whose
 names end in an apostrophe are in the unsupported tail and stay there — the
 first is a different format family, the second a filename-routing defect already
-parked. Multi-volume RAR (`.partN.rar`) is not supported, because libarchive
-cannot read it and the dump contains none; a `.partN.rar` will fail with a
-message saying so rather than yield a truncated first entry. The invisibility of
+parked. Multi-volume RAR is not supported and the dump contains none; a volume
+is refused on the flag its own header carries — not on its name, and not by
+leaving it to libarchive, which lists a first volume as a whole archive and
+delivers a split entry's first fragment as the entry. The invisibility of
 `refusals` on all three surfaces is a separate parked defect and is not fixed
 here; this change is verified against the store directly, not against the report.
 

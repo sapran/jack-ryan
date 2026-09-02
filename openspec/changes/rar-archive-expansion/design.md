@@ -75,11 +75,21 @@ because both files in its fixture are zero bytes. Carrying a patched
 `ToolSetup` subclass in this tree to read one format is a worse trade than one
 CC0 binding.
 
-**What is given up:** multi-volume archives (`.partN.rar`), which libarchive
-cannot read and the dump does not contain, and random access by name — the
-reader is strictly forward-only. The second costs nothing, because
-`iter_children` is already a forward-only generator; it costs one thing, handled
-below.
+**What is given up:** multi-volume archives, which are refused rather than read,
+and random access by name — the reader is strictly forward-only. The second
+costs nothing, because `iter_children` is already a forward-only generator; it
+costs one thing, handled below.
+
+"libarchive cannot read a volume set" was how this was first written, and it is
+not what libarchive does. Measured on 3.8.9 against a first volume built to the
+format: the volume flag in the main header, one entry flagged as continuing into
+the next volume with half its declared bytes present, and an end-of-archive
+block flagged "not the last". libarchive listed it cleanly as two entries,
+raised nothing, and delivered ten of the split entry's twenty bytes as the
+entry. So the refusal cannot be left to the reader, and it cannot be decided on
+the filename either — that first volume was named `archive.rar`. It is decided
+on the flags the format itself carries, which is the only signal present on
+every volume of both generations.
 
 ### An absent library is the LibreOffice case, not the recognition engine's
 
@@ -113,21 +123,65 @@ is what succeeds misleadingly.
 
 ### An encrypted archive fails the document; it never reads as empty
 
-libarchive refuses encryption loudly and at two levels: a `HEAD_CRYPT` block
-gives `ARCHIVE_FATAL` "Encryption is not supported", and an encrypted data
-stream gives `ARCHIVE_FAILED`. That is the behaviour this corpus wants, and it
-is worth stating why, because the alternative reader gets it wrong in a way that
-would have been invisible: `rarfile` opens a header-encrypted archive
-*successfully*, reports `needs_password() == True`, and returns an **empty**
-`namelist()`. Through this pipeline that would have produced a stored container
-document with zero children and no error — indistinguishable from an empty
-archive, and a false statement about evidence.
+`rarfile`, the reader not chosen, gets this wrong in a way that would have been
+invisible: it opens a header-encrypted archive *successfully*, reports
+`needs_password() == True`, and returns an **empty** `namelist()`. Through this
+pipeline that would have produced a stored container document with zero children
+and no error — indistinguishable from an empty archive, and a false statement
+about evidence.
+
+libarchive does better, but not well enough to be trusted with the question on
+its own, and the shape of what it answers is what the two checks are built
+around. Measured on both 3.7.4 and 3.8.9, on fixtures built in the test module:
+
+| archive | `archive_entry_is_data_encrypted` | reading the entry |
+|---|---|---|
+| RAR3, header-encrypted (`MHD_PASSWORD`) | n/a | raises "RAR encryption support unavailable" |
+| RAR3, data-encrypted (`FHD_PASSWORD`) | `1` on both versions | **delivers ciphertext, silently** |
+| RAR5, header-encrypted (`HEAD_CRYPT`) | n/a | raises |
+| RAR5, data-encrypted (`EX_CRYPT`) | `0` on 3.7.4, `1` on 3.8.9 | 3.7.4 delivers ciphertext; 3.8.9 raises |
+
+Two rows deliver ciphertext, and no one check covers both. The per-entry flag is
+the authority for RAR3 and is asked of every entry in both passes; the pre-open
+header walk is what covers RAR5 on the version Debian trixie still ships, and it
+covers RAR3's header mode as well so that all four rows reach one sentence an
+analyst can act on. Neither can be dropped in favour of the other, and both are
+positive detection only — a walk may add a refusal and must never be the reason
+a readable archive is rejected.
 
 `extract()` therefore raises `ExtractionError` on an unreadable archive, which
 `_ingest_work` turns into a failed document carrying the reason
 (`services/ingestion.py:426-436`). A failed document is counted and reported;
 this is the same reasoning that refuses text consisting only of punctuation
 rather than storing it as empty.
+
+### One guard, called by both passes
+
+The two passes open the archive separately, so each must decide separately
+whether it may — and deciding separately is how they came to disagree.
+`extract()` refused an encrypted archive; `iter_children()` repeated neither
+that refusal nor the volume one while its comment claimed parity, so an archive
+expanded without its listing pass still yielded ciphertext, and a volume still
+yielded a truncated entry as though it were whole. Nothing in the types makes
+the pipeline's ordering hold. Both now call one function, and the per-entry
+encryption verdict is one call in both loops.
+
+### A truncated archive is not an empty one
+
+libarchive's RAR5 reader answers an unparseable or truncated header with
+end-of-archive rather than an error. Measured: a signature alone, a signature
+plus four bytes, an archive cut inside its first file header, and a 24-byte file
+whose header-size vint is ten bytes long all returned zero entries and raised
+nothing — stored as ingested containers with no children, indistinguishable from
+an archive that was genuinely empty. An archive cut inside its *second* entry's
+header was worse: stored as complete, with only the first entry.
+
+The header walk already sees every block boundary, so it answers this too — but
+from arithmetic rather than from interpretation, which is the opposite stance to
+the one it takes on encryption. A block declaring more bytes than the file holds,
+or a file carrying no main header, is a fact about declared sizes against
+`st_size`; nothing is inferred. The walk stops at the end-of-archive block, so a
+`.rar` carrying appended bytes is still read.
 
 ### `extract()` and `iter_children()` each open the archive
 

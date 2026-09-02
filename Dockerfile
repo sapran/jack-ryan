@@ -42,7 +42,31 @@ WORKDIR /app
 # The code enforces the same floor (`MIN_LIBARCHIVE`), so an image built
 # without this step does not silently read archives with a vulnerable parser —
 # it reports the reader as unavailable and every other format still ingests.
+#
+# The tarball is verified against a pinned digest before anything is unpacked
+# from it. TLS alone authenticates the host that served the bytes, not the
+# bytes, and this is the one artefact in the image that is compiled from
+# upstream source rather than installed from apt — and it is precisely the
+# component that parses attacker-supplied archives inside the server process,
+# so a substituted tarball is arbitrary code in the ingest path. The digest is
+# the one GitHub reports for the release asset, and it is checked with
+# `sha256sum -c`, which fails the build rather than warning.
+#
+# `LIBARCHIVE_SHA256` is an ARG for one reason only: overriding the version
+# without also stating the digest of that version must fail, and it does,
+# because the recorded digest will not match what was downloaded. That is the
+# intended behaviour, not an inconvenience — a build arg is not a reason to
+# stop verifying.
+#
+# The floor is checked here as well, and is a literal rather than an ARG so no
+# `--build-arg` can lower it. It restates `MIN_LIBARCHIVE`, which is the only
+# duplication in this file: a Dockerfile cannot import the constant, and
+# building 3.7.4 on request would produce an image whose library the code then
+# refuses at runtime — a working-looking build with the reader `unavailable`.
+# Stating it twice means the build refuses instead, and the docker workflow's
+# `jackryan status --json` assertion is what catches the two copies disagreeing.
 ARG LIBARCHIVE_VERSION=3.8.9
+ARG LIBARCHIVE_SHA256=888c934f9d95648ecb9163dc8e23ab80a476ecb81a8f1154704a227b5b676dde
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libgl1 libglib2.0-0 \
@@ -50,8 +74,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl ca-certificates build-essential pkg-config \
         libxml2-dev liblzma-dev libbz2-dev zlib1g-dev libzstd-dev liblz4-dev \
+    && if [ "$(printf '%s\n' 3.8.9 "${LIBARCHIVE_VERSION}" | sort -V | sed -n 1p)" != "3.8.9" ]; then \
+        echo "LIBARCHIVE_VERSION=${LIBARCHIVE_VERSION} is below the 3.8.9 floor the code enforces (MIN_LIBARCHIVE); its RAR5 reader carries CVE-2026-14164" >&2; \
+        exit 1; \
+    fi \
     && curl -fsSL "https://github.com/libarchive/libarchive/releases/download/v${LIBARCHIVE_VERSION}/libarchive-${LIBARCHIVE_VERSION}.tar.xz" \
         -o /tmp/libarchive.tar.xz \
+    && echo "${LIBARCHIVE_SHA256}  /tmp/libarchive.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/libarchive.tar.xz -C /tmp \
     && cd "/tmp/libarchive-${LIBARCHIVE_VERSION}" \
     && ./configure --prefix=/usr/local --disable-static --without-openssl \

@@ -30,3 +30,36 @@ jobs:
 
       - name: Verify the CLI runs inside the image
         run: docker run --rm jackryan:ci jackryan --version
+
+      - name: Verify the shipped image's archive reader clears the floor
+        # The one gate that observes the library Python actually loads. Every
+        # other check is satisfied by an image whose reader is dead: the build
+        # succeeds because the compile succeeded, `jackryan --version` never
+        # calls `rar_status`, and the pytest job runs on the runner's own
+        # libarchive with the floor patched up by a fixture. So a regression
+        # that disarmed `MIN_LIBARCHIVE`, an `ldconfig` that stopped running, or
+        # an `apt-get --auto-remove` that took a library the built `.so` links
+        # against would all ship green with archives silently unreadable.
+        #
+        # Asserted on "is not unavailable" rather than on a version, because
+        # `unavailable` is the sole unavailable value — defined once in the code
+        # and shared with the document converter — while the available value is
+        # a version string whose formatting is the code's business, not this
+        # gate's. The two conjuncts before it are there because
+        # `.rar != "unavailable"` is *true* of a payload with no `rar` key and
+        # true of one where it is null — a renamed or emptied field must fail
+        # this step, not pass it for want of anything to compare.
+        #
+        # `jackryan --json status` through the shipped entry point rather than
+        # the suite with `JACKRYAN_REQUIRE_RAR=1`: the image carries neither the
+        # tests nor pytest, so running them would mean installing into it and
+        # asserting against something other than what ships. This asserts the
+        # same predicate that gate test asserts, on the real library. `--json`
+        # is a global flag and precedes the subcommand; after it, argparse
+        # refuses the whole invocation, which fails this step for the wrong
+        # reason.
+        run: |
+          set -o pipefail
+          docker run --rm jackryan:ci jackryan --json status | tee /tmp/status.json
+          jq -e 'has("rar") and (.rar | type == "string") and .rar != "unavailable"' \
+            /tmp/status.json > /dev/null

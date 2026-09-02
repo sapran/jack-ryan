@@ -35,6 +35,12 @@ _HEAD_ENDARC = 5
 
 _HAS_EXTRA = 0x0001
 _HAS_DATA = 0x0002
+# An entry whose data continues in the next volume of a set.
+_SPLIT_AFTER = 0x0010
+# In the main header's archive-flags field: this archive is one volume of a set.
+_ARCHIVE_VOLUME = 0x0001
+# In an end-of-archive block's flags: another volume follows this one.
+_ENDARC_NOT_LAST = 0x0001
 
 
 def _real_libarchive_version() -> int:
@@ -78,7 +84,16 @@ def _reader_at_the_floor(monkeypatch):
     gate builds a patched library, which is what proves the floor is satisfiable
     rather than merely asserted. Tests that are *about* the floor patch the
     version themselves and so override this.
+
+    No library at all is a skip rather than an error. Importing `libarchive.ffi`
+    here unguarded made every test in this module ERROR on such a host, which
+    reports a broken test suite where the honest report is an unavailable
+    capability — and `rar_status` exists precisely to say that this host cannot
+    read archives without anything else failing.
     """
+    if _REAL_LIBARCHIVE == 0:
+        pytest.skip("no usable libarchive on this host, so there is no reader to exercise")
+
     import libarchive.ffi
 
     if libarchive.ffi.version_number() < containers.MIN_LIBARCHIVE:
@@ -123,12 +138,19 @@ def _block(kind: int, flags: int, body: bytes, data: bytes = b"", extra: bytes =
     return struct.pack("<I", zlib.crc32(header) & 0xFFFFFFFF) + header + data
 
 
-def _file_block(name: str, payload: bytes, declared: int | None = None) -> bytes:
+def _file_block(
+    name: str,
+    payload: bytes,
+    declared: int | None = None,
+    *,
+    header_flags: int = 0,
+) -> bytes:
     """A stored (uncompressed) file entry.
 
     `declared` exists to let a test lie about the unpacked size independently of
     the bytes actually present, which is the case the size ceiling defends
-    against.
+    against. `header_flags` adds to the block's common flags, which is how an
+    entry says its data is split across volumes.
     """
     encoded = name.encode()
     body = (
@@ -141,10 +163,10 @@ def _file_block(name: str, payload: bytes, declared: int | None = None) -> bytes
         + _vint(len(encoded))
         + encoded
     )
-    return _block(_HEAD_FILE, _HAS_DATA, body, data=payload)
+    return _block(_HEAD_FILE, _HAS_DATA | header_flags, body, data=payload)
 
 
-def _rar(path, entries, *, header_encrypted: bool = False):
+def _rar(path, entries, *, header_encrypted: bool = False, archive_flags: int = 0):
     """Write a RAR5 archive of stored entries."""
     out = bytearray(_SIGNATURE)
     if header_encrypted:
@@ -152,11 +174,81 @@ def _rar(path, entries, *, header_encrypted: bool = False):
         # else. libarchive refuses at this block and never reaches the entries,
         # which is the behaviour the encryption scenarios turn on.
         out += _block(_HEAD_CRYPT, 0, _vint(0) + _vint(0) + bytes([15]) + b"\x00" * 16)
-    out += _block(_HEAD_MAIN, 0, _vint(0))
+    out += _block(_HEAD_MAIN, 0, _vint(archive_flags))
     for name, payload in entries:
         blob = payload.encode() if isinstance(payload, str) else payload
         out += _file_block(name, blob)
     out += _block(_HEAD_ENDARC, 0, _vint(0))
+    path.write_bytes(bytes(out))
+    return path
+
+
+# -- the older generation ---------------------------------------------------
+#
+# RAR 2.9/3.x is a different container entirely — fixed-layout little-endian
+# headers rather than RAR5's vints — and libarchive reads it with a different
+# reader. It is built here as well because the only RAR3 coverage this file had
+# was a signature string compared against `_rar_format`, which read no bytes at
+# all, and that is how an encrypted RAR3 archive came to be ingested as
+# ciphertext: the check that would have caught it was reached only for RAR5, and
+# nothing in this module ever asked a RAR3 archive to be read.
+
+_RAR3_SIGNATURE = b"Rar!\x1a\x07\x00"
+
+_RAR3_MAIN = 0x73
+_RAR3_FILE = 0x74
+_RAR3_ENDARC = 0x7B
+
+_RAR3_LONG_BLOCK = 0x8000  # an ADD_SIZE field follows the base header
+_MHD_VOLUME = 0x0001  # main header: this archive is one volume of a set
+_MHD_PASSWORD = 0x0080  # main header: every later header is encrypted
+_LHD_SPLIT_AFTER = 0x0002  # file header: this entry continues in the next volume
+_FHD_PASSWORD = 0x0004  # file header: this entry's data is encrypted
+_FHD_SALT = 0x0400  # file header: an 8-byte salt follows the name
+
+
+def _rar3_block(kind: int, flags: int, rest: bytes) -> bytes:
+    """One RAR 2.9/3.x block: HEAD_CRC is the low 16 bits of a CRC32 from HEAD_TYPE on."""
+    body = bytes([kind]) + struct.pack("<H", flags) + struct.pack("<H", 7 + len(rest)) + rest
+    return struct.pack("<H", zlib.crc32(body) & 0xFFFF) + body
+
+
+def _rar3_file_block(name: str, payload: bytes, flags: int, file_crc: int | None) -> bytes:
+    """A stored RAR3 file entry.
+
+    PACK_SIZE is the first field after the base header, which is also where the
+    format's generic ADD_SIZE lives — so a block's total length is HEAD_SIZE plus
+    PACK_SIZE, and a walk needs no knowledge of this body to step over it.
+
+    `file_crc` is settable because a real encrypted entry stores the CRC of the
+    *plaintext*, which does not match the ciphertext on disk.
+    """
+    encoded = name.encode()
+    rest = struct.pack(
+        "<IIBIIBBHI",
+        len(payload),  # PACK_SIZE
+        len(payload),  # UNP_SIZE
+        0,  # HOST_OS
+        zlib.crc32(payload) & 0xFFFFFFFF if file_crc is None else file_crc,
+        0,  # FTIME
+        29,  # UNP_VER: 2.9
+        0x30,  # METHOD: store
+        len(encoded),  # NAME_SIZE
+        0,  # ATTR
+    ) + encoded
+    if flags & _FHD_SALT:
+        rest += b"\x00" * 8
+    return _rar3_block(_RAR3_FILE, _RAR3_LONG_BLOCK | flags, rest) + payload
+
+
+def _rar3(path, entries, *, file_flags: int = 0, main_flags: int = 0, file_crc: int | None = None):
+    """Write a RAR 2.9/3.x archive of stored entries."""
+    out = bytearray(_RAR3_SIGNATURE)
+    out += _rar3_block(_RAR3_MAIN, main_flags, struct.pack("<HI", 0, 0))
+    for name, payload in entries:
+        blob = payload.encode() if isinstance(payload, str) else payload
+        out += _rar3_file_block(name, blob, file_flags, file_crc)
+    out += _rar3_block(_RAR3_ENDARC, 0x4000, b"")
     path.write_bytes(bytes(out))
     return path
 
@@ -176,6 +268,28 @@ def test_the_fixture_builder_emits_a_real_rar5(tmp_path):
 
     assert extraction.extractor == "rar"
     assert extraction.metadata["entries"] == "1"
+    children = list(RarExtractor().iter_children(archive))
+    assert [c.name for c in children] == ["notes.txt"]
+    assert children[0].data == b"the tariff was deferred"
+
+
+def test_the_fixture_builder_emits_a_real_rar3(tmp_path):
+    """The same proof for the older generation, and it reads bytes.
+
+    What stood here before compared `_rar_format` against a string for sixteen
+    zero bytes behind a RAR3 signature. That opened nothing, read nothing, and
+    was the file's only RAR3 coverage — so the encryption check being reached
+    for RAR5 alone was invisible. This drives the whole path: libarchive's
+    separate RAR3 reader opens the archive, lists it, and returns the payload.
+    """
+    archive = _rar3(tmp_path / "legacy.rar", [("notes.txt", "the tariff was deferred")])
+
+    extraction = RarExtractor().extract(archive)
+
+    assert extraction.extractor == "rar"
+    assert extraction.media_type == "application/vnd.rar"
+    assert extraction.metadata["entries"] == "1"
+    assert extraction.refusals == ()
     children = list(RarExtractor().iter_children(archive))
     assert [c.name for c in children] == ["notes.txt"]
     assert children[0].data == b"the tariff was deferred"
@@ -353,18 +467,102 @@ def test_an_oversized_entry_is_excluded_on_what_was_read(tmp_path, monkeypatch):
 # -- laziness --------------------------------------------------------------
 
 
-def test_rar_entries_are_yielded_one_at_a_time(tmp_path):
+def _watch_reads(monkeypatch) -> list[bytes]:
+    """Record every payload byte libarchive hands back, as it hands it back.
+
+    `ArchiveEntry.get_blocks` resolves `ffi.read_data` when its body first runs,
+    so replacing the module attribute is enough and no entry object has to be
+    reached into. What the recorder gives a test is the one thing a generator's
+    shape cannot fake: *when* the bytes of a given entry were pulled off the
+    reader.
+    """
+    import libarchive.ffi
+
+    delivered: list[bytes] = []
+    real = libarchive.ffi.read_data
+
+    def recording(archive_p, buffer, size):  # noqa: ANN001,ANN202 - libarchive's own types
+        count = real(archive_p, buffer, size)
+        if count > 0:
+            delivered.append(buffer.raw[:count])
+        return count
+
+    monkeypatch.setattr(libarchive.ffi, "read_data", recording)
+    return delivered
+
+
+def test_a_rar_entry_is_read_only_when_it_is_reached(tmp_path, monkeypatch):
+    """One entry at a time, judged on what libarchive was asked to deliver.
+
+    What stood here before took the first child and closed the generator. That
+    passes for an implementation that reads every entry into a list and then
+    `yield from`s it — the shape the spec's scenario exists to forbid, since it
+    puts a whole archive in memory before the expansion budget can refuse any of
+    it. `iter_children` being a generator is not the claim; the claim is that
+    the later entries' bytes have not been touched, and only watching the reads
+    can tell those apart.
+    """
     bundle = _rar(
-        tmp_path / "bundle.rar", [("a.txt", "alpha"), ("b.txt", "beta"), ("c.txt", "gamma")]
+        tmp_path / "bundle.rar",
+        [("a.txt", "first-alpha"), ("b.txt", "second-beta"), ("c.txt", "third-gamma")],
     )
+    delivered = _watch_reads(monkeypatch)
 
     entries = RarExtractor().iter_children(bundle)
     first = next(entries)
 
     assert first.name == "a.txt"
+    assert first.data == b"first-alpha"
+    seen = b"".join(delivered)
+    assert b"first-alpha" in seen, "the yielded entry's own bytes must have been read"
+    assert b"second-beta" not in seen
+    assert b"third-gamma" not in seen
     # Abandoning the iterator partway is what the expansion budget does when a
     # bound is reached, so it must not raise on the way out.
     entries.close()
+
+
+def test_the_expansion_budget_stops_a_rar_before_its_later_entries_are_read(
+    context, casefile, tmp_path, monkeypatch
+):
+    """Why laziness is worth a test at all, exercised through the shipped path.
+
+    The bound exists to refuse an archive partway, and it can only do that if
+    the entries beyond the refusal were never read. So this drives a real ingest
+    with a bound the second entry crosses and then asks libarchive what it was
+    made to deliver. The limit is injected exactly as `tests/test_expansion_budget.py`
+    does, because the real defaults would need a 20 GB archive.
+
+    One entry beyond the accepted set *is* read, and that is not a defect: the
+    service weighs a child on `len(child.data)`, because a declared size is
+    chosen by whoever built the archive and this module refuses to trust it. So
+    the entry that breaks the bound must arrive to break it. What must never be
+    read is anything after that — and an implementation that gathered the
+    archive into a list before yielding would read all three.
+    """
+    from jackryan.ingestion.budget import ExpansionBudget
+
+    budget = ExpansionBudget(max_descendants=1)
+    context.ingestion._limits = (
+        budget.max_depth,
+        budget.max_descendants,
+        budget.max_extracted_bytes,
+    )
+    bundle = _rar(
+        tmp_path / "bundle.rar",
+        [("a.txt", "first-alpha"), ("b.txt", "second-beta"), ("c.txt", "third-gamma")],
+    )
+    delivered = _watch_reads(monkeypatch)
+
+    report = context.ingestion.ingest(casefile.short_id, bundle)
+
+    assert report.exhausted_by is not None
+    seen = b"".join(delivered)
+    assert b"first-alpha" in seen
+    assert b"second-beta" in seen, "the entry that broke the bound is what breaks it"
+    assert b"third-gamma" not in seen, "an entry past the refusal was read anyway"
+    stored = {d.filename for d in context.store.list_documents(casefile.id, include_expanded=True)}
+    assert stored == {"bundle.rar", "a.txt"}
 
 
 # -- an archive that cannot be opened --------------------------------------
@@ -412,36 +610,317 @@ def test_an_encrypted_rar_does_not_stop_the_run(context, casefile, tmp_path):
 
 
 def test_an_unopenable_rar_fails_naming_the_archive(tmp_path):
+    """A RAR5 signature over zeroes, whose first block declares a zero-length header.
+
+    libarchive does refuse this one, so the assertion on the walk's own finding
+    is what makes the test say something about this module. No block header is
+    empty, so a declared length of zero is a positive malformation — and without
+    that branch the walk steps five bytes at a time through the zeroes to the
+    same refusal reported as an absent main header, which is true but is not
+    what is wrong with the file.
+    """
     archive = tmp_path / "truncated.rar"
     archive.write_bytes(_SIGNATURE + b"\x00" * 32)
 
+    assert containers._survey(archive, "rar5").unreadable == containers._MALFORMED
     with pytest.raises(ExtractionError) as raised:
         RarExtractor().extract(archive)
 
     assert "truncated.rar" in str(raised.value)
 
 
-def test_a_multi_volume_rar_is_refused_with_a_remedy(tmp_path):
-    """Refused before opening, not after failing.
+# -- an archive that was cut short -----------------------------------------
+#
+# libarchive's RAR5 reader answers an unparseable or truncated header with
+# end-of-archive rather than an error, so every shape below used to arrive as
+# `Extraction(entries=0)` with no exception and no refusal — stored as an
+# ingested container with no children, and indistinguishable from `hollow.rar`,
+# which is genuinely empty. That is the falsehood the spec's second requirement
+# names: "holds nothing" and "could not be opened" are different claims about
+# evidence.
 
-    libarchive reads the first volume's entries and only then raises, so letting
-    it try would yield a partial listing that reads like a whole archive.
+
+def _cut_at(tmp_path, name: str, keep: int):
+    """A complete two-entry archive, truncated to its first `keep` bytes."""
+    full = _rar(tmp_path / "full.rar", [("a.txt", "alpha"), ("b.txt", "beta")]).read_bytes()
+    path = tmp_path / name
+    path.write_bytes(full[:keep])
+    return path
+
+
+_MAIN_BLOCK_END = len(_SIGNATURE) + len(_block(_HEAD_MAIN, 0, _vint(0)))
+_FIRST_ENTRY_END = _MAIN_BLOCK_END + len(_file_block("a.txt", b"alpha"))
+
+
+@pytest.mark.parametrize(
+    ("label", "keep", "reason"),
+    [
+        ("the signature alone", len(_SIGNATURE), containers._NO_MAIN),
+        ("the signature and four bytes", len(_SIGNATURE) + 4, containers._CUT),
+        ("cut inside the first file header", _MAIN_BLOCK_END + 6, containers._CUT),
+        ("cut inside the first entry's data", _FIRST_ENTRY_END - 2, containers._CUT),
+        ("cut inside the second file header", _FIRST_ENTRY_END + 6, containers._CUT),
+    ],
+)
+def test_a_truncated_rar_fails_rather_than_reading_as_empty(tmp_path, label, keep, reason):
+    """Each shape, and which finding refused it.
+
+    The reason is asserted, not just the refusal, because the walk establishes
+    this from four separate pieces of arithmetic and they do not all catch the
+    same shapes. Asserting the refusal alone leaves three of the four provable
+    only by deleting them one at a time and watching nothing change — and one of
+    them would then be indistinguishable from the fallback that reports a header
+    it merely failed to parse, which is a weaker and less accurate claim about
+    the same file.
     """
-    archive = _rar(tmp_path / "split.part1.rar", [("piece.txt", "half a document")])
+    archive = _cut_at(tmp_path, "cut.rar", keep)
+
+    assert containers._survey(archive, "rar5").unreadable == reason, label
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(archive)
+
+    assert "cut.rar" in str(raised.value)
+    assert reason in str(raised.value)
+
+
+def test_a_rar5_header_whose_size_field_is_nonsense_fails(tmp_path):
+    """A ten-byte size vint, which no valid header carries.
+
+    Reported as a 24-byte file that returned `Extraction(entries=0)`. The walk's
+    vint reader refuses a value that cannot fit in 64 bits, and reaching that at
+    the end of the file is a positive statement that the headers do not account
+    for it — not a byte the walk failed to understand and should defer on. This
+    is the one shape that arrives as "could not be read" rather than as
+    "declares more bytes than the file contains", and the distinction is the
+    walk's stance: the fallback claims only that it could not account for the
+    file, never that it understood what it found.
+    """
+    archive = tmp_path / "nonsense.rar"
+    archive.write_bytes(_SIGNATURE + b"\x00" * 4 + b"\x80" * 10 + b"\x00" * 2)
+
+    assert containers._survey(archive, "rar5").unreadable == containers._MALFORMED
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(archive)
+
+    assert "nonsense.rar" in str(raised.value)
+
+
+def test_a_truncated_rar_is_not_stored_as_a_container_with_no_children(
+    context, casefile, tmp_path
+):
+    """The harm, end to end, and the pair `hollow.rar` must still be told from."""
+    cut = _cut_at(tmp_path, "cut.rar", _MAIN_BLOCK_END + 6)
+
+    report = context.ingestion.ingest(casefile.short_id, cut)
+
+    assert report.failed == 1
+    assert context.store.list_documents(casefile.id, include_expanded=True) == []
+
+
+def test_a_truncated_rar_does_not_stop_the_run(context, casefile, tmp_path):
+    folder = tmp_path / "dump"
+    folder.mkdir()
+    full = _rar(folder / "full.rar", [("a.txt", "alpha"), ("b.txt", "beta")]).read_bytes()
+    (folder / "cut.rar").write_bytes(full[: _MAIN_BLOCK_END + 6])
+    (folder / "plain.md").write_text("# Memo\n\nThe tariff was deferred.")
+
+    report = context.ingestion.ingest(casefile.short_id, folder)
+
+    assert report.failed == 1
+    names = {d.filename for d in context.store.list_documents(casefile.id, include_expanded=True)}
+    assert "plain.md" in names
+    assert "cut.rar" not in names
+
+
+# Past the 7-byte marker block and the 13-byte main header, then past the first
+# entry. Named so the offsets below say what they cut into.
+_RAR3_MAIN_END = len(_RAR3_SIGNATURE) + 13
+_RAR3_FIRST_ENTRY_END = _RAR3_MAIN_END + len(_rar3_file_block("a.txt", b"alpha", 0, None))
+
+
+@pytest.mark.parametrize(
+    ("label", "keep"),
+    [
+        ("cut inside the first file header", _RAR3_MAIN_END + 6),
+        ("cut inside the first entry's data", _RAR3_FIRST_ENTRY_END - 3),
+        ("cut inside the second file header", _RAR3_FIRST_ENTRY_END + 6),
+    ],
+)
+def test_a_truncated_rar3_fails_as_well(tmp_path, label, keep):
+    """The older generation, where the walk is not the only thing refusing.
+
+    libarchive's RAR3 reader does raise on a cut file — unlike its RAR5 reader,
+    which answers with end-of-archive — so a test asserting only the refusal
+    would pass with this walk's truncation detection removed and would prove
+    nothing about it. The walk's own finding is therefore asserted as well, and
+    the three shapes reach both of the ways it is established: a block header
+    that runs out of file, and a complete header declaring data that does not
+    fit behind it.
+    """
+    full = _rar3(tmp_path / "full.rar", [("a.txt", "alpha"), ("b.txt", "beta")]).read_bytes()
+    archive = tmp_path / "cut.rar"
+    archive.write_bytes(full[:keep])
+
+    assert containers._survey(archive, "rar").unreadable is not None, label
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(archive)
+
+    assert "cut.rar" in str(raised.value)
+
+
+def test_a_well_formed_archive_with_trailing_bytes_is_still_read(tmp_path):
+    """The reason the walk stops at the end-of-archive block.
+
+    A `.rar` in a real dump can carry bytes after its last block — padding from
+    a transfer, a recovery volume's remnant. Parsing those as a further header
+    would make the truncation finding refuse a readable archive, which is the
+    one thing a walk may never do.
+    """
+    archive = _rar(tmp_path / "padded.rar", [("a.txt", "alpha")])
+    archive.write_bytes(archive.read_bytes() + b"\x00" * 3)
+
+    assert RarExtractor().extract(archive).metadata["entries"] == "1"
+    assert [c.data for c in RarExtractor().iter_children(archive)] == [b"alpha"]
+
+
+# -- one volume of a set is not a whole archive ----------------------------
+#
+# Every test here builds an archive that *is* a volume and names it something
+# a filename rule would not catch. What stood here before was a complete,
+# single-volume archive named `split.part1.rar`, so it exercised a regular
+# expression and nothing else — and its docstring's claim that libarchive
+# raises on such an archive is false: a first volume ending in a well-formed
+# end-of-archive block lists cleanly and delivers a split entry's first
+# fragment as though it were the entry.
+
+
+def _rar5_first_volume(
+    path,
+    *,
+    archive_flags: int = _ARCHIVE_VOLUME,
+    entry_flags: int = _SPLIT_AFTER,
+):
+    """The first volume of a split RAR5 set, named however the caller likes.
+
+    Two entries: one complete, one whose declared 20 bytes are only 10 bytes
+    present because the rest is in the next volume. Both statements the format
+    makes about this are settable so a test can strip one and prove which signal
+    did the refusing.
+    """
+    out = bytearray(_SIGNATURE)
+    out += _block(_HEAD_MAIN, 0, _vint(archive_flags))
+    out += _file_block("whole.txt", b"complete entry")
+    out += _file_block("split.txt", b"FIRST-HALF", declared=20, header_flags=entry_flags)
+    # Flagged "not the last volume", which is what makes libarchive read this
+    # as a finished archive rather than raising.
+    out += _block(_HEAD_ENDARC, 0, _vint(_ENDARC_NOT_LAST))
+    path.write_bytes(bytes(out))
+    return path
+
+
+def test_a_multi_volume_rar_is_refused_with_a_remedy(tmp_path):
+    """The whole point: a volume set's first volume, named like any other file."""
+    archive = _rar5_first_volume(tmp_path / "archive.rar")
+
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(archive)
+
+    assert "archive.rar" in str(raised.value)
+    assert "multi-volume" in str(raised.value)
+    assert "join the volumes" in str(raised.value)
+
+
+def test_the_main_header_volume_flag_alone_refuses_a_volume(tmp_path):
+    """The primary signal, isolated by stripping the per-entry one.
+
+    This is the archive's own statement that it belongs to a set, and it is set
+    on every volume of one — which is why it replaced the filename rule rather
+    than joining it.
+    """
+    archive = _rar5_first_volume(tmp_path / "archive.rar", entry_flags=0)
+
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(archive)
+
+    assert "volume flag" in str(raised.value)
+
+
+def test_a_split_entry_alone_refuses_a_volume(tmp_path):
+    """The second, independent signal, isolated by stripping the first.
+
+    An archive whose main header was rewritten to drop the volume flag still
+    carries entries that say their data continues elsewhere, and reading such an
+    entry as a whole document is the harm — `split.txt` would otherwise be
+    stored with 10 of its 20 declared bytes and nothing would say so.
+    """
+    archive = _rar5_first_volume(tmp_path / "archive.rar", archive_flags=0)
+
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(archive)
+
+    assert "continues in another volume" in str(raised.value)
+
+
+def test_a_volume_is_refused_by_the_expansion_pass_as_well(tmp_path):
+    """Both passes, from the one guard.
+
+    `iter_children` repeated neither this refusal nor the encryption one while
+    its comment claimed parity with the listing pass, so a volume expanded
+    without a listing first yielded `split.txt` truncated and called it whole.
+    """
+    archive = _rar5_first_volume(tmp_path / "archive.rar")
+
+    with pytest.raises(ExtractionError) as raised:
+        list(RarExtractor().iter_children(archive))
+
+    assert "multi-volume" in str(raised.value)
+
+
+def test_a_rar3_volume_is_refused_on_its_main_header_flag(tmp_path):
+    """The older generation says the same thing in its own header.
+
+    Old-style sets are `name.rar` plus `name.r00`, so the first volume carries
+    no `.partN` at all and a filename rule never saw it.
+    """
+    archive = _rar3(
+        tmp_path / "legacy.rar", [("piece.txt", "half a document")], main_flags=_MHD_VOLUME
+    )
 
     with pytest.raises(ExtractionError) as raised:
         RarExtractor().extract(archive)
 
     assert "multi-volume" in str(raised.value)
-    assert "join the volumes" in str(raised.value)
+    assert "volume flag" in str(raised.value)
 
 
-def test_a_volume_suffix_is_matched_on_the_stem_not_the_name(tmp_path):
-    # `report.part3.rar` is a volume; `partners.rar` is not, and a looser rule
-    # would refuse it.
-    ordinary = _rar(tmp_path / "partners.rar", [("a.txt", "alpha")])
+def test_a_rar3_split_entry_is_refused(tmp_path):
+    archive = _rar3(
+        tmp_path / "legacy.rar",
+        [("piece.txt", "half a document")],
+        file_flags=_LHD_SPLIT_AFTER,
+    )
 
-    assert RarExtractor().extract(ordinary).metadata["entries"] == "1"
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(archive)
+
+    assert "continues in another volume" in str(raised.value)
+
+
+def test_an_ordinary_archive_named_like_a_volume_is_still_read(tmp_path):
+    """The cost of the filename rule, now paid by nobody.
+
+    `.partN` in a stem is a name, and a name in an investigative dump is chosen
+    by whoever handed it over — an analyst numbering their own files gets
+    `evidence.part1.rar`. Refusing that told them to join volumes that do not
+    exist and dropped the document from the corpus, which in a dump of thousands
+    of files is as bad as reading a fragment. Neither generation's volume flag
+    is set here, so neither is refused.
+    """
+    modern = _rar(tmp_path / "evidence.part1.rar", [("a.txt", "alpha")])
+    legacy = _rar3(tmp_path / "evidence.part2.rar", [("b.txt", "beta")])
+
+    assert RarExtractor().extract(modern).metadata["entries"] == "1"
+    assert RarExtractor().extract(legacy).metadata["entries"] == "1"
 
 
 # -- an absent reader ------------------------------------------------------
@@ -559,22 +1038,37 @@ def test_another_archive_format_behind_a_rar_suffix_is_refused(tmp_path, builder
     assert "disguised.rar" in str(raised.value)
 
 
-def test_a_rar3_archive_is_read_by_the_reader_that_handles_it(tmp_path):
-    """Both generations are accepted, and each names its own reader.
+def test_a_rar3_archive_is_read_by_the_reader_that_handles_it(context, casefile, tmp_path):
+    """Both generations are accepted, each named to its own reader, and read.
 
     Pinning only RAR5 would refuse a genuine older archive, and libarchive's
     RAR5 reader does not read RAR3. The dump that motivated this change is
     entirely RAR5, but a `.rar` from 2005 in an investigative dump is not an
     exotic hypothetical.
+
+    What this test used to be was sixteen zero bytes behind a RAR3 signature
+    handed to `_rar_format` and compared against a string. It opened nothing and
+    read nothing while being the file's only RAR3 coverage, which is how the
+    encryption check running for RAR5 alone survived review. The format
+    assertion is kept — it is what makes the media type honest — and both
+    archives are now actually ingested.
     """
     from jackryan.ingestion.containers import _rar_format
 
-    rar5 = _rar(tmp_path / "modern.rar", [("a.txt", "alpha")])
-    legacy = tmp_path / "legacy.rar"
-    legacy.write_bytes(b"Rar!\x1a\x07\x00" + b"\x00" * 16)
+    modern = _rar(tmp_path / "modern.rar", [("new.txt", "the modern clause")])
+    legacy = _rar3(tmp_path / "legacy.rar", [("old.txt", "the legacy clause")])
 
-    assert _rar_format(rar5) == "rar5"
+    assert _rar_format(modern) == "rar5"
     assert _rar_format(legacy) == "rar"
+    report = context.ingestion.ingest(casefile.short_id, tmp_path)
+    assert report.failed == 0
+    stored = {
+        d.filename: d
+        for d in context.store.list_documents(casefile.id, include_expanded=True)
+    }
+    assert {"modern.rar", "legacy.rar", "new.txt", "old.txt"} <= set(stored)
+    assert "legacy clause" in stored["old.txt"].extracted_text
+    assert stored["legacy.rar"].media_type == "application/vnd.rar"
 
 
 def test_an_empty_file_named_rar_is_refused_naming_what_was_expected(tmp_path):
@@ -720,22 +1214,157 @@ def test_both_password_modes_report_the_same_way(tmp_path):
         assert "encrypted" in str(raised.value)
 
 
-def test_the_encryption_scan_does_not_refuse_an_ordinary_archive(tmp_path):
+def test_a_rar3_encrypted_entry_is_refused_rather_than_read_as_ciphertext(tmp_path):
+    """The blocker, and the reason this file now builds RAR3 archives.
+
+    `FHD_PASSWORD` in a RAR3 file header is WinRAR's password mode for the older
+    generation. The encryption check was reached only when the signature said
+    RAR5, so such an archive met no check whatever: libarchive listed it, said
+    nothing, and delivered raw ciphertext through `read_data` to be stored as
+    the document's text, chunked and embedded. Measured on 3.8.9 before the fix
+    — a clean two-entry listing, `refusals=[]`, and a child document whose
+    extracted text was the ciphertext.
+
+    The archive stores the CRC of the plaintext, as a real one does, so the
+    fixture cannot be mistaken for one whose CRC merely happens to match.
+    """
+    cipher = bytes(range(64))  # ciphertext-shaped: opaque, a multiple of 16
+    archive = _rar3(
+        tmp_path / "locked.rar",
+        [("memo.txt", cipher), ("scan.md", cipher)],
+        file_flags=_FHD_PASSWORD | _FHD_SALT,
+        file_crc=0x12345678,
+    )
+
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(archive)
+
+    assert "locked.rar" in str(raised.value)
+    assert "encrypted" in str(raised.value)
+    assert "password" in str(raised.value)
+
+
+def test_a_rar3_encrypted_entry_is_refused_by_the_expansion_pass_as_well(tmp_path):
+    """The half that actually leaked, since `extract` is not what reads bytes."""
+    cipher = bytes(range(64))
+    archive = _rar3(
+        tmp_path / "locked.rar",
+        [("memo.txt", cipher)],
+        file_flags=_FHD_PASSWORD | _FHD_SALT,
+        file_crc=0x12345678,
+    )
+
+    with pytest.raises(ExtractionError) as raised:
+        list(RarExtractor().iter_children(archive))
+
+    assert "encrypted" in str(raised.value)
+
+
+def test_a_rar3_encrypted_archive_stores_nothing(context, casefile, tmp_path):
+    """End to end, which is where the ciphertext was reaching the corpus."""
+    cipher = bytes(range(64))
+    archive = _rar3(
+        tmp_path / "locked.rar",
+        [("memo.txt", cipher)],
+        file_flags=_FHD_PASSWORD | _FHD_SALT,
+        file_crc=0x12345678,
+    )
+
+    report = context.ingestion.ingest(casefile.short_id, archive)
+
+    assert report.failed == 1
+    assert any("encrypt" in outcome.detail for outcome in report.outcomes)
+    assert context.store.list_documents(casefile.id, include_expanded=True) == []
+
+
+def test_a_rar3_header_encrypted_archive_reports_like_the_others(tmp_path):
+    """`MHD_PASSWORD` encrypts every header after the main one.
+
+    libarchive does refuse this on its own, with "RAR encryption support
+    unavailable" — a message that names neither a password nor a remedy. It is
+    detected here so that all four combinations of generation and password mode
+    reach one sentence an analyst can act on.
+    """
+    archive = _rar3(
+        tmp_path / "locked.rar", [("memo.txt", b"x" * 16)], main_flags=_MHD_PASSWORD
+    )
+
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(archive)
+
+    assert "encrypted" in str(raised.value)
+    assert "password" in str(raised.value)
+
+
+def test_libarchive_own_verdict_refuses_an_encrypted_entry_when_the_walk_is_blind(
+    tmp_path, monkeypatch
+):
+    """The second net, isolated, and the reason it was added.
+
+    Two independent checks answer this question, and a test that any one of them
+    satisfies proves neither. Here the header walk is made to find nothing at
+    all — which is what a walk does with a block layout it cannot parse — and
+    the archive must still be refused, on `archive_entry_is_data_encrypted`.
+
+    That flag is the authority the walk cannot be. `libarchive-c` does not wrap
+    it; it is declared in `containers` by hand.
+    """
+    cipher = bytes(range(64))
+    archive = _rar3(
+        tmp_path / "locked.rar",
+        [("memo.txt", cipher)],
+        file_flags=_FHD_PASSWORD | _FHD_SALT,
+        file_crc=0x12345678,
+    )
+    monkeypatch.setattr(containers, "_survey", lambda path, fmt: containers._Survey())
+
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(archive)
+
+    assert "encrypted" in str(raised.value)
+
+
+def test_the_header_walk_refuses_an_encrypted_entry_when_libarchive_is_silent(
+    tmp_path, monkeypatch
+):
+    """The first net, isolated, and the reason it cannot be dropped either.
+
+    libarchive's flag is 0 for a data-encrypted RAR5 entry on 3.7.4, which is
+    the version Debian trixie ships and the one this reader may still be pointed
+    at by `LIBARCHIVE`. Silencing the flag models that, and the walk must still
+    refuse both generations.
+    """
+    monkeypatch.setattr(containers, "_entry_data_encrypted", lambda reader, entry: False)
+    modern = _data_encrypted_rar(tmp_path / "modern.rar")
+    legacy = _rar3(
+        tmp_path / "legacy.rar",
+        [("memo.txt", bytes(range(64)))],
+        file_flags=_FHD_PASSWORD | _FHD_SALT,
+        file_crc=0x12345678,
+    )
+
+    for archive in (modern, legacy):
+        with pytest.raises(ExtractionError) as raised:
+            RarExtractor().extract(archive)
+        assert "encrypted" in str(raised.value)
+
+
+def test_the_header_walk_does_not_refuse_an_ordinary_archive(tmp_path):
     """Positive detection only.
 
-    The scan may add a refusal; it must never be the reason a readable archive
-    is rejected. A hand-written header walk that guessed wrong would refuse real
-    evidence, so every path through it returns "not encrypted" unless it has
-    positively identified a crypt record.
+    A walk may add a refusal; it must never be the reason a readable archive is
+    rejected. A hand-written header walk that guessed wrong would refuse real
+    evidence, so nothing is claimed about encryption or volumes unless a crypt
+    record or a volume flag was positively identified — in either generation.
     """
-    from jackryan.ingestion.containers import _rar5_encrypted_reason
+    modern = _rar(tmp_path / "plain.rar", [("a.txt", "alpha"), ("sub/b.txt", "beta")])
+    legacy = _rar3(tmp_path / "legacy.rar", [("a.txt", "alpha"), ("sub/b.txt", "beta")])
 
-    plain = _rar(tmp_path / "plain.rar", [("a.txt", "alpha"), ("sub/b.txt", "beta")])
-    truncated = tmp_path / "cut.rar"
-    truncated.write_bytes(plain.read_bytes()[: len(_SIGNATURE) + 9])
-
-    assert _rar5_encrypted_reason(plain) is None
-    assert _rar5_encrypted_reason(truncated) is None
+    for path, fmt in ((modern, "rar5"), (legacy, "rar")):
+        survey = containers._survey(path, fmt)
+        assert survey.encrypted is None
+        assert survey.volume is None
+        assert survey.unreadable is None
 
 
 # -- names that are not UTF-8 ----------------------------------------------
@@ -802,7 +1431,32 @@ def test_the_floor_itself_is_accepted(monkeypatch, tmp_path):
     _pretend_version(monkeypatch, containers.MIN_LIBARCHIVE)
 
     assert RarExtractor().extract(archive).metadata["entries"] == "1"
-    assert rar_status() == str(containers.MIN_LIBARCHIVE)
+    assert rar_status() == "3.8.9"
+
+
+def test_the_reported_version_is_spelled_the_way_a_refusal_spells_it(monkeypatch, tmp_path):
+    """One host, one spelling of one version.
+
+    The surfaces reported libarchive's packed integer — `rar: 3008009` — while
+    the refusal an operator reads next formats the same number as `3.8.9`. Two
+    spellings of one fact read as two facts, and the operator has to work out
+    that the version they were told to install is the version they have.
+
+    The vocabulary stays two-valued: a version, or the literal `unavailable`.
+    The docker gate asserts on the second, so nothing here may widen it.
+    """
+    archive = _rar(tmp_path / "a.rar", [("a.txt", "alpha")])
+    _pretend_version(monkeypatch, 3_007_004)
+
+    with pytest.raises(ExtractionError) as raised:
+        RarExtractor().extract(archive)
+
+    assert rar_status() == containers.RAR_UNAVAILABLE
+    _pretend_version(monkeypatch, 3_009_000)
+    assert rar_status() == "3.9.0"
+    # The spelling a refusal uses, taken from the message rather than restated.
+    assert "3.8.9 or newer" in str(raised.value)
+    assert containers.RAR_UNAVAILABLE == "unavailable"
 
 
 def test_a_vulnerable_reader_fails_the_archive_not_the_run(

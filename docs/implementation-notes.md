@@ -695,6 +695,22 @@ and why it was parked.
   one: a converter timeout must kill the whole tree, and a test that fails at
   random teaches the reader to re-run rather than to look.
 
+- **An entry excluded by `MAX_ENTRY_BYTES` is listed by the container and then
+  silently absent from its children.** `ingestion/containers.py` — all three
+  extractors, `ZipExtractor`, `RarExtractor` and `TarExtractor`. The listing
+  pass puts every safe entry into the container's own text and its `entries`
+  count; `iter_children` then drops an over-large one with a bare `continue` and
+  no refusal. So a container document asserts an entry that produced no child,
+  and nothing in `report.refusals` says why — the same shape as the refusals
+  this pipeline reports for an unsafe name or a non-regular file, but without
+  the report. An analyst reading the listing has no way to tell "that entry is
+  in there and was too big to read" from "that entry is in there and its
+  extraction failed". Noticed while fixing the RAR review findings and parked:
+  it is pre-existing, it belongs to all three container extractors rather than
+  to RAR, and reporting it wants the refusal to be carried out of a generator —
+  which the `Child` contract has no channel for, so it is a change to the
+  container seam rather than a line in one extractor.
+
 ## Fixed
 
 - **~~A filename ending in a quote character defeats format routing
