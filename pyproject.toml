@@ -42,6 +42,28 @@ dependencies = [
     # resolve and instead records that this code depends on it directly rather
     # than incidentally.
     "httpx>=0.28",
+    # RAR archives, through the system libarchive. A ctypes binding rather than
+    # a subprocess wrapper, because the expansion budget has to be able to
+    # refuse an archive partway: every subprocess reader for this format either
+    # extracts whole archives to a directory — which puts the full expansion on
+    # disk before any ceiling applies — or derives from RARLAB's unRAR source,
+    # which puts it in non-free. libarchive's RAR5 reader is an independent
+    # BSD-2-clause implementation carrying none of that code, which is why it is
+    # the one that ships in Debian main. The binding is CC0-1.0; neither it nor
+    # the library disturbs this project's AGPL-3.0-or-later position.
+    #
+    # A ceiling as well as a floor, which no other loose pin in this file
+    # carries. This is the one dependency that fronts a memory-unsafe C parser
+    # reading untrusted input, and the version that decides whether that parser
+    # is safe belongs to the system library rather than to this package — the
+    # binding only reports it. `MIN_LIBARCHIVE` is enforced by reading
+    # `libarchive.ffi.version_number`, so a major release that changed how the
+    # library is located or how that number is spelled would disarm the floor
+    # rather than fail against it, and the symptom would be a reader that says
+    # it is fine. `<6` makes a new major a deliberate change with the floor
+    # re-verified, while patch and minor releases — which is how a fix to the
+    # binding itself would reach us — still resolve on their own.
+    "libarchive-c>=5.3,<6",
 ]
 
 [project.optional-dependencies]

@@ -29,6 +29,34 @@ def test_health_reports_profile_and_contract(client, context):
     )
 
 
+def test_both_surfaces_report_one_archive_reader(client, context, monkeypatch, capsys):
+    """One answer about the host, whichever surface is asked.
+
+    Surface against surface, not each against the function they both call. The
+    second shape is what stood here, and it could not fail in the way the name
+    promises: a second definition introduced into one adapter would still agree
+    with `rar_status()` read through the other. So both adapters are asked, and
+    the vocabulary is pinned as well as the value — a version, or the one
+    literal, and nothing else.
+    """
+    import json
+
+    from jackryan import cli
+    from jackryan.ingestion.containers import RAR_UNAVAILABLE
+
+    monkeypatch.setattr(cli, "build_context", lambda: context)
+    monkeypatch.setattr(context, "close", lambda: None)
+
+    body = client.get("/health").json()
+    assert cli.main(["--json", "status"]) == 0
+    reported = json.loads(capsys.readouterr().out)
+
+    assert body["rar"] == reported["rar"]
+    assert body["rar"] == RAR_UNAVAILABLE or body["rar"].count(".") == 2, (
+        "the reported reader is a dotted version or the one unavailable literal"
+    )
+
+
 def test_create_and_fetch_a_casefile(client):
     created = client.post("/api/casefiles", json={"title": "Harbour Leases"})
     assert created.status_code == 201

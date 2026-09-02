@@ -13,6 +13,7 @@ import sys
 from typing import Any, Sequence
 
 from . import __version__
+from .ingestion.containers import rar_status
 from .ingestion.legacy_office import converter_status
 from .ingestion.quality_gate import read_as
 from .app import build_context
@@ -216,6 +217,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     # converter it will never use, so an operator finds out
                     # here instead of 256 times into a run.
                     "legacy_office": converter_status(),
+                    # Same reasoning, same vocabulary: a host that ingests no
+                    # archive must not be stopped by a reader it will never call.
+                    "rar": rar_status(),
                     "casefiles": len(context.casefiles.list()),
                 },
                 args.json,

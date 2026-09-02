@@ -27,6 +27,41 @@ and why it was parked.
   it is a change to the service's ordering rather than to routing, and it wants
   its own change so the refusal semantics for every file are decided together.
 
+- **`_unsafe_reason` misses backslash, NUL and Unicode traversal forms — and
+  nothing escapes anyway.** Found by a security review of the RAR change, and
+  measured rather than argued: 18 hostile entry names were driven through the
+  guard and through materialisation, and `..\..\windows\system32\x.txt`,
+  `C:\Windows\x.txt`, `a\x00b.txt`, `‥‥/x.txt` (U+2025), `．．/x.txt` (fullwidth)
+  and `etc／passwd` (fullwidth solidus) are all admitted by the guard. **Every
+  one of the 18 landed inside the extraction root regardless.** The containment
+  is not this function: `services/ingestion.py:306-314` takes *only* the suffix
+  from an entry's name and writes it under a generated ordinal, and a suffix
+  cannot hold a path separator. The guard is defence in depth on top of that,
+  and its gaps are reachable only if that materialisation is ever changed to use
+  the entry's own name — which is the thing its comment argues against.
+  Two consequences worth carrying: a NUL in the *suffix* reaches
+  `Path.write_bytes` and raises `ValueError: embedded null byte`, which
+  `_expand`'s broad `except` at `:325` turns into a refusal — so it costs that
+  one archive's remaining entries rather than aborting the run; and the guard is
+  shared by `ZipExtractor` and `TarExtractor`, so tightening it is a change to
+  ZIP and tar behaviour and did not belong in a proposal about RAR. Parked, not
+  fixed: the fix is `os.path.splitdrive`, an `ntpath` check, a NUL rejection and
+  NFKC normalisation before the parts test, and it needs its own change with
+  ZIP and tar fixtures.
+
+- **An entry over the per-entry cap is dropped by all three container
+  extractors with no refusal.** `iter_children` in `ZipExtractor`,
+  `TarExtractor` and `RarExtractor` all `continue` past an entry exceeding
+  `MAX_ENTRY_BYTES` (512 MiB) without recording anything, while `extract()` has
+  already listed it — so the container's own searchable text names a document
+  that never exists, and nothing says why. The published scenario "An oversized
+  entry inside a container is refused"
+  (`openspec/specs/document-ingestion/spec.md:141`) asserts it "is refused", and
+  it has no test. Parked rather than fixed: the two passes would need to agree
+  on a shared filter that can report, which changes ZIP and tar behaviour and
+  did not belong in a proposal about RAR. The RAR path deliberately reproduces
+  the existing behaviour rather than inventing a third one.
+
 - **One file is resolved three or four times per ingest.** `_resolve` is reached
   from the pre-filter (`services/ingestion.py:217`), from `extract`, from
   `_expand`'s own `extractor_for` and from `iter_children` — measured at 3 for a
@@ -659,6 +694,22 @@ and why it was parked.
   assuming it is there. It matters because the assertion it guards is a real
   one: a converter timeout must kill the whole tree, and a test that fails at
   random teaches the reader to re-run rather than to look.
+
+- **An entry excluded by `MAX_ENTRY_BYTES` is listed by the container and then
+  silently absent from its children.** `ingestion/containers.py` — all three
+  extractors, `ZipExtractor`, `RarExtractor` and `TarExtractor`. The listing
+  pass puts every safe entry into the container's own text and its `entries`
+  count; `iter_children` then drops an over-large one with a bare `continue` and
+  no refusal. So a container document asserts an entry that produced no child,
+  and nothing in `report.refusals` says why — the same shape as the refusals
+  this pipeline reports for an unsafe name or a non-regular file, but without
+  the report. An analyst reading the listing has no way to tell "that entry is
+  in there and was too big to read" from "that entry is in there and its
+  extraction failed". Noticed while fixing the RAR review findings and parked:
+  it is pre-existing, it belongs to all three container extractors rather than
+  to RAR, and reporting it wants the refusal to be carried out of a generator —
+  which the `Child` contract has no channel for, so it is a change to the
+  container seam rather than a line in one extractor.
 
 ## Fixed
 

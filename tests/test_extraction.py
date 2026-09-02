@@ -37,6 +37,9 @@ def test_plain_text_needs_no_engine(tmp_path):
         ("a.xls", "legacy-office"),
         ("a.ppt", "legacy-office"),
         ("a.rtf", "legacy-office"),
+        ("a.zip", "zip"),
+        ("a.tar", "tar"),
+        ("a.rar", "rar"),
     ],
 )
 def test_router_selects_the_right_extractor(name, expected):
