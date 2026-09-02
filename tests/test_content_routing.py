@@ -36,8 +36,10 @@ from jackryan.ingestion.sniffing import (
     sniff_suffix,
 )
 
-# The name that started this: shell quotes baked into the filename by whatever
-# exported it, so `Path.suffix` reads `.xlsx'` and the registry claims nothing.
+# Invented, not taken from any corpus — this repository is public and no real
+# filename belongs in it. What is reproduced is the *shape* that motivated the
+# change: shell quotes baked into the name by whatever exported it, so
+# `Path.suffix` reads `.xlsx'` and no extractor claims it.
 DECORATED = "'Сводная ведомость.xlsx'"
 
 
@@ -115,6 +117,22 @@ def _ole2(
     place(entry_index, stream)
 
     path.write_bytes(bytes(header) + bytes(directory))
+    return path
+
+
+def _bitmap(path: Path) -> Path:
+    """A structurally valid bitmap: `BM` plus a header that agrees with itself.
+
+    The declared size is the real size, the DIB header size is one the format
+    defines, and the pixel data starts after that header and inside the file.
+    Two letters alone are not enough, deliberately.
+    """
+    body = bytearray(54 + 64)
+    body[0:2] = b"BM"
+    struct.pack_into("<I", body, 2, len(body))
+    struct.pack_into("<I", body, 10, 54)
+    struct.pack_into("<I", body, 14, 40)
+    path.write_bytes(bytes(body))
     return path
 
 
@@ -276,12 +294,13 @@ def test_every_suffix_sniffing_can_return_is_claimed_by_an_extractor(tmp_path):
         b"\xff\xd8\xff\xe0",
         b"II*\x00",
         b"MM\x00*",
-        b"BM\x36\x00",
         b"RIFF\x24\x00\x00\x00WEBPVP8 ",
     ):
         path = tmp_path / "raw.bin"
         path.write_bytes(payload + bytes(64))
         produced.add(sniff_suffix(path))
+    # A structurally valid bitmap, because `BM` alone is deliberately not one.
+    produced.add(sniff_suffix(_bitmap(tmp_path / "raw.bmp.bin")))
 
     assert None not in produced
     assert produced <= declared, produced - declared
@@ -358,6 +377,127 @@ def test_a_file_with_a_claimed_suffix_is_never_sniffed(context, tmp_path, monkey
 
     assert report.ingested == 2, report.refusals
     assert calls == []
+
+
+def _unsupported_version_zip(path: Path, tmp_path: Path) -> Path:
+    """A zip declaring an extract version no reader supports.
+
+    `zipfile.namelist()` raises `NotImplementedError` for this — not a
+    `BadZipFile`, not an `OSError` — and 103 bytes is enough to build one.
+    """
+    seed = tmp_path / "seed.zip"
+    with zipfile.ZipFile(seed, "w") as archive:
+        archive.writestr("a.txt", "x")
+    raw = bytearray(seed.read_bytes())
+    struct.pack_into("<H", raw, raw.find(b"PK\x01\x02") + 6, 100)  # version 10.0
+    path.write_bytes(bytes(raw))
+    return path
+
+
+def test_a_hostile_archive_cannot_end_the_run(context, tmp_path):
+    """The blocker a reviewer found, asserted where the damage happened.
+
+    `sniff_suffix` is called from `extractor_for`, which the service consults in
+    its main loop *outside* the per-document handler — so a raise there ends the
+    whole ingest rather than failing one file. Measured before the fix: this
+    folder stored one document and produced no report at all, where `develop`
+    completed with two.
+
+    Asserted through the service for that reason. At the `sniff_suffix` level
+    this would only prove a return value; the contract that matters is that the
+    two good documents on either side of the hostile one still arrive.
+    """
+    folder = tmp_path / "dump"
+    folder.mkdir()
+    _workbook(folder / "a-good.xlsx", value="Первый документ")
+    _unsupported_version_zip(folder / "m-hostile", tmp_path)
+    _workbook(folder / "z-also-good.xlsx", value="Третий документ")
+
+    casefile = context.casefiles.create("Hostile Archive")
+    report = context.ingestion.ingest(casefile.short_id, folder)
+
+    assert report.ingested == 2, report.refusals
+    stored = {d.filename for d in context.ingestion.list_documents(casefile.short_id)}
+    assert stored == {"a-good.xlsx", "z-also-good.xlsx"}
+
+
+def test_sniffing_returns_a_refusal_for_every_archive_that_will_not_open(tmp_path):
+    """Each input known to raise out of `namelist`, pinned individually.
+
+    The net in `sniff_suffix` is not the only thing standing behind these: name
+    them, so that narrowing the net later fails here rather than in an ingest.
+    """
+    assert sniff_suffix(_unsupported_version_zip(tmp_path / "v", tmp_path)) is None
+
+    truncated = tmp_path / "t"
+    truncated.write_bytes(b"PK\x03\x04" + bytes(32))
+    assert sniff_suffix(truncated) is None
+
+    directory = tmp_path / "dir.unknown"
+    directory.mkdir()
+    assert sniff_suffix(directory) is None
+
+
+def test_two_letters_are_not_a_bitmap(tmp_path):
+    """`BM` is prose as often as it is a header.
+
+    Without a structural check a memo opening "BMW purchase order" routes into
+    the image reader and the recognition stack — this module's own
+    positive-signatures rule broken by its own table.
+    """
+    memo = tmp_path / "memo.unknown"
+    memo.write_bytes("BMW purchase order, 2023. Приказ о закупке.".encode())
+    assert sniff_suffix(memo) is None
+
+    # A real header, built by the shared helper: one definition of what a valid
+    # bitmap is, so this test and the registry-coverage test cannot disagree.
+    assert sniff_suffix(_bitmap(tmp_path / "image.unknown")) == ".bmp"
+
+
+def test_a_symlink_is_not_read_at_all(tmp_path):
+    """Identifying one buys nothing, and reading it leaves the dump.
+
+    The service refuses a symlink before anything is stored, so sniffing one
+    could only ever open a file outside the folder under examination — a format
+    oracle for a path the analyst did not offer. Asserted by watching the open,
+    because the return value is `None` either way.
+    """
+    outside = tmp_path / "outside.xlsx"
+    _workbook(outside, value="Не для корпуса")
+
+    folder = tmp_path / "dump"
+    folder.mkdir()
+    link = folder / "attachment"
+    link.symlink_to(outside)
+
+    opened: list[str] = []
+    real_open = Path.open
+
+    def watched(self, *args, **kwargs):
+        opened.append(str(self))
+        return real_open(self, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Path, "open", watched)
+        assert sniff_suffix(link) is None
+    assert opened == []
+
+
+def test_a_scratch_name_is_not_derived_from_the_operators_filename(router, tmp_path):
+    """An extensionless name one byte under the limit still ingests.
+
+    Appending a suffix to the original stem made the destination *longer* than
+    the source, so a 251-byte extensionless file failed on a limit its own name
+    never reached. The scratch stem is fixed, so the original's length cannot
+    reach the copy.
+    """
+    path = tmp_path / ("d" * 251)
+    _workbook(path, value="Длинное имя")
+    assert len(path.name) == 251
+
+    extraction = router.extract(path)
+    assert "Длинное имя" in extraction.text
+    assert extraction.extractor.startswith(f"{CONTENT_ROUTED}+")
 
 
 def test_an_unsignatured_file_is_still_refused(router, tmp_path):

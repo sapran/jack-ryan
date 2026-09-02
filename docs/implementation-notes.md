@@ -50,8 +50,8 @@ and why it was parked.
   without it every future corpus silently under-reports what it skipped.
 
 - **A `.docx` can fail inside docling with a conversion error, and the message
-  does not say what the document did wrong.** `Анкета для сверки персональных
-  данных.docx` raises `could not extract … with docling: Conver…` where its
+  does not say what the document did wrong.** One personal-data form in the
+  first real dump raises `could not extract … with docling: Conver…` where its
   three neighbours in the same dump raise the honest `produced no usable text`.
   One file in 1,599 supported ones, so it is rare rather than structural, and it
   is correctly reported as a failure rather than stored empty. Parked: worth a
@@ -59,18 +59,17 @@ and why it was parked.
   malformed document from an extractor bug.
 
 - **Fifteen page-bearing PDFs escalated through the recognition ladder and still
-  yielded nothing.** All from the first real dump, and the names say what they
-  are: `Брыкин.pdf`, `Романенков.pdf`, `Сенникова.pdf`, `Абдуллаев.pdf` and
-  similar — personal documents that were photographed rather than scanned.
-  `Брыкин.pdf` carries zero font objects and five embedded images, so it is
-  image-only, rung one had nothing to find, and `rapidocr` under `eslav`
-  returned nothing usable from the photograph. Others in the set (`3-4
-  курсы.pdf`, 36 font objects, no images) do carry text structure and still
-  produced nothing, which is the more interesting half. The designed answer to
-  the first half is rung three, and `vlm_model` is empty by default because it
-  downloads weights and is much slower. Parked: this is the measurement that
-  should decide whether rung three is worth recommending, and it needs the
-  scanned-documents slice of M3 rather than a note.
+  yielded nothing.** All from the first real dump, and the shape says what they
+  are: single-surname filenames — personal identity documents that were
+  photographed rather than scanned. One carries zero font objects and five
+  embedded images, so it is image-only, rung one had nothing to find, and
+  `rapidocr` under `eslav` returned nothing usable from the photograph. Others
+  in the set do carry text structure (one has 36 font objects and no images) and
+  still produced nothing, which is the more interesting half. The designed
+  answer to the first half is rung three, and `vlm_model` is empty by default
+  because it downloads weights and is much slower. Parked: this is the
+  measurement that should decide whether rung three is worth recommending, and
+  it needs the scanned-documents slice of M3 rather than a note.
 
 - **`embed_url`, `llm_url` and `api_key` are read into `Profile` and consumed by
   nothing.** `grep` finds them only in `config.py`. They are reserved seams, and
