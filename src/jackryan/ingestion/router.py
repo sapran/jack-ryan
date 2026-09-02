@@ -37,6 +37,16 @@ from .sniffing import sniff_suffix
 #: legible in one field and content-routed documents are one query away.
 CONTENT_ROUTED = "content-routed"
 
+#: The scratch copy's name, fixed rather than derived from the operator's
+#: filename. Nothing downstream reads it — a delegate keys only off the suffix,
+#: and every error on this path is relabelled with the real `path.name` — while
+#: a derived stem lets the input decide the output name: appending a suffix to
+#: an extensionless 251-byte name exceeds the 255-byte component limit, and a
+#: workbook named `..xlsx` has stem `.`, landing as `..xlsx`, whose suffix
+#: openpyxl then refuses. The same argument and the same constant as
+#: `legacy_office._copy_as_target`.
+SCRATCH_STEM = "source"
+
 
 def has_usable_text(text: str) -> bool:
     """Whether `text` carries anything a reader could use.
@@ -94,14 +104,20 @@ class FormatRouter:
         sniffed = sniff_suffix(path)
         if sniffed is None:
             return None, None
+        # Asked about the name the delegate is actually about to be handed — the
+        # scratch copy — rather than about membership of its declared mapping.
+        # The two diverge: `TarExtractor` declares `.gz`, `.bz2` and `.xz` but
+        # its `accepts` refuses them unless a `.tar` sits underneath. Membership
+        # would hand it a file it had already said it would not take, and the
+        # failure would arrive as a per-document error instead of the honest
+        # refusal below.
+        candidate = Path(f"{SCRATCH_STEM}{sniffed}")
         for extractor in self._extractors:
-            # Membership of the declared mapping, not `accepts`: `accepts` reads
-            # the path, and the path is exactly what has already failed.
-            if sniffed in extractor.suffixes:
+            if extractor.accepts(candidate):
                 return extractor, sniffed
-        # A signature for a format no extractor declares. A test forbids this
-        # combination existing at all; refusing here keeps it a refusal rather
-        # than a crash if one is ever added.
+        # A signature no extractor will take. A test forbids this combination
+        # existing at all; refusing here keeps it a refusal rather than a crash
+        # if one is ever added.
         return None, None
 
     def extractor_for(self, path: Path) -> Extractor | None:
@@ -168,7 +184,10 @@ class FormatRouter:
             ) from exc
 
         try:
-            source = work / f"{path.stem}{suffix}"
+            # One definition of the scratch name, shared with the `accepts`
+            # probe in `_resolve` — so the extractor chosen is the one asked
+            # about the exact name it is handed.
+            source = work / f"{SCRATCH_STEM}{suffix}"
             try:
                 shutil.copy2(path, source)
             except OSError as exc:

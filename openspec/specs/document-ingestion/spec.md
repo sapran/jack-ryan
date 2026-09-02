@@ -17,9 +17,11 @@ format SHALL be registering an extractor rather than editing the pipeline.
 Selection SHALL be by the file's declared type first. Where no registered
 extractor claims that type, the router SHALL read the file's leading bytes and,
 if they positively identify a format the registry already handles, SHALL route
-the file to that format's extractor. A file whose declared type is claimed by an
-extractor SHALL NOT be routed by its content, so content routing cannot change
-how any file the registry already reads is read.
+the file to that format's extractor. A file whose declared type is *accepted* by
+an extractor SHALL NOT be routed by its content, so content routing cannot
+change how any file the registry already reads is read. Accepted rather than
+merely declared: an extractor MAY advertise a type and still refuse a given
+file, and it is the refusal that decides.
 
 A signature SHALL identify a format affirmatively. That a file's bytes decode as
 text SHALL NOT be treated as a signature: admitting it would draw every
@@ -82,7 +84,7 @@ its children have a parent to hang from.
 
 #### Scenario: An unsupported format is refused
 
-- **WHEN** a file no extractor accepts is ingested
+- **WHEN** a file no extractor accepts, whose content identifies no handled format, is ingested
 - **THEN** ingestion fails with a typed error naming the file and its type
 
 #### Scenario: A file yielding no usable text is refused
@@ -117,7 +119,7 @@ its children have a parent to hang from.
 
 #### Scenario: A file with a claimed declared type is never routed on content
 
-- **WHEN** a file's declared type is claimed by a registered extractor
+- **WHEN** a file's declared type is accepted by a registered extractor
 - **THEN** that extractor reads it and the file's content is not consulted to select another
 
 #### Scenario: A content-routed document discloses how it was read

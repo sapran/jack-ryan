@@ -27,12 +27,14 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook
 
+from jackryan.config import Profile
 from jackryan.ingestion.extractors import ExtractionError, default_extractors
 from jackryan.ingestion.quality_gate import QualityGate
-from jackryan.ingestion.router import CONTENT_ROUTED, FormatRouter
+from jackryan.ingestion.router import CONTENT_ROUTED, SCRATCH_STEM, FormatRouter
 from jackryan.ingestion.sniffing import (
     PREFIX_BYTES,
     _ole2_directory_names,
+    producible_suffixes,
     sniff_suffix,
 )
 
@@ -267,43 +269,176 @@ def test_an_unreadable_file_is_refused_rather_than_raising(tmp_path):
         path.chmod(0o644)
 
 
-def test_every_suffix_sniffing_can_return_is_claimed_by_an_extractor(tmp_path):
-    """A signature for a format nothing reads would be a crash, not a route.
+def test_every_suffix_sniffing_can_return_is_accepted_by_an_extractor():
+    """A signature for a format nothing will take can only ever be a refusal.
 
-    Derived from the live registry rather than compared against a literal list,
-    so registering a signature for an unhandled format fails here immediately.
+    Both sides are derived: the suffixes from the sniffer's own tables, and the
+    verdict from each shipped extractor's `accepts` — asked about the scratch
+    name the delegate would actually be handed, which is the question `_resolve`
+    asks. Neither side is a literal list, so adding a signature for a format
+    nothing reads fails here without anyone remembering to edit this test.
+
+    An earlier version listed the payloads by hand and therefore proved nothing:
+    a reviewer appended a `Rar!` signature at runtime and it stayed green.
+
+    `accepts` rather than membership of `suffixes`, because those diverge —
+    `TarExtractor` declares `.gz` and refuses it without a `.tar` underneath.
     """
-    declared = {s for e in default_extractors() for s in e.suffixes}
+    extractors = default_extractors()
+    unclaimed = {
+        suffix
+        for suffix in producible_suffixes()
+        if not any(e.accepts(Path(f"{SCRATCH_STEM}{suffix}")) for e in extractors)
+    }
+    assert not unclaimed, unclaimed
+    # Guard the guard: an empty derivation would satisfy the assertion above.
+    assert len(producible_suffixes()) >= 10
 
-    produced = set()
-    for path in (
-        _workbook(tmp_path / "1.bin"),
-        _ooxml(tmp_path / "2.bin", "word/document.xml"),
-        _ooxml(tmp_path / "3.bin", "ppt/presentation.xml"),
-        _ooxml(tmp_path / "4.bin", "notes/readme.txt"),
-        _ole2(tmp_path / "5.bin", "WordDocument"),
-        _ole2(tmp_path / "6.bin", "Workbook"),
-        _ole2(tmp_path / "7.bin", "PowerPoint Document"),
-        _ole2(tmp_path / "8.bin", "__substg1.0_0037001F"),
-    ):
-        produced.add(sniff_suffix(path))
-    for payload in (
-        b"%PDF-1.7\n",
-        b"{\\rtf1 x}",
-        b"\x89PNG\r\n\x1a\n",
-        b"\xff\xd8\xff\xe0",
-        b"II*\x00",
-        b"MM\x00*",
-        b"RIFF\x24\x00\x00\x00WEBPVP8 ",
-    ):
-        path = tmp_path / "raw.bin"
-        path.write_bytes(payload + bytes(64))
-        produced.add(sniff_suffix(path))
-    # A structurally valid bitmap, because `BM` alone is deliberately not one.
-    produced.add(sniff_suffix(_bitmap(tmp_path / "raw.bmp.bin")))
 
-    assert None not in produced
-    assert produced <= declared, produced - declared
+def test_document_text_is_not_mistaken_for_a_stream_name(tmp_path):
+    """The byte scan must find directory entries, not prose.
+
+    Found by review, and the consequence is a wrong answer rather than a miss:
+    Word and Excel store text as UTF-16LE too, so a document whose body
+    mentions a workbook would be identified as one and handed to the converter
+    as a spreadsheet. Measured on a Visio-shaped fixture, which sniffed `.xls`.
+
+    The directory here names a stream the table does not know, so the header
+    path declines and the scan is what answers — which is exactly where the
+    mistake lived.
+    """
+    header = bytearray(512)
+    header[0:8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    struct.pack_into("<H", header, 30, 9)
+    struct.pack_into("<I", header, 48, 0)
+
+    directory = bytearray(512)
+    for index, name in enumerate(("Root Entry", "VisioDocument")):
+        entry = bytearray(128)
+        encoded = name.encode("utf-16-le")
+        entry[0 : len(encoded)] = encoded
+        struct.pack_into("<H", entry, 64, len(encoded) + 2)
+        directory[index * 128 : (index + 1) * 128] = entry
+
+    # A document's own text, ending in the word that names a stream and then
+    # running into the NUL padding of its buffer. Both halves matter: the
+    # trailing NULs mean the terminator check alone cannot reject this, so
+    # alignment is the only thing that does — and the string is placed off a
+    # 128-byte boundary, where prose falls and a directory entry never does.
+    #
+    # An earlier version of this test put " tab" after the word, which the
+    # terminator check rejected on its own; removing the alignment check left
+    # the test green and the defect open.
+    prose = bytearray(512)
+    prose[7:] = "see the Workbook".encode("utf-16-le").ljust(505, b"\x00")[:505]
+
+    path = tmp_path / "drawing.unknown"
+    path.write_bytes(bytes(header) + bytes(directory) + bytes(prose))
+
+    # Where the word actually lands, so the test states its own premise rather
+    # than depending on arithmetic a reader has to redo.
+    workbook_at = bytes(path.read_bytes()).find("Workbook".encode("utf-16-le"))
+    assert workbook_at % 128 != 0, workbook_at
+
+    assert sniff_suffix(path) is None
+
+
+def test_a_signature_its_extractor_would_refuse_is_not_routed(monkeypatch, tmp_path):
+    """The delegate is chosen by `accepts`, not by declared membership.
+
+    Those diverge in exactly one place today: `TarExtractor` declares `.gz`,
+    `.bz2` and `.xz` but refuses them unless a `.tar` sits underneath. Nothing
+    currently sniffs to one, so this drives the signature directly rather than
+    waiting for the day someone adds gzip magic — at which point membership
+    would hand `TarExtractor` a file it had already refused, turning an honest
+    refusal into a per-document failure.
+    """
+    monkeypatch.setattr(
+        "jackryan.ingestion.router.sniff_suffix", lambda path: ".gz"
+    )
+    router = FormatRouter(gate=QualityGate.from_profile(Profile(name="default")))
+
+    path = tmp_path / "notes.unknown"
+    path.write_bytes(b"not a tar, and not gzip either")
+
+    assert router.extractor_for(path) is None
+    with pytest.raises(ExtractionError):
+        router.extract(path)
+
+
+
+def test_a_zip_based_document_of_an_unread_format_is_refused(tmp_path):
+    """OpenDocument and the other OPC packages are near misses, not archives.
+
+    Found by review. Calling an ODF file an archive is worse than refusing it:
+    measured on this fixture before the fix, the casefile gained a document
+    whose text was the part list, four refusals for the XML parts, and the
+    preview thumbnail materialised as a child and sent through recognition. An
+    institutional dump of hundreds of ODF files would fill a casefile with
+    exactly the false matches this module exists to refuse.
+
+    A genuine archive is unaffected: it declares neither marker.
+    """
+    odf = tmp_path / "report.unknown"
+    with zipfile.ZipFile(odf, "w") as archive:
+        archive.writestr("mimetype", "application/vnd.oasis.opendocument.text")
+        archive.writestr("content.xml", "<office/>")
+        archive.writestr("Thumbnails/thumbnail.png", b"\x89PNG\r\n\x1a\n")
+    assert sniff_suffix(odf) is None
+
+    # An OPC package nothing here reads — `.xlsb`, `.vsdx`, `.xps` all look
+    # like this once the three OOXML parts are ruled out.
+    opc = tmp_path / "drawing.unknown"
+    with zipfile.ZipFile(opc, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("visio/document.xml", "<VisioDocument/>")
+    assert sniff_suffix(opc) is None
+
+    # A plain archive still is one.
+    plain = tmp_path / "bundle.unknown"
+    with zipfile.ZipFile(plain, "w") as archive:
+        archive.writestr("notes/readme.txt", "just files")
+    assert sniff_suffix(plain) == ".zip"
+
+
+def test_a_compound_file_larger_than_the_prefix_is_still_identified(tmp_path):
+    """The seek branch, which every other fixture here is too small to reach.
+
+    Not a corner: Word writes its streams first and the directory last, so for
+    any legacy document carrying embedded images — over a megabyte — seeking to
+    the header's offset is the *only* path that can answer. The byte scan cannot
+    mask a failure here, because the directory lies beyond the prefix entirely.
+
+    Found by review: neutering the seek left every other test in this file
+    green while a real `.doc` over 1 MB became unidentifiable.
+    """
+    sector = 512
+    directory_sector = PREFIX_BYTES // sector + 4
+
+    header = bytearray(sector)
+    header[0:8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    struct.pack_into("<H", header, 30, 9)
+    struct.pack_into("<I", header, 48, directory_sector)
+
+    directory = bytearray(sector)
+    for index, name in enumerate(("Root Entry", "WordDocument")):
+        entry = bytearray(128)
+        encoded = name.encode("utf-16-le")
+        entry[0 : len(encoded)] = encoded
+        struct.pack_into("<H", entry, 64, len(encoded) + 2)
+        directory[index * 128 : (index + 1) * 128] = entry
+
+    # Body sectors between the header and the directory, holding nothing that
+    # names a stream — so only the seek can find the answer. Sector N begins at
+    # `(N + 1) * sector_size` because the header occupies the first one, so
+    # reaching sector `directory_sector` takes exactly that many body sectors.
+    body = bytes(directory_sector * sector)
+    path = tmp_path / "big-legacy.unknown"
+    path.write_bytes(bytes(header) + body + bytes(directory))
+
+    assert path.stat().st_size > PREFIX_BYTES
+    assert sniff_suffix(path) == ".doc"
+
 
 
 # -- that the fallback is actually reached -----------------------------------
@@ -581,12 +716,22 @@ def test_the_scratch_copy_is_removed_on_success_and_on_failure(router, tmp_path)
     assert set(leftovers()) == before
 
 
-def test_the_advertised_formats_are_unchanged_by_content_routing(router):
-    """`supported_suffixes` answers what the registry declares.
+def test_content_routing_does_not_widen_the_advertised_formats(router, tmp_path):
+    """`supported_suffixes` answers what the registry declares, before and after.
 
-    Content routing is a recovery path, not a capability, and widening this
-    would tell an operator the corpus reads formats it does not.
+    The first version of this test compared `supported_suffixes()` with the same
+    comprehension over the same registry — a derivation against itself, which no
+    change to content routing could ever falsify. A reviewer called it out, and
+    a test that cannot go red certifies nothing.
+
+    So it observes the thing the claim is about: a file is content-routed, and
+    the advertised set neither changes nor learns the decorated suffix it just
+    read. That fails if anyone ever teaches this to remember what it routed.
     """
-    assert router.supported_suffixes() == {
-        suffix for e in default_extractors() for suffix in e.suffixes
-    }
+    before = router.supported_suffixes()
+
+    routed = _workbook(tmp_path / DECORATED)
+    assert router.extract(routed).extractor.startswith(f"{CONTENT_ROUTED}+")
+
+    assert router.supported_suffixes() == before
+    assert ".xlsx'" not in router.supported_suffixes()

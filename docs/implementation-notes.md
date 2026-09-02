@@ -6,6 +6,49 @@ and why it was parked.
 
 ## Parked
 
+- **Content sniffing runs before `_check_readable`, so that guard's promises do
+  not hold during the sniff.** `services/ingestion.py:217` asks
+  `extractor_for` — which now opens the file — before `_ingest_work` reaches the
+  readability checks at `:339`. The symlink half is closed (`sniff_suffix`
+  declines a symlink outright, so no out-of-root read happens), but two remain:
+  `MAX_FILE_BYTES` does not bound the sniff, and a zip's whole central directory
+  is parsed before any size check. Measured by review: an 18 MB archive of
+  200,000 entries costs +127.9 MB peak RSS, an amplification of 7.1x, and
+  `namelist()` correctly does not decompress so a classic zip bomb is not the
+  issue — the entry table is. `MemoryError` is now caught by the net in
+  `sniff_suffix`, so the run survives; what is left is transient memory
+  pressure and, at multi-gigabyte sizes, an OOM kill no in-process handler can
+  prevent. Parked: the fix is to run the symlink and size checks before the
+  pre-filter, which is a change to the service's ordering rather than to
+  routing, and it wants its own change so the refusal semantics for *every*
+  file are considered together rather than as a side effect of sniffing.
+
+- **One file is resolved three or four times per ingest.** `_resolve` is reached
+  from the pre-filter (`services/ingestion.py:217`), from `extract`, from
+  `_expand`'s own `extractor_for` and from `iter_children` — measured at 3 for a
+  content-routed document and 4 for a content-routed container, each a fresh
+  open and, for a zip, a fresh central-directory parse. The pre-existing code
+  already resolved as often by suffix, so this is not new; what is new is that
+  each resolution can now do I/O. Bounded and acceptable at the real dump's
+  scale (1,922 files, 64 unroutable, ~32 KB read each now that only OLE2 pays
+  for the megabyte prefix). Parked: if it ever matters the fix is to carry the
+  resolved `(extractor, suffix)` on `_Work` from the pre-filter, not to cache
+  inside the router — a cache keyed on a path would have to decide when a file
+  changed underneath it.
+
+- **A delegate's exception text now reaches the unauthenticated REST ingest
+  response for files that never reached a delegate before.** `_extract_as`
+  wraps a delegate failure as `{name}, read as {suffix}: {type}: {message}`,
+  which becomes `IngestOutcome.detail` and is returned by `server.py:247` — a
+  route `summarising/model.py:30-32` already names as an unauthenticated
+  disclosure channel. The filename half was already there via the
+  `no extractor accepts {path.name}` refusal; the new half is content-derived
+  text from docling, openpyxl, `extract-msg` or Pillow. The lineage string
+  itself is safe and never reaches the agent surface at all — nothing under
+  `interfaces/` reads `.extractor`, `.refusals` or `.detail`. Parked as
+  informational: it belongs with whatever change decides what that route is
+  allowed to say, not with routing.
+
 - **A filename ending in a quote character defeats format routing entirely.**
   The routing half of this is **fixed** — see `## Fixed` below. What stays
   parked is the half the entry below owns: these five files were dropped from
