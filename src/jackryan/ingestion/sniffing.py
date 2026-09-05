@@ -90,15 +90,27 @@ _OLE2_STREAMS = (
 _ARCHIVE_SUFFIX = ".zip"
 _WEBP_SUFFIX = ".webp"
 
+# The three container signatures, named because two modules need them and a
+# byte string repeated in two files is a fact with two owners. OLE2 is the
+# legacy compound file every Office 97 format is wrapped in; ZIP is what an
+# OOXML file really is; RTF is neither, and is the one legacy word-processor
+# format that is not a container at all.
+#
+# `legacy_office` imports these rather than declaring its own. It asks a
+# narrower question than this module does — "is the file under this legacy name
+# actually the container the name implies" — but it is the same question about
+# the same bytes, and the two spellings drifting apart is a silent defect: a
+# file would route one way and convert another.
 _ZIP_MAGIC = b"PK\x03\x04"
 _OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+_RTF_MAGIC = b"{\\rtf"
 
 # Signatures that need no second look. Every one is at least three bytes of
 # non-text content: two ASCII letters would match prose, which is why the
 # bitmap header is checked structurally below instead of appearing here.
 _MAGIC = (
     (b"%PDF-", ".pdf"),
-    (b"{\\rtf", ".rtf"),
+    (_RTF_MAGIC, ".rtf"),
     (b"\x89PNG\r\n\x1a\n", ".png"),
     (b"\xff\xd8\xff", ".jpg"),
     (b"II*\x00", ".tiff"),

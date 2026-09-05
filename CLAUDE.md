@@ -341,6 +341,29 @@ same width, which nothing downstream can detect.
   corpus, so nothing refuses a corpus built under different settings. The
   per-document `text_source` is what makes a later re-extraction targetable, and
   it is the whole compensation for that gap.
+- **`sniffing.py` owns every file signature, and `legacy_office` imports them by
+  name.** The two modules ask a wider and a narrower version of one question
+  about the same bytes — "what is this file", and "is this file under a legacy
+  name actually the container that name implies" — and they each used to keep
+  their own copy of `_OLE2_MAGIC` and `_ZIP_MAGIC`. Two spellings drifting apart
+  is silent: a file routes one way and converts another. **The import form is
+  load-bearing**: `from .sniffing import _OLE2_MAGIC` keeps the name bound in
+  `legacy_office`, which sixteen tests read it from; referencing
+  `sniffing._OLE2_MAGIC` inline turns all sixteen into `AttributeError`.
+- **One scratch-and-delegate, and it takes a producer rather than a path.**
+  `deliver_via_scratch_directory` in `extractors.py` serves both the
+  content-routing and legacy-Office paths: make the directory inside a `try`,
+  let the caller produce a file in it, delegate, relabel the failure with the
+  operator's filename, `rmtree` in `finally`. A *producer* because the two do
+  different work in that directory — one copies a file in, the other runs a
+  converter that also writes an output directory and a per-call LibreOffice
+  profile. It calls `tempfile.mkdtemp` through the module, not by imported name,
+  so a test substituting `tempfile.mkdtemp` still sees it. The two prefixes stay
+  parameters: `jackryan-routed-` is globbed by one test to prove cleanup and
+  asserted absent from an error message by another, so they are load-bearing in
+  opposite directions. `SCRATCH_STEM` lives in `extractors` because `router`
+  importing `legacy_office` would close a cycle, and is re-exported through
+  `router`, which is where the tests read it.
 - **A container extractor never routes what it holds.** It yields entries and
   stops; the pipeline routes them. That is what makes a format supported inside
   an archive exactly when it is supported outside one.

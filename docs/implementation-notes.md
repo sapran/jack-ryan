@@ -6,6 +6,21 @@ and why it was parked.
 
 ## Parked
 
+- **The two scratch-delegate paths rebuild their result differently, and one of
+  them drops a field by omission.** `router._extract_as` returns
+  `dataclasses.replace(delegated, extractor=...)`, carrying every field the
+  delegate set. `legacy_office.extract` builds a fresh `Extraction`, which
+  overrides `media_type` to the legacy type **deliberately** — that is what the
+  evidence is, and the conversion is only how the text was obtained — and drops
+  `is_container`, which then defaults to `False`, by omission rather than by
+  decision. Latent only: both delegates are `DoclingExtractor` and
+  `SpreadsheetExtractor`, neither of which is ever a container. Parked rather
+  than fixed during `one-owner-for-a-file-signature`, because switching to
+  `replace` would start carrying `is_container` from the delegate — a real
+  behaviour change inside a change whose whole claim was that it had none.
+  Whoever unifies them should decide `is_container` explicitly rather than
+  inheriting it.
+
 - **Mentions are write-only through the storage seam, and the obvious fix does
   not work.** A `Mention` enters the store as a parameter of `replace_chunks`
   and comes back only as aggregate counts through `mention_facets`. There is no
