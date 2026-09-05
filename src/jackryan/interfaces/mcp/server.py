@@ -161,25 +161,31 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
     )
     @returns_error_payload
     async def case_casefile_overview(casefile: str) -> dict[str, Any]:
+        # Resolved here for the title and slug this payload renders, and
+        # resolved again inside `statistics` for the counts. Two lookups rather
+        # than one, deliberately: the alternative is an adapter holding a
+        # casefile id and calling the store with it, which is the reach this
+        # tool used to make. `case_get_passage` pays the same price for the same
+        # reason.
         resolved = await off_loop(context.casefiles.resolve, casefile)
-        stats = await off_loop(context.store.casefile_statistics, resolved.id)
+        stats = await off_loop(context.casefiles.statistics, casefile)
 
-        by_type = stats["by_type"]
+        by_type = stats.by_type
         # Say what was counted. A casefile of three archives holding forty
         # thousand documents is both "3" and "40,003", and one figure offered
         # without saying which misrepresents the size of the corpus — which an
         # agent then repeats as coverage.
-        expanded = stats["documents_expanded"]
+        expanded = stats.documents_expanded
         composition = (
-            f"{stats['documents']} documents "
-            f"({stats['documents_ingested']} ingested directly, {expanded} expanded "
+            f"{stats.documents} documents "
+            f"({stats.documents_ingested} ingested directly, {expanded} expanded "
             f"from containers)"
             if expanded
-            else f"{stats['documents']} documents"
+            else f"{stats.documents} documents"
         )
         formatted = (
             f"{one_line(resolved.title, 80)} ({one_line(resolved.slug, 40)})\n"
-            f"{composition}, {stats['characters']:,} characters of extracted text\n"
+            f"{composition}, {stats.characters:,} characters of extracted text\n"
             + (
                 "\n".join(
                     f"  {count:>4}  {one_line(kind, 60)}" for kind, count in sorted(by_type.items())
@@ -189,10 +195,10 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         )
         return {
             "casefile": _render_casefile(resolved),
-            "document_count": stats["documents"],
-            "documents_ingested": stats["documents_ingested"],
-            "documents_expanded": stats["documents_expanded"],
-            "total_characters": stats["characters"],
+            "document_count": stats.documents,
+            "documents_ingested": stats.documents_ingested,
+            "documents_expanded": stats.documents_expanded,
+            "total_characters": stats.characters,
             "documents_by_type": by_type,
             "formatted": formatted,
         }

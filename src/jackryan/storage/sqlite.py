@@ -19,7 +19,7 @@ from pathlib import Path
 import sqlite_vec
 
 from ..errors import ConfigError, ConflictError
-from .port import Casefile, Chunk, Document, Mention, MentionFacet
+from .port import Casefile, CasefileStatistics, Chunk, Document, Mention, MentionFacet
 
 _BASELINE_VERSION = 4
 """The shape `_SCHEMA` below creates. Frozen — see the warning on `_SCHEMA`."""
@@ -972,11 +972,16 @@ class SqliteStore:
             ).fetchall()
         return [_row_to_chunk(row) for row in rows]
 
-    def casefile_statistics(self, casefile_id: str) -> dict[str, object]:
+    def casefile_statistics(self, casefile_id: str) -> CasefileStatistics:
         """Counts and sizes computed in the database.
 
         Loading every document's text to measure it costs the whole corpus in
         memory for a handful of integers.
+
+        The SQL aliases and the returned field names differ on purpose, and the
+        mapping is written out below rather than splatted: `ingested` and
+        `expanded` are readable beside `COUNT(*) AS documents` in a query, and
+        unreadable on their own in a payload.
         """
         with self._lock:
             totals = self._db.execute(
@@ -995,13 +1000,13 @@ class SqliteStore:
         # Split rather than one figure: a casefile of three archives holding
         # forty thousand documents is both "3" and "40,003", and a count that
         # does not say which it means misrepresents the size of the corpus.
-        return {
-            "documents": totals["documents"],
-            "documents_ingested": totals["ingested"],
-            "documents_expanded": totals["expanded"],
-            "characters": totals["characters"],
-            "by_type": {(r["media_type"] or "unknown"): r["count"] for r in by_type},
-        }
+        return CasefileStatistics(
+            documents=totals["documents"],
+            documents_ingested=totals["ingested"],
+            documents_expanded=totals["expanded"],
+            characters=totals["characters"],
+            by_type={(r["media_type"] or "unknown"): r["count"] for r in by_type},
+        )
 
     def get_document_chunks_around(
         self, document_id: str, ordinal: int, radius: int

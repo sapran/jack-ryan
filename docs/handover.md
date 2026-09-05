@@ -938,6 +938,55 @@ because that is the only one with a service call out there.
 ---
 
 
+## The casefile overview crosses the service layer — 2026-09-05
+
+Second of the five architecture-review changes, stacked on the first because
+both edit `interfaces/mcp/server.py`.
+
+**What it settles.** `storage-seam` says "no adapter SHALL reach a store
+directly". One line did — `context.store.casefile_statistics(resolved.id)` in
+`case_casefile_overview`, the only place in `src/` where an adapter held a store
+and the only `StorePort` method with no service caller. There is now a
+`CasefileService.statistics`, and `Context.store` is declared as the port.
+
+**Why it was reachable at all.** Three things, and the third is the one worth
+remembering. There was nowhere else to go: `case_casefile_overview` has no REST
+or CLI counterpart, so nothing ever forced the service method into existence.
+The type permitted it: the composition root declared the concrete `SqliteStore`.
+And **the tool had no test of any kind** — the only occurrence of its name
+outside `src/` asserted that the analyst pack mentions it. The one call the
+surface makes about corpus size, which `CLAUDE.md` notes an agent repeats as
+coverage, was unexercised.
+
+**The trap this had waiting.** The store's SQL aliases those columns `ingested`
+and `expanded`; the payload calls them `documents_ingested` and
+`documents_expanded`. A dataclass field named after the alias — the natural
+thing to write while reading the query — gives the agent a payload with
+different keys, every value still truthy, and no existing test disturbed. So the
+tool's first test was written *before* the change, asserts the key set exactly,
+and was watched failing on exactly that rename.
+
+**Two guards, both watched failing.** Restoring the old store reach fails
+`test_no_adapter_reaches_the_store` with `assert not ['server.py:171']`.
+Renaming one payload key fails the overview test with `'ingested'` extra and
+`'documents_ingested'` missing.
+
+The guard parses rather than greps, and that is the whole of its value: a search
+for `context.store` is defeated by `store = context.store` on one line and
+`store.anything()` on the next, and would trip on any comment mentioning it —
+including its own docstring.
+
+**What it did not check.** No type checker exists, so `Context.store: StorePort`
+is documentation; several tests reach `context.store._db` and a checker would
+flag them. The two resolves per overview call — one in the tool for the title
+and slug, one inside `statistics` for the counts — were not measured, only
+reasoned about as the price of the adapter not holding an id. The expanded-count
+branch of the composition string is covered by `test_containers.py`, not by the
+new overview test, whose fixture is a plain folder.
+
+---
+
+
 ## What this environment could not do, so you should not trust it was checked
 
 - **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real

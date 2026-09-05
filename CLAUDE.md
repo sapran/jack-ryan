@@ -114,6 +114,25 @@ same width, which nothing downstream can detect.
 
 - **Schema changes go through the `_STEPS` ladder, never `_SCHEMA`** — the
   rules, and why each matters, are in `src/jackryan/storage/CLAUDE.md`.
+- **`Context.store` is the port, and no adapter may touch it.** `storage-seam`
+  says no adapter reaches a store directly; the agent surface did, at
+  `casefile_statistics`, because `CasefileService` had no `statistics` and
+  nothing forced one to exist — `case_casefile_overview` has no REST or CLI
+  counterpart. Declaring the field as `StorePort` states the rule but enforces
+  nothing, since no type checker runs here (and several tests reach
+  `context.store._db`, which one would flag). What enforces it is
+  `test_no_adapter_reaches_the_store`, which **parses** every module under
+  `interfaces/` and reports any `<expr>.store`. Matching the string
+  `context.store` instead would be defeated by binding it to a name first, and
+  would trip on a comment. If a port method needs a caller, write the service
+  method — that gap is how the reach happened.
+- **A port method returning a bare `dict` is returning a row.** The port speaks
+  in domain objects, and `casefile_statistics` was the one exception until it
+  became `CasefileStatistics`. The names are the payload's, deliberately not the
+  SQL's: the query aliases those columns `ingested` and `expanded`, and a field
+  named after the alias yields a payload with silently different keys that every
+  value-by-value assertion still passes. `tests/test_mcp_surface.py` asserts the
+  overview's key set exactly, for that reason.
 - **Corpus identity escapes `\`, `|` and control characters — never `=`.**
   `embed_library` legitimately contains `==`. Escaping `=` would change the
   default identity and refuse every existing store.

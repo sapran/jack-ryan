@@ -837,7 +837,7 @@ def test_an_unreachable_endpoint_stops_the_run_before_any_document_is_sent(
             "the refusal must name both settings, as the reranker's does: "
             f"{message!r}"
         )
-        assert ctx.store.casefile_statistics(casefile.id)["documents"] == 0, (
+        assert ctx.casefiles.statistics(casefile.short_id).documents == 0, (
             "the run stored a document before failing, so the endpoint was sent "
             "evidence before it was established that it answers at all"
         )
@@ -952,11 +952,11 @@ def test_a_failed_document_leaves_neither_a_row_nor_a_chunk(config, gate, corpus
                 f"a summariser failing on the {failing} pass did not fail the "
                 f"documents: {[(o.status, o.detail) for o in report.outcomes]}"
             )
-            stats = ctx.store.casefile_statistics(casefile.id)
+            stats = ctx.casefiles.statistics(casefile.short_id)
             chunks = ctx.store.find_chunks_by_id_prefix(casefile.id, "")
-            assert stats["documents"] == 0 and not chunks, (
+            assert stats.documents == 0 and not chunks, (
                 f"a document that failed on the {failing} pass left "
-                f"{stats['documents']} row(s) and {len(chunks)} chunk(s) in the "
+                f"{stats.documents} row(s) and {len(chunks)} chunk(s) in the "
                 "store. A failed document must leave nothing: a row with no chunks "
                 "is listed and readable through every document surface while no "
                 "search can ever return it, so an analyst's negative result over "

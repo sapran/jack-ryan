@@ -177,3 +177,44 @@ def test_a_corpus_built_under_one_embedding_library_is_refused_under_another(tmp
     with pytest.raises(ConfigError):
         second.initialize(opened_under.fingerprint(), opened_under.embed_dimensions)
     second.close()
+
+
+# -- the seam itself: who may reach a store -------------------------------
+
+
+def test_no_adapter_reaches_the_store():
+    """`storage-seam`: no adapter SHALL reach a store directly.
+
+    Until this was written the agent surface did, at the one call
+    `casefile_statistics`, which was the only port method no service wrapped.
+    It type-checked because the composition root declared its `store` field as
+    the concrete `SqliteStore` rather than as the port, and nothing in this
+    repository type-checks anyway.
+
+    Matched on the attribute reach rather than on the string `context.store`,
+    because that string is trivially avoided: binding `store = context.store` on
+    one line and calling `store.anything()` on the next would satisfy a literal
+    search while doing exactly what the rule forbids. Any `<expr>.store` under
+    `interfaces/` is reported, whatever it is then called.
+
+    Restricted to real attribute access by parsing, so a mention in a comment or
+    a docstring — including this one — cannot trip it.
+    """
+    import ast
+    from pathlib import Path
+
+    adapters = Path(__file__).resolve().parents[1] / "src" / "jackryan" / "interfaces"
+    assert adapters.is_dir(), "the agent surface moved; this guard now checks nothing"
+
+    offences = []
+    for module in sorted(adapters.rglob("*.py")):
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == "store":
+                offences.append(f"{module.name}:{node.lineno}")
+
+    assert not offences, (
+        "an adapter reaches a store directly, which `storage-seam` forbids: "
+        + ", ".join(offences)
+        + ". The rule belongs in the service layer so every adapter inherits it."
+    )

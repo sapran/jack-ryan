@@ -321,11 +321,11 @@ def test_a_count_says_whether_it_includes_expansions(context, casefile, tmp_path
     bundle = _zip(tmp_path / "bundle.zip", [("a.txt", "alpha"), ("b.txt", "beta")])
     context.ingestion.ingest(casefile.short_id, bundle)
 
-    stats = context.store.casefile_statistics(casefile.id)
+    stats = context.casefiles.statistics(casefile.short_id)
 
-    assert stats["documents"] == 3
-    assert stats["documents_ingested"] == 1
-    assert stats["documents_expanded"] == 2
+    assert stats.documents == 3
+    assert stats.documents_ingested == 1
+    assert stats.documents_expanded == 2
 
 
 # -- the rule at the seam every adapter crosses ----------------------------

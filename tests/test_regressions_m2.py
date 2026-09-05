@@ -186,10 +186,8 @@ def test_the_overview_counts_without_loading_document_bodies(loaded):
     """The bug: the overview loaded every document's full text to print two
     integers, so surveying a large casefile pulled the corpus into memory."""
     context, casefile = loaded
-    stats = context.store.casefile_statistics(
-        context.casefiles.resolve(casefile.short_id).id
-    )
+    stats = context.casefiles.statistics(casefile.short_id)
     documents = context.ingestion.list_documents(casefile.short_id)
-    assert stats["documents"] == len(documents)
-    assert stats["characters"] == sum(len(d.extracted_text) for d in documents)
-    assert sum(stats["by_type"].values()) == len(documents)
+    assert stats.documents == len(documents)
+    assert stats.characters == sum(len(d.extracted_text) for d in documents)
+    assert sum(stats.by_type.values()) == len(documents)
