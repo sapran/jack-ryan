@@ -6,6 +6,35 @@ and why it was parked.
 
 ## Parked
 
+- **Mentions are write-only through the storage seam, and the obvious fix does
+  not work.** A `Mention` enters the store as a parameter of `replace_chunks`
+  and comes back only as aggregate counts through `mention_facets`. There is no
+  per-row read, so `tests/test_mentions.py` reaches `context.store._db` through
+  a raw-SQL helper at twelve call sites. The 2026-09-05 architecture review
+  proposed closing this with `get_mentions(chunk_ids) -> dict[str, list[Mention]]`,
+  mirroring `get_chunks`.
+
+  **That was planned, scoped, and then dropped, because a chunk-keyed read
+  cannot express what any of those tests assert.** All twelve reads are
+  casefile-scoped, and every one of the six tests asserts a casefile-wide
+  invariant — "no mention survived anywhere", "these rows are unchanged". A
+  chunk-keyed read returns only mentions attached to chunks it was handed, so
+  it is structurally blind to exactly the failure mode: after a casefile is
+  deleted there are no chunk ids left to ask about, and
+  `get_mentions([])` returns `{}` — the deletion test would pass with every
+  mention still in the store. Two more of the six assert referential integrity
+  (a mention naming a chunk that no longer exists), which the same shape makes
+  vacuously true.
+
+  So the addition would have had **no production caller and no test using it
+  either**, on a port whose every other read method has a caller. The
+  alternatives and why each was set aside: a casefile-keyed read converts four
+  of six but is the unbounded read `mention_facets`' own docstring argues
+  against, and still has no caller; the shape that would earn its place is a
+  production consumer — passage-level mentions on the agent surface — which is a
+  new capability rather than a refactor. Revisit when something actually needs
+  to read a mention.
+
 - **Every agent-surface failure now passes through one place, and that place
   emits nothing.** `returns_error_payload` (`interfaces/mcp/errors.py`) reduces
   a `JackRyanError` to `{"error": code, "message": text}`, discarding the type
