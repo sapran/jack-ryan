@@ -967,22 +967,44 @@ tool's first test was written *before* the change, asserts the key set exactly,
 and was watched failing on exactly that rename.
 
 **Two guards, both watched failing.** Restoring the old store reach fails
-`test_no_adapter_reaches_the_store` with `assert not ['server.py:171']`.
-Renaming one payload key fails the overview test with `'ingested'` extra and
-`'documents_ingested'` missing.
+`test_no_adapter_reaches_the_store`. Renaming one payload key fails the overview
+test with `'ingested'` extra and `'documents_ingested'` missing.
 
-The guard parses rather than greps, and that is the whole of its value: a search
-for `context.store` is defeated by `store = context.store` on one line and
-`store.anything()` on the next, and would trip on any comment mentioning it —
-including its own docstring.
+**Then two reviewers took the guards apart, and both were right.** What shipped
+first was materially weaker than what the commit message claimed:
+
+- **It scanned one adapter of three.** `interfaces/` only — so a store reach in
+  `server.py` (REST) or `cli.py` (CLI) was invisible, and REST is the surface
+  most likely to gain a "how big is this casefile" route next. Now scans the
+  whole package minus `services/`, `storage/` and `app.py`, which is an
+  exemption list and therefore self-maintaining.
+- **`getattr(context, "store")` and `context.casefiles._store` both passed it.**
+  The second is not exotic: every adapter holds a `CasefileService`, and its
+  `_store` is one attribute away — which is what someone reaches for when the
+  service method they need does not exist, the exact situation that produced the
+  original breach. Both are now caught, and the residual gap is stated rather
+  than papered over: constructing a `SqliteStore` directly still passes.
+- **The stated reason for parsing was false.** The first draft argued a grep
+  would be defeated by binding the store to a name first. It would not —
+  `store = context.store` contains the very string being searched for. The two
+  real advantages were sitting beside it: it matches `<any expr>.store`, not
+  one spelling, and cannot be tripped by a comment.
+- **The overview test could not tell `documents` from `documents_ingested`.**
+  On the plain `corpus` fixture both are 3, so swapping them passed. The test
+  now builds a casefile holding a loose file *and* a two-entry archive, making
+  the three counts 4, 2 and 2 — three different numbers. That also exercises the
+  `expanded` composition branch, and **the claim that `test_containers.py`
+  covered it was wrong**: a reviewer replaced that whole branch with a literal
+  marker string and all 694 tests stayed green.
+- **`documents_by_type` was asserted only by its sum**, so collapsing it to
+  `{"unknown": n}` passed. It is now compared against the real media types.
 
 **What it did not check.** No type checker exists, so `Context.store: StorePort`
 is documentation; several tests reach `context.store._db` and a checker would
-flag them. The two resolves per overview call — one in the tool for the title
-and slug, one inside `statistics` for the counts — were not measured, only
-reasoned about as the price of the adapter not holding an id. The expanded-count
-branch of the composition string is covered by `test_containers.py`, not by the
-new overview test, whose fixture is a plain folder.
+flag them. The two resolves per overview call were reasoned about, not measured.
+`by_type` is a mutable dict inside a frozen dataclass — consistent with
+`Extraction.metadata`, and freshly built per call so nothing shared can be
+corrupted, but "frozen" is shallower than it reads and `hash()` raises on it.
 
 ---
 

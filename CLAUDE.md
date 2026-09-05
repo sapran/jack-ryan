@@ -121,11 +121,18 @@ same width, which nothing downstream can detect.
   counterpart. Declaring the field as `StorePort` states the rule but enforces
   nothing, since no type checker runs here (and several tests reach
   `context.store._db`, which one would flag). What enforces it is
-  `test_no_adapter_reaches_the_store`, which **parses** every module under
-  `interfaces/` and reports any `<expr>.store`. Matching the string
-  `context.store` instead would be defeated by binding it to a name first, and
-  would trip on a comment. If a port method needs a caller, write the service
-  method — that gap is how the reach happened.
+  `test_no_adapter_reaches_the_store`, which **parses** every module in the
+  package except `services/`, `storage/` and `app.py` — an exemption list rather
+  than a list of adapters, so a fourth adapter is covered the day it is written.
+  Scope matters here: the first version scanned only `interfaces/`, which is one
+  adapter of the three, and REST is the surface most likely to gain a "how big
+  is this casefile" route next.
+  It reports `<any expr>.store` and `<any expr>._store`, the second because a
+  service's private field is one attribute away from every adapter and is what
+  someone reaches for when the service method they need does not exist — which
+  is precisely how the original breach happened. It catches the accident and the
+  shortcut, not a determined evasion: importing `SqliteStore` and constructing
+  one would pass. If a port method needs a caller, write the service method.
 - **A port method returning a bare `dict` is returning a row.** The port speaks
   in domain objects, and `casefile_statistics` was the one exception until it
   became `CasefileStatistics`. The names are the payload's, deliberately not the

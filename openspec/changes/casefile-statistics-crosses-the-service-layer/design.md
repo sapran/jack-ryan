@@ -62,12 +62,26 @@ assume. It enforces nothing here: no type checker runs in CI or in
 adds one, and stated in the field's own docstring rather than left to be
 discovered.
 
-What enforces the rule is `test_no_adapter_reaches_the_store`, and how it
-matches is the whole of its value. A search for the string `context.store` is
-defeated by binding it to a name first. So it parses each module under
-`interfaces/` and reports any attribute access named `store`, whatever the
-expression on the left. Parsing also means the rule cannot be tripped by the
-word appearing in a comment — including in that test's own docstring.
+What enforces the rule is `test_no_adapter_reaches_the_store`, and its scope and
+matching are both deliberate — after a first version got both wrong.
+
+**Scope.** Every module in the package except `services/`, `storage/` and
+`app.py`. An exemption list, not a list of adapters: the first version scanned
+`interfaces/` alone, which is one adapter of the three this project names, and
+left REST and CLI unguarded. Phrased as an exemption, a fourth adapter is
+covered on the day it is written.
+
+**Matching.** Parsing, for two reasons — it reports `<any expr>.store` rather
+than the one `context.store` spelling a search would be written for, and it
+cannot be tripped by the words appearing in a comment. Not for a third reason
+the first version gave: a grep is *not* defeated by binding the store to a name
+first, because `store = context.store` contains the string being searched for.
+
+`_store` is matched beside `store`, and `getattr(x, "store")` beside both. The
+private-field reach is the realistic one: every adapter holds a
+`CasefileService`, whose `_store` is one attribute away, and reaching for it is
+what someone does when the service method they need does not exist — the exact
+situation that produced the breach this change fixes.
 
 ## Risks / Trade-offs
 
@@ -75,11 +89,18 @@ word appearing in a comment — including in that test's own docstring.
 tool an agent is told to call once before searching. Accepted for the reason
 above.
 
-**The guard is deliberately blunt.** Any `<expr>.store` under `interfaces/`
-fails it, including a hypothetical future attribute that merely happens to be
-called `store`. That is the correct bias for this rule — a false positive is a
-one-line conversation, a false negative is the defect this change exists to fix
-returning unnoticed.
+**The guard is deliberately blunt, and it still has false negatives.** Any
+`<expr>.store` or `<expr>._store` outside the exempt packages fails it,
+including a future attribute that merely happens to be called `store`. That bias
+is right: a false positive is a one-line conversation, a false negative is this
+defect returning unnoticed.
+
+What it does not catch is worth writing down rather than discovering later. A
+module that imports `SqliteStore` and constructs one passes. So does a reach
+through a name the parser cannot follow — `vars(context)["store"]`, or a store
+handed to a helper as a plain argument. This catches the accident and the
+shortcut, which is what the original breach was; it is not a sandbox, and
+nothing here should be described as if it were.
 
 **A frozen dataclass is a wider change than a dict at the call site.** Every
 consumer moves from `stats["documents"]` to `stats.documents` in the same pass,
