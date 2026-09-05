@@ -194,6 +194,7 @@ async def test_the_overview_reports_the_corpus_it_was_asked_about(
     with zipfile.ZipFile(folder / "bundle.zip", "w") as archive:
         archive.writestr("first.txt", "the first entry inside the archive")
         archive.writestr("second.txt", "the second entry inside the archive")
+        archive.writestr("third.txt", "the third entry inside the archive")
 
     mixed = context.casefiles.create("Mixed Intake")
     assert not context.ingestion.ingest(mixed.short_id, folder).failed
@@ -210,12 +211,13 @@ async def test_the_overview_reports_the_corpus_it_was_asked_about(
     }
 
     documents = context.ingestion.list_documents(mixed.short_id, include_expanded=True)
-    # Four documents from two intakes: the loose file, the archive itself, and
-    # its two entries. Three distinct numbers, so no two fields can be swapped
-    # without this failing.
-    assert body["document_count"] == len(documents) == 4
+    # Five documents from two intakes: the loose file, the archive itself, and
+    # its three entries. Three genuinely distinct numbers — 5, 2 and 3 — so no
+    # two of these fields can be swapped without this failing. A two-entry
+    # archive gives 4, 2, 2, where swapping ingested and expanded passes.
+    assert body["document_count"] == len(documents) == 5
     assert body["documents_ingested"] == 2
-    assert body["documents_expanded"] == 2
+    assert body["documents_expanded"] == 3
     assert body["total_characters"] == sum(len(d.extracted_text) for d in documents)
 
     # The real media types, not merely how many there are: a payload reporting
@@ -229,8 +231,8 @@ async def test_the_overview_reports_the_corpus_it_was_asked_about(
     assert body["casefile"]["slug"] == mixed.slug
     # The composition clause, which exists so an agent cannot report "2 documents"
     # for a corpus holding four. Nothing exercised this branch before.
-    assert "4 documents" in body["formatted"]
-    assert "2 ingested directly, 2 expanded from containers" in body["formatted"]
+    assert "5 documents" in body["formatted"]
+    assert "2 ingested directly, 3 expanded from containers" in body["formatted"]
 
 
 @pytest.mark.anyio

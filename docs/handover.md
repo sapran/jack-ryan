@@ -991,8 +991,13 @@ first was materially weaker than what the commit message claimed:
   one spelling, and cannot be tripped by a comment.
 - **The overview test could not tell `documents` from `documents_ingested`.**
   On the plain `corpus` fixture both are 3, so swapping them passed. The test
-  now builds a casefile holding a loose file *and* a two-entry archive, making
-  the three counts 4, 2 and 2 — three different numbers. That also exercises the
+  now builds a casefile holding a loose file *and* an archive, making the three
+  counts genuinely distinct. **The first attempt used a two-entry archive — 4, 2
+  and 2 — and a later review measured that swapping *ingested* and *expanded*
+  still passed it, because two of those three are equal.** A third entry makes
+  them 5, 2 and 3, and that swap now fails with `assert 3 == 2`. The sentence
+  claiming "three different numbers" was false for one commit, which is the same
+  overstatement this entry exists to record. That also exercises the
   `expanded` composition branch, and **the claim that `test_containers.py`
   covered it was wrong**: a reviewer replaced that whole branch with a literal
   marker string and all 694 tests stayed green.

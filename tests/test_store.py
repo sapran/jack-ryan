@@ -230,12 +230,12 @@ def test_no_adapter_reaches_the_store():
     package = Path(__file__).resolve().parents[1] / "src" / "jackryan"
     assert package.is_dir(), "the package moved; this guard now checks nothing"
 
-    checked, offences = 0, []
+    inspected, offences = set(), []
     for module in sorted(package.rglob("*.py")):
         relative = module.relative_to(package)
         if relative.parts[0] in _MAY_NAME_A_STORE:
             continue
-        checked += 1
+        inspected.add(relative.as_posix())
         tree = ast.parse(module.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             reached = (
@@ -253,9 +253,16 @@ def test_no_adapter_reaches_the_store():
             if reached:
                 offences.append(f"{relative.as_posix()}:{node.lineno}")
 
-    # A guard that silently stopped finding files would pass for ever. The three
-    # adapters alone are more than a handful of modules.
-    assert checked > 5, f"only {checked} modules were inspected; the layout moved"
+    # Named rather than counted. A floor on the number passes the exact
+    # regression this widening exists to prevent: reverting the scan to
+    # `interfaces/` alone still inspects eight modules, so any plausible count
+    # would be satisfied while REST and the CLI went unguarded again.
+    assert {"cli.py", "server.py"} <= inspected, (
+        "the REST and CLI adapters were not inspected; the scan narrowed"
+    )
+    assert any(name.startswith("interfaces/") for name in inspected), (
+        "the agent surface was not inspected; the scan narrowed"
+    )
     assert not offences, (
         "a module outside the service layer reaches a store directly, which "
         "`storage-seam` forbids: " + ", ".join(sorted(set(offences)))
