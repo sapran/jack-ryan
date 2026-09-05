@@ -6,6 +6,21 @@ and why it was parked.
 
 ## Parked
 
+- **The CLI document renderer's four conditional fields are pinned by no CLI
+  test.** `cli._render_document` adds `found_at` and `children` only when they
+  say something, and `summary`/`summary_by` only when a summary exists. Deleting
+  the `found_at` and `children` blocks outright leaves the suite green: the
+  three `found_at` assertions in `tests/test_hierarchy_provenance.py` are on the
+  **agent** surface, not the CLI renderer, and
+  `test_the_two_human_surfaces_agree_on_every_shared_document_field` runs on a
+  plain-folder corpus where none of the four triggers, so its CLI-side
+  assertion pins "added nothing here" rather than the intended divergence.
+  Pre-existing — those blocks were unpinned before the renderer was shared too —
+  and found by the pre-merge review of `one-renderer-for-the-two-human-surfaces`.
+  Closing it needs a container fixture in a test that otherwise has no use for
+  one, which is why it is recorded rather than done: the honest fix is a
+  CLI-level test of an expanded document, not a wider fixture for this one.
+
 - **Mentions are write-only through the storage seam, and the obvious fix does
   not work.** A `Mention` enters the store as a parameter of `replace_chunks`
   and comes back only as aggregate counts through `mention_facets`. There is no
@@ -769,7 +784,16 @@ and why it was parked.
   which had no business editing that line.
 
 - **`test_a_timeout_kills_the_whole_converter_tree_not_just_the_launcher` is
-  flaky, roughly one run in four.** Found while running the suite for the
+  flaky — "roughly one run in four" understates it under load.** Re-measured
+  2026-09-05 during a session running several review agents concurrently: it
+  failed on two consecutive full-suite runs and then twice more *in isolation*,
+  where it had passed in isolation minutes earlier on the same checkout. A
+  reviewer independently called it "reproducible, not flaky". Both observations
+  fit the recorded cause — the test reads the grandchild's pid file before the
+  grandchild writes it, so machine load widens the window until the race looks
+  deterministic. It is not: CI's pytest gate passed on the same commits, and the
+  code under it is byte-identical to `develop`. The rate is a function of load,
+  which makes "one in four" a number to distrust rather than to quote.** Found while running the suite for the
   `mentions-and-facets` change and parked, not fixed: that change touches
   neither the test nor the legacy-office converter, and the flake reproduces on
   `origin/develop` at the same rate, so it is pre-existing rather than a

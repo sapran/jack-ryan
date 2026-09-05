@@ -1,0 +1,19 @@
+schema: spec-driven
+created: 2026-09-05
+
+# No spec delta, deliberately, and established by falsification rather than
+# assumed — see `proposal.md` § Impact.
+#
+# `service-adapter-boundary` is the only spec that names REST, and its
+# requirements are about where domain rules live and how typed errors are
+# translated. This change moves neither: it removes a duplicated rendering of
+# values the service layer has already decided.
+#
+# `extraction-quality-gate` requires the CLI and REST to report `read_as` "using
+# the same name and the same words". This change makes that structural instead
+# of duplicated, so it satisfies the requirement more strongly and falsifies
+# nothing.
+#
+# A MODIFIED block for either would reproduce it byte-identically, which the
+# delta-authoring guidance says to cut.
+skip_specs: true
