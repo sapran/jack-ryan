@@ -19,6 +19,7 @@ from .reranking.port import RerankerPort
 from .services.casefiles import CasefileService
 from .services.ingestion import IngestionService
 from .services.search import SearchService
+from .storage.port import StorePort
 from .storage.sqlite import SqliteStore
 from .summarising import build_summariser
 from .summarising.port import SummariserPort
@@ -38,7 +39,17 @@ class Context:
     cannot explain their refusal.
     """
 
-    store: SqliteStore
+    store: StorePort
+    """The store, as the seam rather than as the implementation.
+
+    Declared as the port so that reaching past the service layer is a type
+    error rather than something a review has to notice. The field still holds a
+    `SqliteStore` — this is a claim about what a holder of a `Context` may
+    assume, not about what was constructed. Nothing in this repository type-
+    checks today, so the claim is documentation; the test that enforces it is
+    `test_no_adapter_reaches_the_store`.
+    """
+
     embedder: EmbedderPort
     casefiles: CasefileService
     ingestion: IngestionService

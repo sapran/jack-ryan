@@ -938,6 +938,77 @@ because that is the only one with a service call out there.
 ---
 
 
+## The casefile overview crosses the service layer — 2026-09-05
+
+Second of the five architecture-review changes, stacked on the first because
+both edit `interfaces/mcp/server.py`.
+
+**What it settles.** `storage-seam` says "no adapter SHALL reach a store
+directly". One line did — `context.store.casefile_statistics(resolved.id)` in
+`case_casefile_overview`, the only place in `src/` where an adapter held a store
+and the only `StorePort` method with no service caller. There is now a
+`CasefileService.statistics`, and `Context.store` is declared as the port.
+
+**Why it was reachable at all.** Three things, and the third is the one worth
+remembering. There was nowhere else to go: `case_casefile_overview` has no REST
+or CLI counterpart, so nothing ever forced the service method into existence.
+The type permitted it: the composition root declared the concrete `SqliteStore`.
+And **the tool had no test of any kind** — the only occurrence of its name
+outside `src/` asserted that the analyst pack mentions it. The one call the
+surface makes about corpus size, which `CLAUDE.md` notes an agent repeats as
+coverage, was unexercised.
+
+**The trap this had waiting.** The store's SQL aliases those columns `ingested`
+and `expanded`; the payload calls them `documents_ingested` and
+`documents_expanded`. A dataclass field named after the alias — the natural
+thing to write while reading the query — gives the agent a payload with
+different keys, every value still truthy, and no existing test disturbed. So the
+tool's first test was written *before* the change, asserts the key set exactly,
+and was watched failing on exactly that rename.
+
+**Two guards, both watched failing.** Restoring the old store reach fails
+`test_no_adapter_reaches_the_store`. Renaming one payload key fails the overview
+test with `'ingested'` extra and `'documents_ingested'` missing.
+
+**Then two reviewers took the guards apart, and both were right.** What shipped
+first was materially weaker than what the commit message claimed:
+
+- **It scanned one adapter of three.** `interfaces/` only — so a store reach in
+  `server.py` (REST) or `cli.py` (CLI) was invisible, and REST is the surface
+  most likely to gain a "how big is this casefile" route next. Now scans the
+  whole package minus `services/`, `storage/` and `app.py`, which is an
+  exemption list and therefore self-maintaining.
+- **`getattr(context, "store")` and `context.casefiles._store` both passed it.**
+  The second is not exotic: every adapter holds a `CasefileService`, and its
+  `_store` is one attribute away — which is what someone reaches for when the
+  service method they need does not exist, the exact situation that produced the
+  original breach. Both are now caught, and the residual gap is stated rather
+  than papered over: constructing a `SqliteStore` directly still passes.
+- **The stated reason for parsing was false.** The first draft argued a grep
+  would be defeated by binding the store to a name first. It would not —
+  `store = context.store` contains the very string being searched for. The two
+  real advantages were sitting beside it: it matches `<any expr>.store`, not
+  one spelling, and cannot be tripped by a comment.
+- **The overview test could not tell `documents` from `documents_ingested`.**
+  On the plain `corpus` fixture both are 3, so swapping them passed. The test
+  now builds a casefile holding a loose file *and* a two-entry archive, making
+  the three counts 4, 2 and 2 — three different numbers. That also exercises the
+  `expanded` composition branch, and **the claim that `test_containers.py`
+  covered it was wrong**: a reviewer replaced that whole branch with a literal
+  marker string and all 694 tests stayed green.
+- **`documents_by_type` was asserted only by its sum**, so collapsing it to
+  `{"unknown": n}` passed. It is now compared against the real media types.
+
+**What it did not check.** No type checker exists, so `Context.store: StorePort`
+is documentation; several tests reach `context.store._db` and a checker would
+flag them. The two resolves per overview call were reasoned about, not measured.
+`by_type` is a mutable dict inside a frozen dataclass — consistent with
+`Extraction.metadata`, and freshly built per call so nothing shared can be
+corrupted, but "frozen" is shallower than it reads and `hash()` raises on it.
+
+---
+
+
 ## What this environment could not do, so you should not trust it was checked
 
 - **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real

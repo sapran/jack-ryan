@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 
 from ..errors import AmbiguousReferenceError, NotFoundError, ValidationError
-from ..storage.port import Casefile, StorePort
+from ..storage.port import Casefile, CasefileStatistics, StorePort
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SHORT_ID_LENGTH = 8
@@ -127,6 +127,21 @@ class CasefileService:
 
     def list(self) -> list[Casefile]:
         return self._store.list_casefiles()
+
+    def statistics(self, reference: str) -> CasefileStatistics:
+        """The size and shape of one casefile, by any handle that names it.
+
+        Here rather than reached for directly by a surface, because resolving a
+        reference is a domain rule and `storage-seam` says no adapter reaches a
+        store. Until this existed the agent surface was the only caller of
+        `casefile_statistics`, and it held the store to make the call — the one
+        place in the codebase where an adapter did.
+
+        Takes a reference and resolves it, like every other query here, so a
+        caller needs no id it did not already have.
+        """
+        casefile = self.resolve(reference)
+        return self._store.casefile_statistics(casefile.id)
 
     def resolve(self, reference: str) -> Casefile:
         """Resolve a casefile from a full id, an 8-char id prefix, or a slug.

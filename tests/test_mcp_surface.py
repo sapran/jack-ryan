@@ -156,6 +156,96 @@ async def test_an_unrecognised_profile_narrows_rather_than_widens(context):
 
 
 @pytest.mark.anyio
+async def test_the_overview_reports_the_corpus_it_was_asked_about(
+    server, loaded, tmp_path
+):
+    """The one call that tells an agent how big a casefile is.
+
+    Nothing exercised this tool before. That matters more than it sounds:
+    `case_casefile_overview` is where the surface states corpus size, and
+    `CLAUDE.md` notes an agent then repeats that as coverage. A wrong figure
+    here is not a wrong number, it is a false coverage claim.
+
+    The key set is asserted exactly rather than key by key, because the failure
+    this guards against is a *renamed* key, not a missing value. The store's SQL
+    aliases these columns `ingested` and `expanded` while the payload calls them
+    `documents_ingested` and `documents_expanded`; anything carrying the alias
+    outward would still be truthy, still be counted, and quietly change the
+    agent-facing contract.
+    """
+    import zipfile
+
+    context, _ = loaded
+
+    # A casefile deliberately built so the three counts are three *different*
+    # numbers. On a plain folder they are 3, 3 and 0, and a payload that reported
+    # `documents_ingested` under `document_count` would agree with itself
+    # everywhere — the confusion this tool exists to prevent, invisible to the
+    # test meant to prevent it.
+    folder = tmp_path / "mixed"
+    folder.mkdir()
+    (folder / "loose.md").write_text("# Loose\n\nA document sitting on its own.\n", "utf-8")
+    with zipfile.ZipFile(folder / "bundle.zip", "w") as archive:
+        archive.writestr("first.txt", "the first entry inside the archive")
+        archive.writestr("second.txt", "the second entry inside the archive")
+
+    mixed = context.casefiles.create("Mixed Intake")
+    assert not context.ingestion.ingest(mixed.short_id, folder).failed
+    body = await call(server, "case_casefile_overview", {"casefile": mixed.short_id})
+
+    assert set(body) == {
+        "casefile",
+        "document_count",
+        "documents_ingested",
+        "documents_expanded",
+        "total_characters",
+        "documents_by_type",
+        "formatted",
+    }
+
+    documents = context.ingestion.list_documents(mixed.short_id, include_expanded=True)
+    # Four documents from two intakes: the loose file, the archive itself, and
+    # its two entries. Three distinct numbers, so no two fields can be swapped
+    # without this failing.
+    assert body["document_count"] == len(documents) == 4
+    assert body["documents_ingested"] == 2
+    assert body["documents_expanded"] == 2
+    assert body["total_characters"] == sum(len(d.extracted_text) for d in documents)
+
+    # The real media types, not merely how many there are: a payload reporting
+    # everything as one type would sum correctly and describe a different corpus.
+    assert body["documents_by_type"] == {
+        media_type: sum(1 for d in documents if d.media_type == media_type)
+        for media_type in {d.media_type for d in documents}
+    }
+    assert len(body["documents_by_type"]) > 1, "the fixture no longer mixes formats"
+
+    assert body["casefile"]["slug"] == mixed.slug
+    # The composition clause, which exists so an agent cannot report "2 documents"
+    # for a corpus holding four. Nothing exercised this branch before.
+    assert "4 documents" in body["formatted"]
+    assert "2 ingested directly, 2 expanded from containers" in body["formatted"]
+
+
+@pytest.mark.anyio
+async def test_the_overview_omits_the_expansion_clause_when_nothing_was_expanded(
+    server, loaded
+):
+    """The other branch: saying "0 expanded from containers" is noise.
+
+    Kept separate from the test above rather than folded into it, because the
+    two assert opposite things about the same string and a single test would
+    have to build both corpora to say either.
+    """
+    _, casefile = loaded
+    body = await call(server, "case_casefile_overview", {"casefile": casefile.short_id})
+
+    assert body["documents_expanded"] == 0
+    assert "3 documents" in body["formatted"]
+    assert "expanded from containers" not in body["formatted"]
+
+
+@pytest.mark.anyio
 async def test_search_separates_index_from_bodies(server):
     body = await call(server, "case_search", {"casefile": "harbour-inquiry", "query": "harbour lease"})
     assert body["formatted"]
