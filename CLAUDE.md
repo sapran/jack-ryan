@@ -55,6 +55,16 @@ without a corresponding OpenSpec change.
 A proposal that pulls deferred work forward must say why the prototype cannot
 be proven without it.
 
+A change that genuinely alters no published requirement still needs a change
+directory, and `openspec validate` refuses one with no delta: *"Change must have
+at least one delta."* The sanctioned escape is `.openspec.yaml` carrying
+`skip_specs: true` — and the marker is **ignored unless the file is otherwise
+valid metadata**, so `schema: spec-driven` and `created:` must be there too, or
+validation reports the missing delta and a separate complaint that the marker
+was not honoured. Establish the absence by falsification and record it in the
+proposal's `## Impact`; do not reach for `skip_specs` to avoid writing a delta
+that is owed.
+
 ### Public-repo safety
 
 This repository is **public**. Every tracked file and commit message is

@@ -1009,6 +1009,46 @@ corrupted, but "frozen" is shallower than it reads and `hash()` raises on it.
 ---
 
 
+## One renderer for the two human surfaces — 2026-09-05
+
+Third of the architecture-review changes. The CLI and the REST route described
+the same three domain objects twice, and the copies had drifted: identical for a
+casefile, one rounding call apart for a search hit, and **five** fields apart for
+a document — the review's own report said one, and counting properly is what
+turned "extract a function" into "extract a core and leave the divergence where
+it belongs".
+
+`src/jackryan/rendering.py` now holds what they share. Each adapter keeps its own
+named function, calling the shared one and adding its extras — partly because
+three tests import those names directly and one reports `render.__module__` on
+failure, but mostly because the surfaces really do differ and the difference
+should be readable where the surface is.
+
+**One observable change: REST's JSON key order.** `casefile_id` moves from third
+to tenth and the summary fields to after `created_at`. Same thirteen keys, same
+values, verified by construction. Nothing asserts key order, JSON objects are
+unordered by specification, and no client contract here depends on it — but it is
+a public API and it belongs in the record rather than in a diff.
+
+**Two things worth carrying forward.**
+
+A delta-free change does not simply validate. `openspec validate` refuses it —
+*"Change must have at least one delta"* — and the escape is `.openspec.yaml` with
+`skip_specs: true`, which is **ignored unless the file is otherwise valid
+metadata**. The first attempt set only the marker and got a second error saying
+so. This is the first change here to use it.
+
+And a process failure worth not repeating: `git checkout <file>` to undo a
+mutation-test also discards the uncommitted work in that file. It happened twice
+in this session. The second time the suite stayed green at 697 afterwards — the
+two new parity tests passed against the *original* duplicated code, because they
+assert a property the two copies already satisfied. Caught by reading `git
+status`, not by the tests. **Commit before mutating, and reverse a mutation by
+reversing it.**
+
+---
+
+
 ## What this environment could not do, so you should not trust it was checked
 
 - **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real
