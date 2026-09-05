@@ -42,7 +42,6 @@ from .sniffing import sniff_suffix
 CONTENT_ROUTED = "content-routed"
 
 
-
 def has_usable_text(text: str) -> bool:
     """Whether `text` carries anything a reader could use.
 

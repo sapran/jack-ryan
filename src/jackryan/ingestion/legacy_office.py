@@ -19,6 +19,7 @@ import os
 import shutil
 import signal
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from .extractors import (
@@ -220,7 +221,7 @@ class LegacyOfficeExtractor:
             text_source=delegated.text_source,
         )
 
-    def _converted_to(self, path: Path, target: str):
+    def _converted_to(self, path: Path, target: str) -> Callable[[Path], Path]:
         """A producer that converts, deferred until a scratch directory exists.
 
         The conversion needs that directory for three things — the output, a
@@ -229,7 +230,7 @@ class LegacyOfficeExtractor:
         """
         return lambda work: self._convert(path, target, work)
 
-    def _copied_to(self, path: Path, target: str):
+    def _copied_to(self, path: Path, target: str) -> Callable[[Path], Path]:
         """A producer that copies, for a file already in the modern format."""
         return lambda work: self._copy_as_target(path, target, work)
 
