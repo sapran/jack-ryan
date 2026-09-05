@@ -15,39 +15,24 @@ from typing import Any, Sequence
 from . import __version__
 from .ingestion.containers import rar_status
 from .ingestion.legacy_office import converter_status
-from .ingestion.quality_gate import read_as
 from .app import build_context
 from .errors import JackRyanError
+from .rendering import render_casefile, render_document, render_hit
 from .storage.port import Casefile, Document, SearchHit
 
 
 def _render(casefile: Casefile) -> dict[str, Any]:
-    return {
-        "id": casefile.id,
-        "short_id": casefile.short_id,
-        "slug": casefile.slug,
-        "title": casefile.title,
-        "description": casefile.description,
-        "created_at": casefile.created_at.isoformat(),
-        "updated_at": casefile.updated_at.isoformat(),
-    }
+    return render_casefile(casefile)
 
 
 def _render_document(document: Document) -> dict[str, Any]:
-    row = {
-        "id": document.id,
-        "short_id": document.short_id,
-        "filename": document.filename,
-        "media_type": document.media_type,
-        "byte_size": document.byte_size,
-        "extractor": document.extractor,
-        # How the text was obtained. The analyst is the one who decides whether
-        # a document is worth re-scanning, so they need this at least as much as
-        # the assistant does — and under the same name the assistant sees.
-        "read_as": read_as(document.text_source),
-        "characters": len(document.extracted_text),
-        "created_at": document.created_at.isoformat(),
-    }
+    """The shared fields, plus the three this surface adds and REST does not.
+
+    Kept as its own function rather than aliased to `render_document`, because
+    the extras below are what make it the CLI's: each is added only when it says
+    something, so a table stays the width the corpus warrants.
+    """
+    row = render_document(document)
     if document.containment_path and document.containment_path != document.filename:
         # Where it was found, because an attachment's own name identifies
         # nothing without the message and archive that carried it.
@@ -64,30 +49,12 @@ def _render_document(document: Document) -> dict[str, Any]:
 
 
 def _render_hit(hit: SearchHit) -> dict[str, Any]:
-    return {
-        "chunk_id": hit.chunk.id,
-        "document_id": hit.document.id,
-        "document": hit.document.filename,
-        "score": round(hit.score, 6),
-        "rerank_score": round(hit.rerank_score, 6) if hit.rerank_score is not None else None,
-        "ranking": hit.ranking,
-        "keyword_rank": hit.keyword_rank,
-        "vector_rank": hit.vector_rank,
-        "heading_path": hit.chunk.heading_path,
-        # The context folded into what was embedded for this passage, empty
-        # unless folding was on. The stored text is deliberately unchanged by the
-        # fold, so this is the only place an operator can see what the vector was
-        # actually built from.
-        "summary": hit.chunk.summary,
-        # The span returned, and the passage inside it that matched.
-        "char_start": hit.char_start,
-        "char_end": hit.char_end,
-        "matched_char_start": hit.chunk.char_start,
-        "matched_char_end": hit.chunk.char_end,
-        "narrowed": hit.narrowed,
-        "read_as": read_as(hit.document.text_source),
-        "text": hit.text,
-    }
+    """Rounded, because a terminal table of unrounded floats is unreadable.
+
+    REST does not round; the difference is a parameter of the shared renderer
+    rather than a second copy of the seventeen fields.
+    """
+    return render_hit(hit, round_scores=True)
 
 
 def _print(payload: Any, as_json: bool, empty_message: str = "Nothing to show.") -> None:
