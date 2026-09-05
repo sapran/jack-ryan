@@ -1064,6 +1064,60 @@ reversing it.**
 ---
 
 
+## One owner for a file signature — 2026-09-05
+
+Last of the architecture-review changes, and the only one that touches no
+adapter and no seam — it is entirely inside the ingestion pipeline.
+
+**What it settles.** `sniffing.py` and `legacy_office.py` each declared
+`_OLE2_MAGIC` and `_ZIP_MAGIC`, under identical names, with no import between
+them; RTF's signature was a third case, named in one and a bare literal inside
+the other's table. And `router.py:47` claimed the scratch copy's name was "the
+same argument and **the same constant**" as `legacy_office._copy_as_target`,
+which hardcoded its own. The comment described a shared module that did not
+exist. Underneath it sat the real duplication: the scratch-and-delegate shape,
+written twice, with the `mkdtemp` guard and both `except` clauses
+character-identical.
+
+**Two details that had to be got right rather than assumed.**
+
+The **import form** for the signatures. `from .sniffing import _OLE2_MAGIC`
+keeps the name bound in `legacy_office`, which sixteen tests read it from.
+Referencing `sniffing._OLE2_MAGIC` inline instead turns all sixteen into
+`AttributeError` — watched failing, because "import the constant" and "use the
+constant through its module" look equivalent and are not.
+
+The **dotted and undotted spellings** of the scratch name. Content routing built
+`f"{SCRATCH_STEM}{suffix}"` with a dotted suffix; legacy Office built
+`f"source.{target}"` with an undotted target. Both give `source.xlsx`, checked
+directly rather than reasoned about — this is the one place a mismatch would be
+quiet, because `router._resolve` builds the same name to ask an extractor
+whether it `accepts` the file, so getting it wrong hands the file to a different
+extractor than the one chosen.
+
+**The consolidation earns its keep in the teardown.** `docs/handover.md` already
+records two defects found in exactly that code — a `mkdtemp` outside every `try`,
+and a converter still writing into the directory after the `finally` removed it.
+There is now one implementation, and the two suites test it by **opposite**
+strategies: content routing globs the temp root, legacy Office patches `mkdtemp`
+and watches the actual directory. Removing the `finally` fails four tests across
+both files.
+
+**What it did not check.** No behaviour was expected to change and the test count
+did not move (697, 3 skipped), which is weaker evidence than it sounds: a
+refactor that changes nothing observable is also a refactor no test can confirm
+happened. What was confirmed is the diff and the mutations. The LibreOffice
+conversion path is still only exercised out of suite by
+`scripts/verify_legacy_office.py`, which does not run in CI, so the converter
+branch of the new helper is covered by stubs alone.
+
+One thing was recorded rather than fixed: the two paths still rebuild their
+`Extraction` differently, and `legacy_office` drops `is_container` by omission.
+Unifying that would be a behaviour change inside a change claiming none.
+
+---
+
+
 ## What this environment could not do, so you should not trust it was checked
 
 - **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real

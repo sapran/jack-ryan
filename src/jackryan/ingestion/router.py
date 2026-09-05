@@ -15,7 +15,6 @@ quotes baked into a filename, or no extension at all.
 from __future__ import annotations
 
 import shutil
-import tempfile
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -25,6 +24,11 @@ from .extractors import (
     Extraction,
     ExtractionError,
     Extractor,
+    deliver_via_scratch_directory,
+    # Re-exported: this module's callers and its tests read the name from
+    # here, and it is shared with `legacy_office`, which may not import it
+    # from here without closing a cycle.
+    SCRATCH_STEM,
     default_extractors,
 )
 from ..config import Profile
@@ -36,16 +40,6 @@ from .sniffing import sniff_suffix
 #: `legacy-office+<delegate>`, so every route a document could have taken is
 #: legible in one field and content-routed documents are one query away.
 CONTENT_ROUTED = "content-routed"
-
-#: The scratch copy's name, fixed rather than derived from the operator's
-#: filename. Nothing downstream reads it — a delegate keys only off the suffix,
-#: and every error on this path is relabelled with the real `path.name` — while
-#: a derived stem lets the input decide the output name: appending a suffix to
-#: an extensionless 251-byte name exceeds the 255-byte component limit, and a
-#: workbook named `..xlsx` has stem `.`, landing as `..xlsx`, whose suffix
-#: openpyxl then refuses. The same argument and the same constant as
-#: `legacy_office._copy_as_target`.
-SCRATCH_STEM = "source"
 
 
 def has_usable_text(text: str) -> bool:
@@ -171,19 +165,15 @@ class FormatRouter:
         Every extractor keys its media type off `path.suffix` — a `KeyError`
         that is not an `ExtractionError`, so it would end the whole run instead
         of failing one document. The file is therefore copied into a scratch
-        directory under the resolved suffix and the copy is handed over, which
-        is the shape `legacy_office._copy_as_target` already uses for the same
-        problem. The bytes cost is accepted: this path runs only for a file the
-        registry could not name at all.
-        """
-        try:
-            work = Path(tempfile.mkdtemp(prefix="jackryan-routed-"))
-        except OSError as exc:
-            raise ExtractionError(
-                f"could not make a scratch directory for {path.name}: {exc}"
-            ) from exc
+        directory under the resolved suffix and the copy is handed over.
 
-        try:
+        The scratch directory, the delegation and the relabelling are
+        `deliver_via_scratch_directory`, shared with the legacy-Office path,
+        which needs the same shape for the same reason. What stays here is what
+        is actually this path's: the copy, and the lineage marker.
+        """
+
+        def copy_into(work: Path) -> Path:
             # One definition of the scratch name, shared with the `accepts`
             # probe in `_resolve` — so the extractor chosen is the one asked
             # about the exact name it is handed.
@@ -194,29 +184,18 @@ class FormatRouter:
                 raise ExtractionError(
                     f"could not copy {path.name} to read it as {suffix}: {exc}"
                 ) from exc
+            return source
 
-            try:
-                delegated = extractor.extract(source)
-            except ExtractionError as exc:
-                # Named for the file the operator has, not the scratch copy they
-                # will never see.
-                raise ExtractionError(f"{path.name}, read as {suffix}: {exc}") from exc
-            except Exception as exc:
-                # An extractor is supposed to raise only `ExtractionError`, and
-                # not all of them honour it. Narrowed to `Exception` rather than
-                # `BaseException` so a test gate's sentinel still escapes and can
-                # still fail loudly.
-                raise ExtractionError(
-                    f"{path.name}, read as {suffix}: {type(exc).__name__}: {exc}"
-                ) from exc
-
-            # `replace` rather than a fresh `Extraction`: every other field —
-            # media type, metadata, refusals, `text_source`, `is_container` —
-            # is the delegate's answer and is carried rather than defaulted.
-            # The media type especially: it is what the evidence is, and routing
-            # is only how it was found.
-            return replace(
-                delegated, extractor=f"{CONTENT_ROUTED}+{delegated.extractor}"
-            )
-        finally:
-            shutil.rmtree(work, ignore_errors=True)
+        delegated = deliver_via_scratch_directory(
+            path,
+            prefix="jackryan-routed-",
+            produce=copy_into,
+            delegate=extractor,
+            read_as=suffix,
+        )
+        # `replace` rather than a fresh `Extraction`: every other field —
+        # media type, metadata, refusals, `text_source`, `is_container` —
+        # is the delegate's answer and is carried rather than defaulted.
+        # The media type especially: it is what the evidence is, and routing
+        # is only how it was found.
+        return replace(delegated, extractor=f"{CONTENT_ROUTED}+{delegated.extractor}")

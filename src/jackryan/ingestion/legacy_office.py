@@ -19,10 +19,20 @@ import os
 import shutil
 import signal
 import subprocess
-import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
-from .extractors import DoclingExtractor, Extraction, ExtractionError
+from .extractors import (
+    SCRATCH_STEM,
+    DoclingExtractor,
+    Extraction,
+    ExtractionError,
+    deliver_via_scratch_directory,
+)
+# Imported rather than redeclared, so the bytes have one owner. The names
+# land in this module's namespace, which is what `_OLE2_MAGIC` and its
+# siblings are read as from the tests.
+from .sniffing import _OLE2_MAGIC, _RTF_MAGIC, _ZIP_MAGIC
 from .quality_gate import QualityGate
 
 # The media types are docling's own, from its `FormatToMimeType` mapping, so a
@@ -46,11 +56,6 @@ _TARGET = {".doc": "docx", ".rtf": "docx", ".xls": "xlsx", ".ppt": "pptx"}
 # operator-supplied value.
 CONVERSION_TIMEOUT_S = 120
 
-# Enough to tell the three containers apart. OLE2 is the legacy compound file
-# every Office 97 format is wrapped in; ZIP is what an OOXML file really is.
-_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
-_ZIP_MAGIC = b"PK\x03\x04"
-_RTF_MAGIC = b"{\\rtf"
 
 _MACOS_BUNDLE = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
 
@@ -162,79 +167,72 @@ class LegacyOfficeExtractor:
         except OSError as exc:
             raise ExtractionError(f"could not read {path.name}: {exc}") from exc
 
-        try:
-            work = Path(tempfile.mkdtemp(prefix="jackryan-legacy-"))
-        except OSError as exc:
-            raise ExtractionError(
-                f"could not make a scratch directory for {path.name}: {exc}"
-            ) from exc
-
-        try:
-            if suffix == ".rtf":
-                if not head.startswith(_RTF_MAGIC):
-                    raise ExtractionError(
-                        f"{path.name} is named .rtf but does not begin with an RTF header"
-                    )
-                source = self._convert(path, target, work)
-                lineage = "legacy-office"
-            elif head.startswith(_ZIP_MAGIC):
-                # Already the modern format under a legacy name. The dump this
-                # change answers held two such workbooks. Converting one would
-                # be a lossy round trip for no reason.
-                source = self._copy_as_target(path, target, work)
-                lineage = "legacy-office-passthrough"
-            elif head.startswith(_OLE2_MAGIC) or (
-                # RTF under a `.doc` name is ordinary Word and mail-merge
-                # output, and LibreOffice converts it without complaint. Only
-                # word-processor targets are widened: an RTF payload really is
-                # unreadable as a workbook or a deck, so the refusal below stays
-                # accurate for `.xls` and `.ppt`.
-                target == "docx" and head.startswith(_RTF_MAGIC)
-            ):
-                source = self._convert(path, target, work)
-                lineage = "legacy-office"
-            else:
+        # What the bytes are decides both how the file is produced for the
+        # delegate and what lineage the result records. Decided before any
+        # scratch directory exists, so a file this extractor will refuse costs
+        # no directory at all — and so the two outcomes cannot drift apart, the
+        # way they could when each branch assigned them separately.
+        if suffix == ".rtf":
+            if not head.startswith(_RTF_MAGIC):
                 raise ExtractionError(
-                    f"{path.name} is named {suffix} but is neither an OLE2 nor an "
-                    "OOXML container"
+                    f"{path.name} is named .rtf but does not begin with an RTF header"
                 )
-
-            delegate = self._workbooks if target == "xlsx" else self._documents
-            try:
-                delegated = delegate.extract(source)
-            except ExtractionError as exc:
-                # Named for the file the operator has, not for the scratch copy
-                # they will never see.
-                raise ExtractionError(f"{path.name}, read as .{target}: {exc}") from exc
-            except Exception as exc:
-                # A delegate is supposed to raise only `ExtractionError`, and
-                # `SpreadsheetExtractor` does not honour that: `load_workbook` is
-                # guarded but the lazy row iteration underneath it is not, so a
-                # workbook truncated mid-sheet surfaces a bare `ParseError`. That
-                # would leave `_ingest_work` and end the run. Narrowed to
-                # `Exception` rather than `BaseException` so the test gate's rung
-                # sentinel still escapes and can still fail a test loudly.
-                raise ExtractionError(
-                    f"{path.name}, read as .{target}: {type(exc).__name__}: {exc}"
-                ) from exc
-
-            return Extraction(
-                text=delegated.text,
-                # The legacy type, because that is what the evidence is. The
-                # conversion is how the text was obtained, not what was stored.
-                media_type=LEGACY_SUFFIXES[suffix],
-                extractor=f"{lineage}+{delegated.extractor}",
-                metadata=delegated.metadata,
-                # Carried rather than defaulted. Neither delegate sets either
-                # today, so nothing changes now — but `refusals` is how this
-                # project carries "what I could not read" upward, and silently
-                # dropping it the day a delegate starts setting it would lose
-                # exactly the disclosure it exists for.
-                refusals=delegated.refusals,
-                text_source=delegated.text_source,
+            lineage, produce = "legacy-office", self._converted_to(path, target)
+        elif head.startswith(_ZIP_MAGIC):
+            # Already the modern format under a legacy name. The dump this
+            # change answers held two such workbooks. Converting one would
+            # be a lossy round trip for no reason.
+            lineage, produce = "legacy-office-passthrough", self._copied_to(path, target)
+        elif head.startswith(_OLE2_MAGIC) or (
+            # RTF under a `.doc` name is ordinary Word and mail-merge
+            # output, and LibreOffice converts it without complaint. Only
+            # word-processor targets are widened: an RTF payload really is
+            # unreadable as a workbook or a deck, so the refusal below stays
+            # accurate for `.xls` and `.ppt`.
+            target == "docx" and head.startswith(_RTF_MAGIC)
+        ):
+            lineage, produce = "legacy-office", self._converted_to(path, target)
+        else:
+            raise ExtractionError(
+                f"{path.name} is named {suffix} but is neither an OLE2 nor an "
+                "OOXML container"
             )
-        finally:
-            shutil.rmtree(work, ignore_errors=True)
+
+        delegated = deliver_via_scratch_directory(
+            path,
+            prefix="jackryan-legacy-",
+            produce=produce,
+            delegate=self._workbooks if target == "xlsx" else self._documents,
+            read_as=f".{target}",
+        )
+        return Extraction(
+            text=delegated.text,
+            # The legacy type, because that is what the evidence is. The
+            # conversion is how the text was obtained, not what was stored.
+            media_type=LEGACY_SUFFIXES[suffix],
+            extractor=f"{lineage}+{delegated.extractor}",
+            metadata=delegated.metadata,
+            # Carried rather than defaulted. Neither delegate sets either
+            # today, so nothing changes now — but `refusals` is how this
+            # project carries "what I could not read" upward, and silently
+            # dropping it the day a delegate starts setting it would lose
+            # exactly the disclosure it exists for.
+            refusals=delegated.refusals,
+            text_source=delegated.text_source,
+        )
+
+    def _converted_to(self, path: Path, target: str) -> Callable[[Path], Path]:
+        """A producer that converts, deferred until a scratch directory exists.
+
+        The conversion needs that directory for three things — the output, a
+        per-call LibreOffice profile, and the result itself — which is why the
+        shared helper hands one over rather than taking a finished file.
+        """
+        return lambda work: self._convert(path, target, work)
+
+    def _copied_to(self, path: Path, target: str) -> Callable[[Path], Path]:
+        """A producer that copies, for a file already in the modern format."""
+        return lambda work: self._copy_as_target(path, target, work)
 
     def _copy_as_target(self, path: Path, target: str, work: Path) -> Path:
         """Copy the file under the suffix its content actually is.
@@ -244,14 +242,12 @@ class LegacyOfficeExtractor:
         `ExtractionError`, and would therefore end the whole ingest run rather
         than fail one document.
 
-        The scratch name is fixed rather than derived from the operator's
-        filename. Nothing downstream reads it — both delegates key only off the
-        suffix, and the error wrapper re-labels with the original name — while a
-        derived stem lets the input decide the output name. A workbook genuinely
-        named `..xls` has stem `.`, which would land as `..xlsx`, whose suffix
-        openpyxl then refuses.
+        The scratch name is `SCRATCH_STEM`, shared with the content-routing path
+        in `router`, which needs it for the same reason and once spelled it out
+        in a comment claiming "the same constant" while hardcoding its own copy.
+        The argument for a fixed name is recorded where the constant lives.
         """
-        destination = work / f"source.{target}"
+        destination = work / f"{SCRATCH_STEM}.{target}"
         try:
             shutil.copyfile(path, destination)
         except OSError as exc:

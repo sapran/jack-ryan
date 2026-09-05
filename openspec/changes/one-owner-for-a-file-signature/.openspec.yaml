@@ -1,0 +1,13 @@
+schema: spec-driven
+created: 2026-09-05
+
+# No spec delta. Established by falsification, not assumed: grepping
+# `openspec/specs/` for "scratch", "copy" and the signature constants returns
+# nothing, and `document-ingestion` describes content routing behaviourally —
+# which file is read as what — while saying nothing about how the file is handed
+# to the extractor that reads it. This change moves only that handover.
+#
+# Nothing observable changes, which is the reason the delta is absent rather
+# than an excuse for it: same routing decisions, same lineage strings, same
+# error messages, same temp-directory prefixes.
+skip_specs: true
