@@ -601,3 +601,96 @@ def test_the_inventory_tool_is_advertised_stamped_taught_and_in_the_role(identif
         "the analyst role does not name the tool. Its pivot step is where an "
         "identifier becomes the next search, and that is this tool's only purpose"
     )
+
+
+# -- what the two human surfaces share, and what they deliberately do not ----
+
+
+def test_the_two_human_surfaces_agree_on_every_shared_document_field(context, corpus):
+    """One renderer, so the fields they share cannot drift apart again.
+
+    They had drifted: the CLI and REST document renderings differed in five
+    ways, and only the surface-by-surface tests above caught the parts that
+    mattered. The nine fields below are now produced once, so this asserts a
+    property of the code rather than a coincidence between two copies.
+
+    The divergence is asserted too, in both directions. A shared renderer is
+    only an improvement if it makes the sharing structural *and* leaves the
+    deliberate differences visible — otherwise the next reader deletes one of
+    them as duplication.
+    """
+    from jackryan.cli import _render_document
+    from jackryan.rendering import render_document
+    from jackryan.server import serialize_document
+
+    casefile = context.casefiles.create("Shared Fields")
+    context.ingestion.ingest(casefile.short_id, corpus)
+    document = context.ingestion.list_documents(casefile.short_id)[0]
+
+    shared = render_document(document)
+    assert len(shared) == 9, "the shared core changed size; both surfaces move with it"
+
+    from_cli = _render_document(document)
+    from_rest = serialize_document(document)
+    for key, value in shared.items():
+        assert from_cli[key] == value, f"the CLI disagrees about {key}"
+        assert from_rest[key] == value, f"REST disagrees about {key}"
+
+    # REST carries two fields the CLI does not, and emits the summary whether or
+    # not there is one: a JSON consumer branching on a missing key is worse
+    # served than one branching on an empty string.
+    # Exactly these, not merely at least these: a subset check would let a fifth
+    # REST-only field appear while the docstring above claims the divergence is
+    # asserted in both directions.
+    assert set(from_rest) - set(shared) == {
+        "casefile_id",
+        "updated_at",
+        "summary",
+        "summary_by",
+    }
+    # The CLI omits an empty summary so a table keeps the width the corpus
+    # warrants, and this corpus was ingested with no summariser configured.
+    assert not document.summary
+    assert set(from_cli) - set(shared) == set()
+
+
+def test_only_the_rounding_separates_the_two_hit_renderings(context, corpus):
+    """The seventeen fields agree; the CLI rounds and REST does not.
+
+    Asserted as "everything but these two keys is equal" rather than field by
+    field, so a field added to one and not the other fails here rather than
+    waiting for someone to notice.
+    """
+    from dataclasses import replace
+
+    from jackryan.cli import _render_hit
+    from jackryan.server import serialize_hit
+
+    casefile = context.casefiles.create("Rounding")
+    context.ingestion.ingest(casefile.short_id, corpus)
+    hit = context.search.search(casefile.short_id, "harbour lease", limit=1)[0]
+
+    # A rerank score, because it is the second of the two rounded fields and
+    # nothing in the suite pinned it. `dataclasses.replace` rather than a real
+    # reranker: no model ships enabled, and what is under test is the rendering.
+    hit = replace(hit, rerank_score=-3.14159265358979, ranking="rerank")
+
+    from_cli = _render_hit(hit)
+    from_rest = serialize_hit(hit)
+    assert set(from_cli) == set(from_rest)
+    assert {k: v for k, v in from_cli.items() if k not in {"score", "rerank_score"}} == {
+        k: v for k, v in from_rest.items() if k not in {"score", "rerank_score"}
+    }
+
+    # Asserted against the value the service produced, not against each other.
+    # `from_cli == round(from_rest, 6)` holds whether or not REST rounded, since
+    # rounding an already-rounded value changes nothing — so it could only ever
+    # catch the CLI. Flipping REST to round as well destroyed the one difference
+    # this parameter exists for and left 55 tests green.
+    assert from_rest["score"] == hit.score
+    assert from_rest["rerank_score"] == hit.rerank_score
+    assert from_cli["score"] == round(hit.score, 6)
+    assert from_cli["rerank_score"] == round(hit.rerank_score, 6)
+    # And the rounding is not a no-op on this fixture, or the four assertions
+    # above would agree for a reason that has nothing to do with rounding.
+    assert from_cli["rerank_score"] != from_rest["rerank_score"]

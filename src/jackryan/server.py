@@ -18,8 +18,8 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .ingestion.containers import rar_status
 from .ingestion.legacy_office import converter_status
-from .ingestion.quality_gate import read_as
 from .app import Context, build_context
+from .rendering import render_casefile, render_document, render_hit
 from .errors import (
     AmbiguousReferenceError,
     ConflictError,
@@ -50,15 +50,7 @@ class CasefileUpdate(BaseModel):
 
 
 def serialize(casefile: Casefile) -> dict[str, Any]:
-    return {
-        "id": casefile.id,
-        "short_id": casefile.short_id,
-        "slug": casefile.slug,
-        "title": casefile.title,
-        "description": casefile.description,
-        "created_at": casefile.created_at.isoformat(),
-        "updated_at": casefile.updated_at.isoformat(),
-    }
+    return render_casefile(casefile)
 
 
 class IngestRequest(BaseModel):
@@ -66,60 +58,27 @@ class IngestRequest(BaseModel):
 
 
 def serialize_document(document: Document) -> dict[str, Any]:
+    """The shared fields, plus the three a remote caller gets and the CLI does not.
+
+    `casefile_id` because a response may be read without the request that
+    produced it; `updated_at` because a caller polling for change needs it; and
+    the summary whether or not there is one, because a JSON consumer branching
+    on a missing key is worse served than one branching on an empty string.
+    """
     return {
-        "id": document.id,
-        "short_id": document.short_id,
+        **render_document(document),
         "casefile_id": document.casefile_id,
-        "filename": document.filename,
-        "media_type": document.media_type,
-        "byte_size": document.byte_size,
-        "extractor": document.extractor,
-        # Same key and same vocabulary as every other surface, so a person and
-        # an assistant are never given two words for one fact.
-        "read_as": read_as(document.text_source),
-        "characters": len(document.extracted_text),
         # Model-written, not the document's own words, which is why the producer
         # travels beside it. Empty unless a summariser was configured at ingest.
         "summary": document.summary,
         "summary_by": document.summary_by,
-        "created_at": document.created_at.isoformat(),
         "updated_at": document.updated_at.isoformat(),
     }
 
 
 def serialize_hit(hit: SearchHit) -> dict[str, Any]:
-    return {
-        "chunk_id": hit.chunk.id,
-        "document_id": hit.document.id,
-        "document": hit.document.filename,
-        "score": hit.score,
-        # Never in place of `score`: the fusion score and an uncalibrated
-        # cross-encoder logit are different quantities, and the logit is
-        # comparable only within this response.
-        "rerank_score": hit.rerank_score,
-        "ranking": hit.ranking,
-        "keyword_rank": hit.keyword_rank,
-        "vector_rank": hit.vector_rank,
-        "heading_path": hit.chunk.heading_path,
-        # The context that was folded into what was embedded for this passage,
-        # empty unless folding was on. Surfaced so an operator can audit the
-        # fold: the stored text is deliberately unchanged by it, so this is the
-        # only place the difference is visible.
-        "summary": hit.chunk.summary,
-        # The span of the text returned, which is wider than the matched passage
-        # wherever the result was widened. The passage keeps its own span below,
-        # because it is what a citation quotes.
-        "char_start": hit.char_start,
-        "char_end": hit.char_end,
-        "matched_char_start": hit.chunk.char_start,
-        "matched_char_end": hit.chunk.char_end,
-        "narrowed": hit.narrowed,
-        # A person reading a hit is told how its text was obtained, exactly as
-        # the agent surface is. Recognition renders a word as a plausible
-        # different word, and a quotation from a scan can be fluent and wrong.
-        "read_as": read_as(hit.document.text_source),
-        "text": hit.text,
-    }
+    """Unrounded, unlike the CLI: a remote caller may want the value it was given."""
+    return render_hit(hit, round_scores=False)
 
 
 def create_app(context: Context | None = None) -> FastAPI:
