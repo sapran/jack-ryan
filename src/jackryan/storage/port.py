@@ -256,6 +256,37 @@ class MentionFacet:
     documents: int
 
 
+@dataclass(frozen=True)
+class CasefileStatistics:
+    """The size and shape of one casefile, counted in the database.
+
+    A domain object rather than a dict because this port speaks in domain
+    objects: a dict of five keys puts the field names in a string, where a typo
+    is a `KeyError` at the surface and a rename is silent. The names here are the
+    ones every adapter reports, and they deliberately do not match the SQL
+    aliases that produce them — `documents_ingested` reads as what it is, where
+    a bare `ingested` beside `documents` reads as a different unit.
+    """
+
+    # Every document in the casefile, however it arrived.
+    documents: int
+    # Split by how they arrived, because the totals answer different questions.
+    # A casefile of three archives holding forty thousand documents is both "3"
+    # and "40,003", and a figure offered without saying which misrepresents the
+    # size of the corpus — which an agent then repeats as coverage.
+    documents_ingested: int
+    documents_expanded: int
+    # Characters of extracted text, summed in the database. Loading every
+    # document's text to measure it costs the whole corpus in memory for one
+    # integer.
+    characters: int
+    # Media type to count. A mapping rather than a tuple of pairs: it is handed
+    # to the agent surface as a payload field and iterated for a formatted
+    # block, and `Extraction.metadata` sets the precedent for a mapping inside a
+    # frozen dataclass.
+    by_type: dict[str, int]
+
+
 class StorePort(Protocol):
     """What the service layer requires of a store."""
 
@@ -330,7 +361,7 @@ class StorePort(Protocol):
 
     def find_chunks_by_id_prefix(self, casefile_id: str, prefix: str) -> list[Chunk]: ...
 
-    def casefile_statistics(self, casefile_id: str) -> dict[str, object]: ...
+    def casefile_statistics(self, casefile_id: str) -> CasefileStatistics: ...
 
     def get_document_chunks_around(
         self, document_id: str, ordinal: int, radius: int

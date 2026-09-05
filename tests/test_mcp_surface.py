@@ -156,6 +156,51 @@ async def test_an_unrecognised_profile_narrows_rather_than_widens(context):
 
 
 @pytest.mark.anyio
+async def test_the_overview_reports_the_corpus_it_was_asked_about(server, loaded):
+    """The one call that tells an agent how big a casefile is.
+
+    Nothing exercised this tool before. That matters more than it sounds:
+    `case_casefile_overview` is where the surface states corpus size, and
+    `CLAUDE.md` notes an agent then repeats that as coverage. A wrong figure
+    here is not a wrong number, it is a false coverage claim.
+
+    The key set is asserted exactly rather than key by key, because the failure
+    this guards against is a *renamed* key, not a missing value. The store's SQL
+    aliases these columns `ingested` and `expanded` while the payload calls them
+    `documents_ingested` and `documents_expanded`; anything carrying the alias
+    outward would still be truthy, still be counted, and quietly change the
+    agent-facing contract.
+    """
+    context, casefile = loaded
+    body = await call(server, "case_casefile_overview", {"casefile": casefile.short_id})
+
+    assert set(body) == {
+        "casefile",
+        "document_count",
+        "documents_ingested",
+        "documents_expanded",
+        "total_characters",
+        "documents_by_type",
+        "formatted",
+    }
+
+    documents = context.ingestion.list_documents(casefile.short_id)
+    assert body["document_count"] == len(documents) == 3
+    # The `corpus` fixture is three files on disk, so every document was
+    # ingested directly and none came out of a container.
+    assert body["documents_ingested"] == 3
+    assert body["documents_expanded"] == 0
+    assert body["total_characters"] == sum(len(d.extracted_text) for d in documents)
+    assert sum(body["documents_by_type"].values()) == 3
+
+    assert body["casefile"]["slug"] == casefile.slug
+    assert "3 documents" in body["formatted"]
+    # The expansion clause appears only when something was expanded; saying
+    # "0 expanded from containers" for a plain folder is noise an agent repeats.
+    assert "expanded from containers" not in body["formatted"]
+
+
+@pytest.mark.anyio
 async def test_search_separates_index_from_bodies(server):
     body = await call(server, "case_search", {"casefile": "harbour-inquiry", "query": "harbour lease"})
     assert body["formatted"]
