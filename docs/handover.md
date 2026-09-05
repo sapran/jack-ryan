@@ -1038,6 +1038,21 @@ A delta-free change does not simply validate. `openspec validate` refuses it —
 metadata**. The first attempt set only the marker and got a second error saying
 so. This is the first change here to use it.
 
+**A review then found the sharper problem: half of one new assertion could not
+fail.** `assert from_cli["score"] == round(from_rest["score"], 6)` holds whether
+or not REST rounded, because rounding an already-rounded value changes nothing.
+Flipping `serialize_hit` to `round_scores=True` — destroying the one difference
+the parameter exists for, and silently truncating the values a remote caller
+asked for — left **55 tests green**. Both surfaces are now asserted against the
+service's own `hit.score`, `rerank_score` is covered for the first time
+anywhere in the suite, and the fixed test fails on that mutation.
+
+The same review established behaviour preservation by measurement rather than by
+reading: a differential probe over 2 casefiles × 144 document variants × 2304
+search-hit variants, comparing the parent's six renderers against the new ones.
+Zero value differences, zero keys gained or lost, and the REST key order as the
+sole divergence.
+
 And a process failure worth not repeating: `git checkout <file>` to undo a
 mutation-test also discards the uncommitted work in that file. It happened twice
 in this session. The second time the suite stayed green at 697 afterwards — the
