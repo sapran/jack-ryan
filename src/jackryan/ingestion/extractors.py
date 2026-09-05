@@ -32,7 +32,14 @@ from .quality_gate import NATIVE, QualityGate
 #:
 #: Here rather than in either caller because both need it and neither may import
 #: the other: `extractors` is already imported by `router` and by
-#: `legacy_office`, while `router` importing `legacy_office` would close a cycle.
+#: `legacy_office`, and imports neither at module level — so it is the only home
+#: that adds no new dependency edge. Putting it in `router` would make
+#: `legacy_office` depend on `router`, which is backwards: the router selects
+#: extractors, so an extractor must not depend on its selector. That is an
+#: architectural objection, not a cycle — `legacy_office` does not import
+#: `router` at all, and adding the reverse edge imports cleanly. Measured,
+#: because an earlier version of this comment asserted a cycle that does not
+#: exist.
 #: `router` re-exports the name, which is where the tests read it from.
 SCRATCH_STEM = "source"
 

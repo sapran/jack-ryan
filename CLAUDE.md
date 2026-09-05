@@ -362,7 +362,10 @@ same width, which nothing downstream can detect.
   parameters: `jackryan-routed-` is globbed by one test to prove cleanup and
   asserted absent from an error message by another, so they are load-bearing in
   opposite directions. `SCRATCH_STEM` lives in `extractors` because `router`
-  importing `legacy_office` would close a cycle, and is re-exported through
+  importing it would invert the dependency — the router selects extractors, so
+  an extractor must not depend on its selector, an architectural objection
+  rather than the cycle an earlier version of this bullet claimed — and is
+  re-exported through
   `router`, which is where the tests read it.
 - **A container extractor never routes what it holds.** It yields entries and
   stops; the pipeline routes them. That is what makes a format supported inside

@@ -73,10 +73,11 @@ two paths rebuild their `Extraction`; see Impact.
   created and removed before it is refused.
 - One test moves: `tests/test_legacy_office.py` patched `legacy_office.tempfile`,
   and now patches `extractors.tempfile`, which is where the directory is
-  allocated. It would have kept passing either way — `legacy_office.tempfile`
-  was the global module object, so the substitution reached the helper anyway —
-  and that is exactly why it was repointed: a test passing for a reason its
-  reader cannot see is worse than one that fails.
+  allocated. **It had to move**: this change also drops the now-unused
+  `import tempfile` from `legacy_office`, so the old patch target does not
+  exist and the substitution would raise `AttributeError` before the test ran.
+  It also reads better at the new site — but that is the second reason, not the
+  first, and an earlier draft of this bullet had them the wrong way round.
 - **Recorded, not fixed:** the two paths still rebuild their result differently.
   `router` uses `dataclasses.replace`, carrying every field the delegate set;
   `legacy_office` builds a fresh `Extraction`, which overrides `media_type` to

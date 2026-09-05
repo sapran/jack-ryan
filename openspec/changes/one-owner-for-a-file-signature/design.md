@@ -38,7 +38,11 @@ table". Saying which of those is happening matters, because the table is what
 ### `SCRATCH_STEM` goes to `extractors`, not to either caller
 
 `router` and `legacy_office` both import `extractors`, and `router` importing
-`legacy_office` would close a cycle — `extractors` already imports
+`legacy_office` would invert the dependency, since the router selects
+extractors and an extractor must not depend on its selector. Not a cycle: that
+was asserted in an earlier draft and is false — `legacy_office` does not import
+`router` at all, and adding the edge imports cleanly. The real cycle is
+`extractors` ↔ `legacy_office`, already broken because `extractors` imports
 `legacy_office` lazily. So `extractors` is the only home that costs nothing.
 `router` re-exports the name, because that is where `tests/test_content_routing.py`
 imports it from.
