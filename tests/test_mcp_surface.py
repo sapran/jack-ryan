@@ -8,6 +8,7 @@ import pytest
 
 from jackryan.errors import NotFoundError
 from jackryan.interfaces.mcp import build_mcp_server
+from jackryan.interfaces.mcp.errors import TRANSLATES_ERRORS
 from jackryan.interfaces.mcp.annotations import ANNOTATIONS, UnstampedToolError, stamp_for
 from jackryan.interfaces.mcp.profiles import READONLY_TOOLS, tools_for_profile
 
@@ -111,6 +112,11 @@ async def test_every_tool_inherits_the_one_translation(server):
     else here calls, the whole suite stays green — which is exactly what
     happened when it was tried.
 
+    Asked by the stamp rather than by `__wrapped__`: the latter is satisfied by
+    any decorator carrying `functools.wraps`, which is a weaker claim than this
+    test makes. The stamp says *this* translation is the thing that was
+    registered.
+
     `is_async` is the SDK's own record of what it will do with the function. A
     synchronous wrapper is registered as a plain function and run in a worker
     thread, which hands the caller an un-awaited coroutine.
@@ -120,7 +126,7 @@ async def test_every_tool_inherits_the_one_translation(server):
     registered = server._tool_manager.list_tools()  # noqa: SLF001
     assert registered, "no tools were registered"
     for tool in registered:
-        assert getattr(tool.fn, "__wrapped__", None) is not None, (
+        assert getattr(tool.fn, TRANSLATES_ERRORS, False), (
             f"{tool.name} was registered undecorated, so its failures never reach "
             "the one translation"
         )

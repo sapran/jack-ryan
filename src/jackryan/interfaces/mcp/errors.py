@@ -14,6 +14,11 @@ from typing import Any, Awaitable, Callable
 from ...errors import JackRyanError
 
 
+#: Attribute stamped on a translated tool, so a guard can distinguish this
+#: translation from any other decorator that happens to carry `functools.wraps`.
+TRANSLATES_ERRORS = "__jackryan_translates_errors__"
+
+
 def error_payload(code: str, message: str) -> dict[str, Any]:
     return {"error": code, "message": message}
 
@@ -68,4 +73,9 @@ def returns_error_payload(
         except JackRyanError as exc:
             return from_exception(exc)
 
+    # Stamped so the guard can ask whether *this* translation is in place rather
+    # than whether *some* `functools.wraps` decorator is. `__wrapped__` alone
+    # would be satisfied by any other wraps-carrying decorator applied in the
+    # same position, which is a weaker claim than the one the guard makes.
+    setattr(translated, TRANSLATES_ERRORS, True)
     return translated

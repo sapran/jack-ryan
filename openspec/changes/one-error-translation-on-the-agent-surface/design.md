@@ -57,8 +57,15 @@ Two details here are the opposite of the obvious guess, and both were measured
 against the installed SDK rather than reasoned about. The degraded schema is not
 empty — "no parameters at all" would be a friendlier failure than two required
 ones nobody can supply. And `wraps` protects only the *input* schema: the
-structured output schema is identical with and without it, because the wrapper
-declares its own `-> dict[str, Any]`.
+structured output schema survives without it, because the wrapper declares its
+own `-> dict[str, Any]`.
+
+Precisely, since this paragraph exists to correct an over-confident claim and
+should not make another: the output schema's *shape* is unaffected —
+`{"additionalProperties": true, "type": "object"}` either way — while its
+`title` is derived from the function's `__name__` and therefore does change,
+from `case_searchDictOutput` to the wrapper's. Nothing validates against the
+title. "Survives", not "identical".
 
 `eval_str=True` resolves the string annotations that `from __future__ import
 annotations` produces, and it resolves them against the *unwrapped* function's
