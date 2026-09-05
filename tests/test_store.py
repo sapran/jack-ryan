@@ -177,3 +177,94 @@ def test_a_corpus_built_under_one_embedding_library_is_refused_under_another(tmp
     with pytest.raises(ConfigError):
         second.initialize(opened_under.fingerprint(), opened_under.embed_dimensions)
     second.close()
+
+
+# -- the seam itself: who may reach a store -------------------------------
+
+
+#: Only these may name a store: the service layer, the storage package itself,
+#: and the composition root that hands one to the other. Everything else in the
+#: package — all three adapters, and every module below the service layer — is
+#: checked. An exemption list rather than a list of adapters, so a fourth
+#: adapter is covered on the day it is written rather than on the day someone
+#: remembers to add it here.
+_MAY_NAME_A_STORE = {"services", "storage", "app.py"}
+
+#: `store` is the composition root's field; `_store` is the service layer's own.
+#: Both are one attribute away from an adapter that holds a `Context` or a
+#: service, and reaching either is the same breach.
+_STORE_ATTRIBUTES = {"store", "_store"}
+
+
+def test_no_adapter_reaches_the_store():
+    """`storage-seam`: no adapter SHALL reach a store directly.
+
+    Until this was written the agent surface did, at the one call
+    `casefile_statistics`, which was the only port method no service wrapped.
+    It type-checked because the composition root declared its `store` field as
+    the concrete `SqliteStore` rather than as the port, and nothing in this
+    repository type-checks anyway.
+
+    Parsed rather than grepped for two reasons, and a third that sounds good and
+    is false. The true ones: it reports `<any expr>.store`, not only the
+    `context.store` spelling a search would be written for, and it cannot be
+    tripped by the words appearing in a comment or a docstring — including this
+    one. The false one, recorded because the first draft of this test asserted
+    it: a search would *not* be defeated by binding the store to a name first,
+    because `store = context.store` contains the very string being searched for.
+
+    `_store` is checked beside `store` because it is the realistic evasion, not
+    an exotic one. Every adapter already holds a `CasefileService`, whose
+    `_store` is one attribute away — and reaching for it is exactly what someone
+    writes when the service method they need does not exist yet, which is the
+    situation that produced the original breach.
+
+    What this does not catch, stated so nobody trusts it further than it goes: a
+    module that imports `SqliteStore` and constructs one, or that reaches a
+    store through a name this does not know. It catches the accident and the
+    shortcut, not a determined evasion.
+    """
+    import ast
+    from pathlib import Path
+
+    package = Path(__file__).resolve().parents[1] / "src" / "jackryan"
+    assert package.is_dir(), "the package moved; this guard now checks nothing"
+
+    inspected, offences = set(), []
+    for module in sorted(package.rglob("*.py")):
+        relative = module.relative_to(package)
+        if relative.parts[0] in _MAY_NAME_A_STORE:
+            continue
+        inspected.add(relative.as_posix())
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            reached = (
+                isinstance(node, ast.Attribute) and node.attr in _STORE_ATTRIBUTES
+            ) or (
+                # `getattr(context, "store")` is the same reach spelled around
+                # an attribute node.
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value in _STORE_ATTRIBUTES
+            )
+            if reached:
+                offences.append(f"{relative.as_posix()}:{node.lineno}")
+
+    # Named rather than counted. A floor on the number passes the exact
+    # regression this widening exists to prevent: reverting the scan to
+    # `interfaces/` alone still inspects eight modules, so any plausible count
+    # would be satisfied while REST and the CLI went unguarded again.
+    assert {"cli.py", "server.py"} <= inspected, (
+        "the REST and CLI adapters were not inspected; the scan narrowed"
+    )
+    assert any(name.startswith("interfaces/") for name in inspected), (
+        "the agent surface was not inspected; the scan narrowed"
+    )
+    assert not offences, (
+        "a module outside the service layer reaches a store directly, which "
+        "`storage-seam` forbids: " + ", ".join(sorted(set(offences)))
+        + ". The rule belongs in the service layer so every adapter inherits it."
+    )
