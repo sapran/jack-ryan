@@ -1049,8 +1049,14 @@ or not REST rounded, because rounding an already-rounded value changes nothing.
 Flipping `serialize_hit` to `round_scores=True` — destroying the one difference
 the parameter exists for, and silently truncating the values a remote caller
 asked for — left **55 tests green**. Both surfaces are now asserted against the
-service's own `hit.score`, `rerank_score` is covered for the first time
-anywhere in the suite, and the fixed test fails on that mutation.
+service's own `hit.score`, and the fixed test fails on that mutation.
+
+`rerank_score`'s **rounding** is now pinned too, which it was not on either
+human surface. The first draft of this paragraph said it was "covered for the
+first time anywhere in the suite" — false, and caught by review: the field is
+already asserted on the agent payload in `test_result_shape.py` and at the
+service level in `test_reranking.py`. What was uncovered was narrower and is
+what this actually delivers.
 
 The same review established behaviour preservation by measurement rather than by
 reading: a differential probe over 2 casefiles × 144 document variants × 2304

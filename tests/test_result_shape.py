@@ -614,10 +614,20 @@ def test_the_two_human_surfaces_agree_on_every_shared_document_field(context, co
     mattered. The nine fields below are now produced once, so this asserts a
     property of the code rather than a coincidence between two copies.
 
-    The divergence is asserted too, in both directions. A shared renderer is
-    only an improvement if it makes the sharing structural *and* leaves the
-    deliberate differences visible — otherwise the next reader deletes one of
-    them as duplication.
+    The divergence is asserted too, and asymmetrically — which is worth saying
+    rather than glossing. REST's four extra fields are unconditional, so
+    comparing the difference exactly pins them. The CLI's extras are all
+    *conditional* — `found_at`, `children`, `summary`, `summary_by` — and this
+    corpus triggers none of them, so its side of the assertion pins "the CLI
+    added nothing **here**", not "the CLI's divergence is what we intend".
+    Deleting the `found_at` and `children` blocks outright would keep this
+    green; that gap is recorded in `docs/implementation-notes.md` rather than
+    closed here, because closing it needs a container fixture this test does
+    not otherwise want.
+
+    A shared renderer is only an improvement if it makes the sharing structural
+    *and* leaves the deliberate differences visible — otherwise the next reader
+    deletes one of them as duplication.
     """
     from jackryan.cli import _render_document
     from jackryan.rendering import render_document
