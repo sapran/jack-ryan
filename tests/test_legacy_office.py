@@ -19,7 +19,7 @@ from xml.etree.ElementTree import ParseError
 
 import pytest
 
-from jackryan.ingestion import legacy_office
+from jackryan.ingestion import extractors, legacy_office
 from jackryan.ingestion.extractors import Extraction, ExtractionError
 from jackryan.ingestion.legacy_office import LegacyOfficeExtractor
 from jackryan.ingestion.quality_gate import NATIVE
@@ -420,14 +420,22 @@ def test_the_scratch_directory_is_removed_whatever_happens(
     use_converter(monkeypatch, a_stub_converter(tmp_path, body))
 
     made: list[Path] = []
-    real_mkdtemp = legacy_office.tempfile.mkdtemp
+    # Patched where the directory is now allocated: `deliver_via_scratch_directory`
+    # in `extractors` makes it for both this path and content routing, and calls
+    # `tempfile.mkdtemp` through the module rather than importing the name, so
+    # the substitution is observed there.
+    #
+    # `extractors.tempfile` *is* the global `tempfile` module, so this is
+    # process-wide rather than scoped to that module — naming `extractors` says
+    # where the allocation happens, not where the patch reaches.
+    real_mkdtemp = extractors.tempfile.mkdtemp
 
     def record(*args, **kwargs):
         created = real_mkdtemp(*args, **kwargs)
         made.append(Path(created))
         return created
 
-    monkeypatch.setattr(legacy_office.tempfile, "mkdtemp", record)
+    monkeypatch.setattr(extractors.tempfile, "mkdtemp", record)
 
     path = tmp_path / name
     path.write_bytes(
