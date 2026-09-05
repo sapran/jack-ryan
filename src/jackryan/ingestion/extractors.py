@@ -7,7 +7,9 @@ depends on how a given format was read.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+import shutil
+import tempfile
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -15,6 +17,24 @@ from typing import Protocol
 from ..config import Profile
 from ..errors import JackRyanError
 from .quality_gate import NATIVE, QualityGate
+
+
+#: The name a file is copied under when it has to be handed to a delegate as
+#: something other than what it is called on disk — the content-routing path in
+#: `router`, and the legacy-Office conversion path in `legacy_office`.
+#:
+#: Fixed rather than derived from the operator's filename. Nothing downstream
+#: reads it — a delegate keys only off the suffix, and every error on these
+#: paths is relabelled with the real `path.name` — while a derived stem lets the
+#: input decide the output name: appending a suffix to an extensionless 251-byte
+#: name exceeds the 255-byte component limit, and a workbook named `..xlsx` has
+#: stem `.`, landing as `..xlsx`, whose suffix openpyxl then refuses.
+#:
+#: Here rather than in either caller because both need it and neither may import
+#: the other: `extractors` is already imported by `router` and by
+#: `legacy_office`, while `router` importing `legacy_office` would close a cycle.
+#: `router` re-exports the name, which is where the tests read it from.
+SCRATCH_STEM = "source"
 
 
 class ExtractionError(JackRyanError):
@@ -311,6 +331,72 @@ class ImageExtractor(_GatedReader):
                 "picture, and decoding it is what costs the memory, so this is bounded "
                 "separately from the file size."
             )
+
+
+def deliver_via_scratch_directory(
+    path: Path,
+    *,
+    prefix: str,
+    produce: Callable[[Path], Path],
+    delegate: Extractor,
+    read_as: str,
+) -> Extraction:
+    """Hand a delegate a file it can read, from a directory that always goes away.
+
+    Two paths need this and had written it twice: `router` when a file's name
+    defeats the registry and its content says what it is, and `legacy_office`
+    when a binary Office file has to be converted before anything can read it.
+    Both make a scratch directory, put a file in it under a name the delegate
+    will accept, delegate, relabel the failure with the name the operator
+    actually has, and remove the directory whatever happened.
+
+    `produce` is the caller's, and that is the whole reason this takes a callable
+    rather than a source path. The two do genuinely different work inside the
+    directory: one copies a file into it, the other runs a converter that writes
+    an output directory and a private profile directory beside the result. A
+    helper that took a finished path could serve only the first.
+
+    `prefix` stays the caller's too. `tests/test_content_routing.py` globs
+    `jackryan-routed-*` to prove cleanup and separately asserts that string never
+    reaches an error message, so the two prefixes are load-bearing in opposite
+    directions and must not be unified.
+
+    The teardown is the point. `docs/handover.md` records two defects found in
+    exactly this shape — a `mkdtemp` outside every `try`, and a converter still
+    writing into the directory after the `finally` had removed it — which is the
+    argument for one implementation rather than two.
+
+    `tempfile.mkdtemp` is called through the module, not imported by name, so a
+    test that patches `tempfile.mkdtemp` still observes the directory this
+    allocates.
+    """
+    try:
+        work = Path(tempfile.mkdtemp(prefix=prefix))
+    except OSError as exc:
+        raise ExtractionError(
+            f"could not make a scratch directory for {path.name}: {exc}"
+        ) from exc
+
+    try:
+        source = produce(work)
+        try:
+            return delegate.extract(source)
+        except ExtractionError as exc:
+            # Named for the file the operator has, not the scratch copy they
+            # will never see.
+            raise ExtractionError(f"{path.name}, read as {read_as}: {exc}") from exc
+        except Exception as exc:
+            # A delegate is supposed to raise only `ExtractionError`, and not all
+            # of them honour it: `SpreadsheetExtractor`'s lazy row iteration
+            # surfaces a bare `ParseError` on a workbook truncated mid-sheet,
+            # which would leave `_ingest_work` and end the run. Narrowed to
+            # `Exception` rather than `BaseException` so the test gate's rung
+            # sentinel still escapes and can still fail a test loudly.
+            raise ExtractionError(
+                f"{path.name}, read as {read_as}: {type(exc).__name__}: {exc}"
+            ) from exc
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def default_extractors(gate: QualityGate | None = None) -> list[Extractor]:
