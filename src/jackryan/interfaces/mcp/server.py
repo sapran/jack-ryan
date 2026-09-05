@@ -16,10 +16,9 @@ from mcp.types import ToolAnnotations
 
 from ... import __version__
 from ...app import Context
-from ...errors import JackRyanError
 from ...storage.port import Casefile, Document
 from .annotations import stamp_for
-from .errors import error_payload, from_exception
+from .errors import returns_error_payload
 from .fencing import NOTICE, fence, new_nonce, provenance, read_as
 from .profiles import resolve_profile_name, tools_for_profile
 from .shapes import listing_payload, one_line, search_payload
@@ -139,11 +138,9 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         description="List the casefiles on this instance. Start here.",
         annotations=_annotations_for("case_list_casefiles"),
     )
+    @returns_error_payload
     async def case_list_casefiles() -> dict[str, Any]:
-        try:
-            casefiles = await off_loop(context.casefiles.list)
-        except JackRyanError as exc:
-            return from_exception(exc)
+        casefiles = await off_loop(context.casefiles.list)
         rows = [_render_casefile(c) for c in casefiles]
         formatted = (
             "\n".join(
@@ -162,12 +159,10 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         ),
         annotations=_annotations_for("case_casefile_overview"),
     )
+    @returns_error_payload
     async def case_casefile_overview(casefile: str) -> dict[str, Any]:
-        try:
-            resolved = await off_loop(context.casefiles.resolve, casefile)
-            stats = await off_loop(context.store.casefile_statistics, resolved.id)
-        except JackRyanError as exc:
-            return from_exception(exc)
+        resolved = await off_loop(context.casefiles.resolve, casefile)
+        stats = await off_loop(context.store.casefile_statistics, resolved.id)
 
         by_type = stats["by_type"]
         # Say what was counted. A casefile of three archives holding forty
@@ -207,11 +202,9 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         description="List a casefile's documents. Useful when the corpus is small enough to enumerate.",
         annotations=_annotations_for("case_list_documents"),
     )
+    @returns_error_payload
     async def case_list_documents(casefile: str) -> dict[str, Any]:
-        try:
-            documents = await off_loop(context.ingestion.list_documents, casefile)
-        except JackRyanError as exc:
-            return from_exception(exc)
+        documents = await off_loop(context.ingestion.list_documents, casefile)
         rows = [_render_document(d) for d in documents]
         formatted = (
             "\n".join(
@@ -239,6 +232,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         ),
         annotations=_annotations_for("case_search"),
     )
+    @returns_error_payload
     async def case_search(
         casefile: str, query: str, limit: int = 10, mention: str = ""
     ) -> dict[str, Any]:
@@ -247,18 +241,15 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         # Clamp the value itself: `limit or 10` would treat an explicit 0 as
         # unset and hand back the maximum, clamping in the wrong direction.
         bounded = max(1, min(int(limit), MAX_SEARCH_RESULTS))
-        try:
-            resolved = await off_loop(context.casefiles.resolve, casefile)
-            # Positional, and that is load-bearing: `anyio.to_thread.run_sync`
-            # passes only positional arguments through, so a keyword here would
-            # be a TypeError at the first filtered search rather than at import.
-            # Starlette's `run_in_threadpool` does forward keywords, so the REST
-            # route is free to use one — the asymmetry is easy to miss.
-            hits = await anyio.to_thread.run_sync(
-                context.search.search, casefile, query, bounded, mention
-            )
-        except JackRyanError as exc:
-            return from_exception(exc)
+        resolved = await off_loop(context.casefiles.resolve, casefile)
+        # Positional, and that is load-bearing: `anyio.to_thread.run_sync`
+        # passes only positional arguments through, so a keyword here would
+        # be a TypeError at the first filtered search rather than at import.
+        # Starlette's `run_in_threadpool` does forward keywords, so the REST
+        # route is free to use one — the asymmetry is easy to miss.
+        hits = await anyio.to_thread.run_sync(
+            context.search.search, casefile, query, bounded, mention
+        )
         return search_payload(hits, query=query, casefile_id=resolved.id)
 
     @server.tool(
@@ -273,16 +264,14 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         ),
         annotations=_annotations_for("case_mentions"),
     )
+    @returns_error_payload
     async def case_mentions(
         casefile: str, kind: str = "", limit: int = 50
     ) -> dict[str, Any]:
-        try:
-            resolved = await off_loop(context.casefiles.resolve, casefile)
-            facets = await anyio.to_thread.run_sync(
-                context.search.mention_facets, casefile, kind, limit
-            )
-        except JackRyanError as exc:
-            return from_exception(exc)
+        resolved = await off_loop(context.casefiles.resolve, casefile)
+        facets = await anyio.to_thread.run_sync(
+            context.search.mention_facets, casefile, kind, limit
+        )
 
         rows = [
             {
@@ -345,14 +334,12 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         ),
         annotations=_annotations_for("case_get_passage"),
     )
+    @returns_error_payload
     async def case_get_passage(casefile: str, chunk_id: str) -> dict[str, Any]:
-        try:
-            resolved = await off_loop(context.casefiles.resolve, casefile)
-            chunk, document = await anyio.to_thread.run_sync(
-                context.search.resolve_passage, casefile, chunk_id
-            )
-        except JackRyanError as exc:
-            return from_exception(exc)
+        resolved = await off_loop(context.casefiles.resolve, casefile)
+        chunk, document = await anyio.to_thread.run_sync(
+            context.search.resolve_passage, casefile, chunk_id
+        )
 
         # The same window rule a search result gets, asked of the service rather
         # than assembled here. This tool used to reach past the service layer for
@@ -399,16 +386,14 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         ),
         annotations=_annotations_for("case_read_document"),
     )
+    @returns_error_payload
     async def case_read_document(
         casefile: str, document: str, offset: int = 0, limit: int = MAX_DOCUMENT_CHARS
     ) -> dict[str, Any]:
-        try:
-            resolved = await off_loop(context.casefiles.resolve, casefile)
-            found = await anyio.to_thread.run_sync(
-                context.ingestion.resolve_document, casefile, document
-            )
-        except JackRyanError as exc:
-            return from_exception(exc)
+        resolved = await off_loop(context.casefiles.resolve, casefile)
+        found = await anyio.to_thread.run_sync(
+            context.ingestion.resolve_document, casefile, document
+        )
 
         text = found.extracted_text
         start = max(0, int(offset))
@@ -475,14 +460,12 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         ),
         annotations=_annotations_for("case_cite"),
     )
+    @returns_error_payload
     async def case_cite(casefile: str, chunk_id: str) -> dict[str, Any]:
-        try:
-            resolved = await off_loop(context.casefiles.resolve, casefile)
-            chunk, document = await anyio.to_thread.run_sync(
-                context.search.resolve_passage, casefile, chunk_id
-            )
-        except JackRyanError as exc:
-            return from_exception(exc)
+        resolved = await off_loop(context.casefiles.resolve, casefile)
+        chunk, document = await anyio.to_thread.run_sync(
+            context.search.resolve_passage, casefile, chunk_id
+        )
 
         heading = one_line(chunk.heading_path, 60)
         where = f", {heading}" if heading else ""

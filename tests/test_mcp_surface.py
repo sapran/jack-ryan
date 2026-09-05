@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from jackryan.errors import NotFoundError
 from jackryan.interfaces.mcp import build_mcp_server
 from jackryan.interfaces.mcp.annotations import ANNOTATIONS, UnstampedToolError, stamp_for
 from jackryan.interfaces.mcp.profiles import READONLY_TOOLS, tools_for_profile
@@ -202,6 +203,69 @@ async def test_a_passage_from_another_casefile_is_not_reachable(server, context,
         server, "case_get_passage", {"casefile": "harbour-inquiry", "chunk_id": stolen}
     )
     assert body["error"] == "not_found"
+
+
+@pytest.mark.anyio
+async def test_every_advertised_tool_still_declares_its_parameters(server):
+    """One translation for every tool must not cost the tools their signatures.
+
+    The SDK builds each advertised input schema from the tool function's
+    signature, and reaches the real one through `__wrapped__` — so a decorator
+    applied without `functools.wraps` leaves every tool advertising `*args,
+    **kwargs`, which is a schema with no properties at all. An agent is then
+    told the tools take no arguments and every real call is refused.
+
+    Nothing else here would notice. The tools would still be listed, still be
+    named `case_*`, and still be stamped, so the checks above stay green while
+    the surface is unusable.
+    """
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    expected = {
+        "case_list_casefiles": set(),
+        "case_casefile_overview": {"casefile"},
+        "case_list_documents": {"casefile"},
+        "case_search": {"casefile", "query", "limit", "mention"},
+        "case_mentions": {"casefile", "kind", "limit"},
+        "case_get_passage": {"casefile", "chunk_id"},
+        "case_read_document": {"casefile", "document", "offset", "limit"},
+        "case_cite": {"casefile", "chunk_id"},
+    }
+    assert set(tools) == set(expected), "the advertised set changed"
+    for name, parameters in expected.items():
+        declared = set(tools[name].input_schema.get("properties", {}))
+        assert declared == parameters, f"{name} advertises {declared or 'nothing'}"
+
+
+@pytest.mark.anyio
+async def test_a_typed_failure_after_the_opening_calls_is_still_a_payload(
+    server, loaded, monkeypatch
+):
+    """A tool returns a payload however far through its work it fails.
+
+    `mcp-tool-surface` says a tool SHALL NOT raise. `case_get_passage` asks the
+    service for a window *after* resolving the passage, and that call used to
+    sit outside the tool's own `try` — so a typed failure from it left the tool
+    as an exception, which an agent can only retry rather than branch on.
+
+    Reached through the real service object the server closed over, so this
+    exercises the tool's whole body rather than a re-implementation of it.
+    """
+    context, casefile = loaded
+
+    def refuses(*_args, **_kwargs):
+        raise NotFoundError("the passage window went away")
+
+    hits = await call(
+        server, "case_search", {"casefile": casefile.short_id, "query": "harbour lease"}
+    )
+    chunk_id = hits["results"][0]["chunk_id"]
+    monkeypatch.setattr(context.search, "passage_window", refuses)
+
+    body = await call(
+        server, "case_get_passage", {"casefile": casefile.short_id, "chunk_id": chunk_id}
+    )
+    assert body["error"] == "not_found"
+    assert "the passage window went away" in body["message"]
 
 
 @pytest.mark.anyio

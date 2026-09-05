@@ -872,6 +872,52 @@ because giving the image a non-root user is its own change.
 ---
 
 
+## One error translation on the agent surface — 2026-09-05
+
+The first of five changes from an architecture review of the same date. The
+review scoped itself to the hot spots of the last 25 commits and rated five
+candidates Strong; this is the one with no dependencies, so it went first.
+
+**What it settles.** `service-adapter-boundary` requires every adapter to
+translate typed errors "in exactly one place rather than per route or per
+command". REST did. The agent surface wrote the same three lines eight times, so
+the rule was enforced eight times and a ninth tool would have inherited nothing.
+There is now one decorator, `returns_error_payload`, and the eight blocks are
+gone.
+
+**What it fixes that was not the point.** In five of the eight tools the `try`
+closed before the payload was built. `case_get_passage` asks the service for a
+window *after* it closed, so a typed failure there left the tool raising — which
+`mcp-tool-surface` forbids in as many words. Traced before claiming it: nothing
+on `passage_window → _window_for → get_document_chunks_around` raises a
+`JackRyanError` today, so **no live behaviour changed**. The hole was closed
+before anything reached it.
+
+**What was measured rather than argued.** Three mutations, each watched failing
+and then reversed:
+
+- `functools.wraps` removed → `case_list_casefiles advertises {'kwargs', 'args'}`.
+  Without it every tool advertises a schema with no parameters and every real
+  call is refused.
+- the wrapper made synchronous → 12 of 19 tests in `test_mcp_surface.py` fail
+  with `UnexpectedToolError`. `inspect.iscoroutinefunction` does not follow
+  `__wrapped__`, so the tool is run in a worker thread and hands back an
+  un-awaited coroutine.
+- the old narrow `try` restored on `case_get_passage` alone → the new widening
+  test fails with `UnexpectedToolError: Error executing tool case_get_passage`,
+  i.e. the tool raised.
+
+**What it did not check.** The suite went 689 → 691 passing, same 3 skips, and
+the whole diff was read hunk by hunk afterwards to confirm no mutation survived.
+Not checked: any live agent harness — this was exercised only through
+`server.call_tool` in-process, as the rest of the surface tests are. The two
+tools whose payloads are built entirely outside the old block were not given
+their own failure tests; the widening is asserted once, on `case_get_passage`,
+because that is the only one with a service call out there.
+
+---
+
+
 ## What this environment could not do, so you should not trust it was checked
 
 - **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real

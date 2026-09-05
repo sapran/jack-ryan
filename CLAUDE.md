@@ -252,6 +252,24 @@ same width, which nothing downstream can detect.
   as enforcement.
 - **Tool names are a contract.** Saved prompts and the shipped analyst pack name
   the `case_*` tools; renaming one breaks them.
+- **A decorator on a tool must carry `functools.wraps` and must be `async def`.**
+  `returns_error_payload` translates every tool's typed failures in one place,
+  which `service-adapter-boundary` requires — but the SDK reads a tool two ways
+  and only one of them unwraps. `inspect.signature(fn, eval_str=True)` follows
+  `__wrapped__`, so the advertised input schema and the structured output schema
+  survive `wraps` and are lost without it: every tool then advertises `*args,
+  **kwargs`, which is a schema with no parameters at all, and every real call is
+  refused. `inspect.iscoroutinefunction` does *not* follow `__wrapped__`, so a
+  synchronous wrapper is registered as a plain function, run in a worker thread,
+  and hands back an un-awaited coroutine. Neither failure is visible to a test
+  that only lists tool names — which is why the advertised parameters of all
+  eight are asserted in `tests/test_mcp_surface.py`.
+- **The tool translation covers the whole tool, deliberately.** A tool builds its
+  payload after the calls it awaited and may reach the service layer again while
+  doing so — `case_get_passage` asks for its window there. `mcp-tool-surface`
+  says a tool SHALL NOT raise, so the translation wraps the function rather than
+  its opening calls. Keep the catch at `JackRyanError`: widening it to
+  `Exception` would turn a crash into a typed payload an agent retries forever.
 - **Docling PDF extraction needs models on first use.** Markdown, HTML, DOCX and
   PPTX parse offline. Build the image with `--build-arg PREFETCH_MODELS=true`
   for a container that is offline from its first run.
