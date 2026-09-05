@@ -252,6 +252,32 @@ same width, which nothing downstream can detect.
   as enforcement.
 - **Tool names are a contract.** Saved prompts and the shipped analyst pack name
   the `case_*` tools; renaming one breaks them.
+- **A decorator on a tool must carry `functools.wraps`, must be `async def`, and
+  must go *below* `@server.tool(...)`.** `returns_error_payload` translates every
+  tool's typed failures in one place, which `service-adapter-boundary` requires —
+  but the SDK reads a tool two ways and only one of them unwraps.
+  `inspect.signature(fn, eval_str=True)` follows `__wrapped__`, so the advertised
+  input schema survives `wraps`; without it a tool advertises the wrapper's own
+  two parameters, `args` and `kwargs`, both required, and every call fails for
+  missing arguments. (The degraded schema is *not* empty, and the structured
+  output schema is unaffected either way — the wrapper has its own return
+  annotation. Both were measured; both are the opposite of the obvious guess.)
+  `inspect.iscoroutinefunction` does *not* follow `__wrapped__`, so a synchronous
+  wrapper is registered as a plain function, run in a worker thread, and hands
+  back an un-awaited coroutine.
+  The ordering is the quiet one: applied *above* `@server.tool`, the SDK
+  registers the undecorated function, so the translation still reads correctly
+  and never runs. On a tool nothing calls, that leaves the whole suite green —
+  which is why `test_every_tool_inherits_the_one_translation` inspects what was
+  registered rather than trusting the call sites, and why the advertised
+  parameters and `required` lists are asserted separately.
+- **The tool translation covers the whole tool, deliberately.** A tool builds its
+  payload after the calls it awaited and may reach the service layer again while
+  doing so — `case_get_passage` asks for its window there. `mcp-tool-surface`
+  says a tool SHALL NOT raise, so the translation wraps the function rather than
+  its opening calls. Keep the catch at `JackRyanError`: an agent *branches* on a
+  returned value, so widening to `Exception` would dress a crash as an ordinary
+  answer and the agent would carry on as though it had one.
 - **Docling PDF extraction needs models on first use.** Markdown, HTML, DOCX and
   PPTX parse offline. Build the image with `--build-arg PREFETCH_MODELS=true`
   for a container that is offline from its first run.
