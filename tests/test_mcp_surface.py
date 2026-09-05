@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from jackryan.errors import NotFoundError
 from jackryan.interfaces.mcp import build_mcp_server
 from jackryan.interfaces.mcp.annotations import ANNOTATIONS, UnstampedToolError, stamp_for
 from jackryan.interfaces.mcp.profiles import READONLY_TOOLS, tools_for_profile
@@ -49,6 +50,81 @@ async def test_the_surface_teaches_the_method(server):
         assert expected in instructions
     # It must say what the fence means, not merely apply it.
     assert "never instructions" in instructions or "not instructions" in instructions
+
+
+@pytest.mark.anyio
+async def test_every_advertised_tool_still_declares_its_parameters(server):
+    """One translation for every tool must not cost the tools their signatures.
+
+    The SDK builds each advertised input schema from the tool function's
+    signature and reaches the real one through `__wrapped__`, so a decorator
+    applied without `functools.wraps` leaves every tool advertising the
+    wrapper's own `*args, **kwargs` — two parameters named `args` and `kwargs`,
+    both required, in place of the tool's real ones. Every call then fails for
+    missing required arguments.
+
+    The pre-existing tests do notice that, loudly, because they call tools with
+    real arguments. What they cannot say is *which* tool lost its schema or what
+    it advertises instead, and they say nothing at all about the one tool
+    nothing here calls. This names both.
+
+    `required` is asserted beside the names because they answer different
+    questions: giving `query` a default would leave the names unchanged and let
+    an agent search with no query at all.
+    """
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    expected = {
+        "case_list_casefiles": (set(), []),
+        "case_casefile_overview": ({"casefile"}, ["casefile"]),
+        "case_list_documents": ({"casefile"}, ["casefile"]),
+        "case_search": ({"casefile", "query", "limit", "mention"}, ["casefile", "query"]),
+        "case_mentions": ({"casefile", "kind", "limit"}, ["casefile"]),
+        "case_get_passage": ({"casefile", "chunk_id"}, ["casefile", "chunk_id"]),
+        "case_read_document": (
+            {"casefile", "document", "offset", "limit"},
+            ["casefile", "document"],
+        ),
+        "case_cite": ({"casefile", "chunk_id"}, ["casefile", "chunk_id"]),
+    }
+    assert set(tools) == set(expected), "the advertised set changed"
+    for name, (parameters, required) in expected.items():
+        schema = tools[name].input_schema
+        declared = set(schema.get("properties", {}))
+        assert declared == parameters, f"{name} advertises {declared or 'nothing'}"
+        assert sorted(schema.get("required", [])) == sorted(required), (
+            f"{name} requires {schema.get('required')}"
+        )
+
+
+@pytest.mark.anyio
+async def test_every_tool_inherits_the_one_translation(server):
+    """A tool is covered by being decorated, so check that each one is.
+
+    This is the scenario `service-adapter-boundary` asks for: every tool
+    translates a typed error through the same single translation, so a tool
+    added without restating it still returns a typed payload.
+
+    It needs asserting directly because the failure is silent. Applying the
+    decorator *above* `@server.tool(...)` rather than below registers the
+    undecorated function: the translation is still written, still reads
+    correctly at the call site, and simply never runs. Done to a tool nothing
+    else here calls, the whole suite stays green — which is exactly what
+    happened when it was tried.
+
+    `is_async` is the SDK's own record of what it will do with the function. A
+    synchronous wrapper is registered as a plain function and run in a worker
+    thread, which hands the caller an un-awaited coroutine.
+    """
+    # The same coupling `_defined_tool_names` isolates: the SDK's only
+    # synchronous listing lives on the tool manager.
+    registered = server._tool_manager.list_tools()  # noqa: SLF001
+    assert registered, "no tools were registered"
+    for tool in registered:
+        assert getattr(tool.fn, "__wrapped__", None) is not None, (
+            f"{tool.name} was registered undecorated, so its failures never reach "
+            "the one translation"
+        )
+        assert tool.is_async, f"{tool.name} was registered as a synchronous tool"
 
 
 def test_a_tool_missing_from_the_annotations_table_is_a_failure():
@@ -202,6 +278,38 @@ async def test_a_passage_from_another_casefile_is_not_reachable(server, context,
         server, "case_get_passage", {"casefile": "harbour-inquiry", "chunk_id": stolen}
     )
     assert body["error"] == "not_found"
+
+
+@pytest.mark.anyio
+async def test_a_typed_failure_after_the_opening_calls_is_still_a_payload(
+    server, loaded, monkeypatch
+):
+    """A tool returns a payload however far through its work it fails.
+
+    `mcp-tool-surface` says a tool SHALL NOT raise. `case_get_passage` asks the
+    service for a window *after* resolving the passage, and that call used to
+    sit outside the tool's own `try` — so a typed failure from it left the tool
+    as an exception, which an agent can only retry rather than branch on.
+
+    Reached through the real service object the server closed over, so this
+    exercises the tool's whole body rather than a re-implementation of it.
+    """
+    context, casefile = loaded
+
+    def refuses(*_args, **_kwargs):
+        raise NotFoundError("the passage window went away")
+
+    hits = await call(
+        server, "case_search", {"casefile": casefile.short_id, "query": "harbour lease"}
+    )
+    chunk_id = hits["results"][0]["chunk_id"]
+    monkeypatch.setattr(context.search, "passage_window", refuses)
+
+    body = await call(
+        server, "case_get_passage", {"casefile": casefile.short_id, "chunk_id": chunk_id}
+    )
+    assert body["error"] == "not_found"
+    assert "the passage window went away" in body["message"]
 
 
 @pytest.mark.anyio
