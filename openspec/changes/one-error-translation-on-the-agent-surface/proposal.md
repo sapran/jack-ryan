@@ -48,10 +48,15 @@ the translation, and a typed error from it propagates as a transport failure.
   `passage_window` is now a payload. Nothing on that path raises a
   `JackRyanError` today, so no live behaviour changes — the seam is closed
   before it is reached, not after.
-- **The advertised input schemas are asserted.** A decorator applied without
-  `functools.wraps` would leave all eight tools advertising `*args, **kwargs`,
-  a schema with no parameters at all, and every existing surface test would
-  still pass. That is now a test rather than a hazard.
+- **What was registered is inspected, not inferred from the call sites.** Three
+  ways of applying this decorator wrongly are silent to some or all of the
+  suite: without `functools.wraps` a tool advertises the wrapper's own two
+  required parameters instead of its own; a synchronous wrapper is registered as
+  a plain function; and applied *above* `@server.tool(...)` the SDK registers
+  the undecorated function, so the translation never runs. The last one, done to
+  a tool nothing else calls, leaves the entire suite green. Two tests now assert
+  the advertised parameters and `required` lists, and that every registered tool
+  is the wrapper and is async.
 
 **Deliberately not in scope.** The catch stays `JackRyanError`. Widening it to
 `Exception` would convert a crash into a typed payload — a behaviour change in

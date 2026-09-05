@@ -44,10 +44,15 @@ def returns_error_payload(
 
     `functools.wraps` is not cosmetic here. `Tool.from_function` builds the
     advertised input schema from `inspect.signature(fn, eval_str=True)`, which
-    follows `__wrapped__` back to the real tool; without it every tool would
-    advertise `*args, **kwargs` — a schema with no parameters at all — and the
-    return annotation that produces the structured output schema would be lost
-    with it.
+    follows `__wrapped__` back to the real tool. Without it a tool advertises
+    this wrapper's own parameters instead — two, named `args` and `kwargs`, both
+    required — so every real call fails for missing required arguments against a
+    schema no agent could satisfy.
+
+    Measured rather than reasoned, because the obvious guess is wrong twice
+    over: the degraded schema is not empty but two-and-required, and the
+    structured *output* schema is unaffected either way, since the wrapper
+    carries its own `dict[str, Any]` return annotation.
 
     The wrapper must be `async def`. The SDK decides that with
     `inspect.iscoroutinefunction` against the *wrapper*, and that does not

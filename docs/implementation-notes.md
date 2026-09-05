@@ -6,6 +6,63 @@ and why it was parked.
 
 ## Parked
 
+- **Every agent-surface failure now passes through one place, and that place
+  emits nothing.** `returns_error_payload` (`interfaces/mcp/errors.py`) reduces
+  a `JackRyanError` to `{"error": code, "message": text}`, discarding the type
+  and the traceback, and there is no logging call anywhere in `src/jackryan` —
+  `grep` for `import logging`, `getLogger` and `logger.` returns nothing, and
+  `services/search.py:534` concedes it in a comment. This was tolerable as eight
+  visible three-line blocks; it is more pointed now that the surface has exactly
+  one funnel. An analyst asking why the assistant reported an empty casefile has
+  no artifact to consult. Parked rather than fixed: giving this project a logger
+  is its own change, with its own decisions about destination, level and what a
+  public repo may write to disk. Raised by the silent-failure review of
+  `one-error-translation-on-the-agent-surface`, which correctly noted the
+  refactor created the funnel without filling it.
+
+- **A lazily-discovered misconfiguration reaches the agent as ordinary data, and
+  the two adapters disagree about it.** `RerankerUnavailable` is a `ConfigError`
+  raised at query time from `services/search.py:505`, deliberately not caught
+  there — the comment says an instance configured for a reranker it cannot load
+  "must say so rather than serve the fused order as though nothing were wrong".
+  On the agent surface it becomes `{"error": "config_error", ...}`, which only
+  the model sees; whether a human ever learns of it depends on whether the model
+  mentions it. On REST the identical exception is a **500**, because
+  `server.py:32-37` has no `ConfigError` entry and the handler falls back. Same
+  failure, same instant, two dispositions. Pre-existing — it sat inside
+  `case_search`'s old `try` too — and unchanged by that refactor, which is why it
+  was not fixed there. `CLAUDE.md`'s rule has two categories, fatal-at-startup
+  and transient-at-runtime, and this is a third the codebase has not named:
+  wrong configuration discovered lazily.
+
+- **`case_get_passage` reports a detected corpus inconsistency as an ordinary
+  un-widened passage.** `interfaces/mcp/server.py` falls back with
+  `body = window.text if window else chunk.text`, and `_slice`
+  (`services/search.py:613`) returns `None` for two unrelated reasons: a window
+  that would not help, and a chunk whose stored text no longer matches its own
+  offsets — which its docstring says detects a half-completed ingest leaving new
+  text against old offsets. Both collapse to `window is None` and the payload
+  carries nothing to tell them apart. The search path is honest about the
+  analogous case, emitting `narrowed` and `ranking: rerank-unavailable`. Parked:
+  distinguishing them means a new payload field on a published tool surface.
+
+- **An unbuildable reranker is rebuilt on every search.** `reranking/model.py`
+  caches only on success — `self._model` stays `None` when `_load` raises — so
+  `check()` at `services/search.py:505` re-runs the import and the model build
+  once per request, after both retrievers and fusion have already done their
+  work. Harmless while no reranker is named by default, which is why it is
+  parked; it becomes a per-query cost the day one is.
+
+- **`mcp-tool-surface`'s "SHALL NOT raise" is still violated by the untyped
+  conversions.** `int(limit)` in `case_search` and `int(offset)`/`int(limit)` in
+  `case_read_document` raise `ValueError`, which `returns_error_payload`
+  deliberately does not catch — widening it to `Exception` would dress a crash
+  as an answer. So a non-numeric `limit` from an agent still escapes as a
+  transport failure. Pre-existing and unchanged. Parked because the fix is a
+  validation decision (clamp, refuse, or coerce) belonging to whichever change
+  owns the surface's argument handling, not to a refactor of its error
+  translation.
+
 - **The pre-filter sniffs before `_check_readable`, and the fix so far is
   per-symptom rather than a moved gate — so the next thing on this path
   inherits the gap.** `services/ingestion.py:217` asks `extractor_for` — which

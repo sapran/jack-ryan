@@ -52,6 +52,81 @@ async def test_the_surface_teaches_the_method(server):
     assert "never instructions" in instructions or "not instructions" in instructions
 
 
+@pytest.mark.anyio
+async def test_every_advertised_tool_still_declares_its_parameters(server):
+    """One translation for every tool must not cost the tools their signatures.
+
+    The SDK builds each advertised input schema from the tool function's
+    signature and reaches the real one through `__wrapped__`, so a decorator
+    applied without `functools.wraps` leaves every tool advertising the
+    wrapper's own `*args, **kwargs` — two parameters named `args` and `kwargs`,
+    both required, in place of the tool's real ones. Every call then fails for
+    missing required arguments.
+
+    The pre-existing tests do notice that, loudly, because they call tools with
+    real arguments. What they cannot say is *which* tool lost its schema or what
+    it advertises instead, and they say nothing at all about the one tool
+    nothing here calls. This names both.
+
+    `required` is asserted beside the names because they answer different
+    questions: giving `query` a default would leave the names unchanged and let
+    an agent search with no query at all.
+    """
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    expected = {
+        "case_list_casefiles": (set(), []),
+        "case_casefile_overview": ({"casefile"}, ["casefile"]),
+        "case_list_documents": ({"casefile"}, ["casefile"]),
+        "case_search": ({"casefile", "query", "limit", "mention"}, ["casefile", "query"]),
+        "case_mentions": ({"casefile", "kind", "limit"}, ["casefile"]),
+        "case_get_passage": ({"casefile", "chunk_id"}, ["casefile", "chunk_id"]),
+        "case_read_document": (
+            {"casefile", "document", "offset", "limit"},
+            ["casefile", "document"],
+        ),
+        "case_cite": ({"casefile", "chunk_id"}, ["casefile", "chunk_id"]),
+    }
+    assert set(tools) == set(expected), "the advertised set changed"
+    for name, (parameters, required) in expected.items():
+        schema = tools[name].input_schema
+        declared = set(schema.get("properties", {}))
+        assert declared == parameters, f"{name} advertises {declared or 'nothing'}"
+        assert sorted(schema.get("required", [])) == sorted(required), (
+            f"{name} requires {schema.get('required')}"
+        )
+
+
+@pytest.mark.anyio
+async def test_every_tool_inherits_the_one_translation(server):
+    """A tool is covered by being decorated, so check that each one is.
+
+    This is the scenario `service-adapter-boundary` asks for: every tool
+    translates a typed error through the same single translation, so a tool
+    added without restating it still returns a typed payload.
+
+    It needs asserting directly because the failure is silent. Applying the
+    decorator *above* `@server.tool(...)` rather than below registers the
+    undecorated function: the translation is still written, still reads
+    correctly at the call site, and simply never runs. Done to a tool nothing
+    else here calls, the whole suite stays green — which is exactly what
+    happened when it was tried.
+
+    `is_async` is the SDK's own record of what it will do with the function. A
+    synchronous wrapper is registered as a plain function and run in a worker
+    thread, which hands the caller an un-awaited coroutine.
+    """
+    # The same coupling `_defined_tool_names` isolates: the SDK's only
+    # synchronous listing lives on the tool manager.
+    registered = server._tool_manager.list_tools()  # noqa: SLF001
+    assert registered, "no tools were registered"
+    for tool in registered:
+        assert getattr(tool.fn, "__wrapped__", None) is not None, (
+            f"{tool.name} was registered undecorated, so its failures never reach "
+            "the one translation"
+        )
+        assert tool.is_async, f"{tool.name} was registered as a synchronous tool"
+
+
 def test_a_tool_missing_from_the_annotations_table_is_a_failure():
     with pytest.raises(UnstampedToolError):
         stamp_for("case_not_declared")
@@ -203,37 +278,6 @@ async def test_a_passage_from_another_casefile_is_not_reachable(server, context,
         server, "case_get_passage", {"casefile": "harbour-inquiry", "chunk_id": stolen}
     )
     assert body["error"] == "not_found"
-
-
-@pytest.mark.anyio
-async def test_every_advertised_tool_still_declares_its_parameters(server):
-    """One translation for every tool must not cost the tools their signatures.
-
-    The SDK builds each advertised input schema from the tool function's
-    signature, and reaches the real one through `__wrapped__` — so a decorator
-    applied without `functools.wraps` leaves every tool advertising `*args,
-    **kwargs`, which is a schema with no properties at all. An agent is then
-    told the tools take no arguments and every real call is refused.
-
-    Nothing else here would notice. The tools would still be listed, still be
-    named `case_*`, and still be stamped, so the checks above stay green while
-    the surface is unusable.
-    """
-    tools = {tool.name: tool for tool in await server.list_tools()}
-    expected = {
-        "case_list_casefiles": set(),
-        "case_casefile_overview": {"casefile"},
-        "case_list_documents": {"casefile"},
-        "case_search": {"casefile", "query", "limit", "mention"},
-        "case_mentions": {"casefile", "kind", "limit"},
-        "case_get_passage": {"casefile", "chunk_id"},
-        "case_read_document": {"casefile", "document", "offset", "limit"},
-        "case_cite": {"casefile", "chunk_id"},
-    }
-    assert set(tools) == set(expected), "the advertised set changed"
-    for name, parameters in expected.items():
-        declared = set(tools[name].input_schema.get("properties", {}))
-        assert declared == parameters, f"{name} advertises {declared or 'nothing'}"
 
 
 @pytest.mark.anyio

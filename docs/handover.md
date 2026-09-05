@@ -897,8 +897,12 @@ before anything reached it.
 and then reversed:
 
 - `functools.wraps` removed → `case_list_casefiles advertises {'kwargs', 'args'}`.
-  Without it every tool advertises a schema with no parameters and every real
-  call is refused.
+  Without it a tool advertises the wrapper's own two parameters, both required,
+  and every real call fails for missing arguments. Note what this is *not*: the
+  degraded schema is not empty, and the structured output schema survives either
+  way because the wrapper has its own return annotation. The first draft of this
+  entry claimed both, and a review caught it — the corrected version is what the
+  measurement actually shows.
 - the wrapper made synchronous → 12 of 19 tests in `test_mcp_surface.py` fail
   with `UnexpectedToolError`. `inspect.iscoroutinefunction` does not follow
   `__wrapped__`, so the tool is run in a worker thread and hands back an
@@ -906,6 +910,22 @@ and then reversed:
 - the old narrow `try` restored on `case_get_passage` alone → the new widening
   test fails with `UnexpectedToolError: Error executing tool case_get_passage`,
   i.e. the tool raised.
+
+**The fourth mutation is the one worth remembering, and three reviewers had to
+find it.** Applying the decorator *above* `@server.tool(...)` instead of below
+registers the undecorated function: the translation is still written, still
+reads correctly, and never runs. Done to `case_casefile_overview` — the one tool
+no test calls — **the whole 691-test suite stayed green.** The change's own spec
+delta says "WHEN the agent surface's tools are inspected", and nothing inspected.
+
+`test_every_tool_inherits_the_one_translation` now does, over what the SDK
+actually registered rather than over the call sites. Re-run against the same
+mutation it fails with `case_casefile_overview was registered undecorated, so
+its failures never reach the one translation`, and against a synchronous wrapper
+with `case_list_casefiles was registered as a synchronous tool`. That second
+assertion also closes a claim the first draft of the CLAUDE.md pitfall made and
+could not back: the parameters test does *not* catch a sync wrapper, because the
+signature survives `wraps` regardless of async-ness.
 
 **What it did not check.** The suite went 689 → 691 passing, same 3 skips, and
 the whole diff was read hunk by hunk afterwards to confirm no mutation survived.

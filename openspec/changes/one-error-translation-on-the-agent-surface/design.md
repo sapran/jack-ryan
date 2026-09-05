@@ -47,10 +47,18 @@ tool and recovers its parameter names, annotations and defaults — and its
 `dict[str, Any]` return annotation, which is what produces the structured output
 schema.
 
-Without `wraps`, every tool advertises `*args, **kwargs`: a schema with **no
-parameters at all**. An agent is then told the tools take no arguments, and
-every real call is refused as an unexpected argument. Watched failing: with
-`wraps` removed, `case_list_casefiles advertises {'kwargs', 'args'}`.
+Without `wraps`, a tool advertises the wrapper's own parameters: **two, named
+`args` and `kwargs`, both required**. Every real call then fails for missing
+required arguments — pydantic's default `extra="ignore"` drops the arguments the
+agent actually sent, so the failure names the two it did not. Watched failing:
+with `wraps` removed, `case_list_casefiles advertises {'kwargs', 'args'}`.
+
+Two details here are the opposite of the obvious guess, and both were measured
+against the installed SDK rather than reasoned about. The degraded schema is not
+empty — "no parameters at all" would be a friendlier failure than two required
+ones nobody can supply. And `wraps` protects only the *input* schema: the
+structured output schema is identical with and without it, because the wrapper
+declares its own `-> dict[str, Any]`.
 
 `eval_str=True` resolves the string annotations that `from __future__ import
 annotations` produces, and it resolves them against the *unwrapped* function's
