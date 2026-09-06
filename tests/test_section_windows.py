@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from jackryan.services.search import (
+from jackryan.services.windowing import (
     MAX_RESPONSE_CHARS,
     _avoid,
     _section_bounds,
@@ -203,12 +203,15 @@ def test_no_text_is_returned_twice_in_one_response(sectioned):
 
 def test_a_response_that_hits_its_bound_narrows_and_says_so(sectioned, monkeypatch):
     """The bound is not silent: a caller must be able to tell it was applied."""
-    import jackryan.services.search as search_module
+    import jackryan.services.windowing as windowing_module
 
     context, casefile = sectioned
     generous = context.search.search(casefile.short_id, "sentence about the", limit=10)
 
-    monkeypatch.setattr(search_module, "MAX_RESPONSE_CHARS", 1200)
+    # Patched on the module that reads it. `search.py` deliberately does not
+    # re-export the constant: an alias there would let this patch bind to a name
+    # nothing consults, and the bound below would silently stay at 60,000.
+    monkeypatch.setattr(windowing_module, "MAX_RESPONSE_CHARS", 1200)
     hits = context.search.search(casefile.short_id, "sentence about the", limit=10)
 
     narrowed = [h for h in hits if h.narrowed]
@@ -284,7 +287,7 @@ def test_a_result_clipped_by_another_result_says_it_was_narrowed(context, sectio
     assert len(same_document) > 1, "need two results in one document to contest a window"
 
     for hit in same_document:
-        alone, _ = context.search._window_for(
+        alone, _ = context.search._windows.around(
             hit.chunk, hit.document, context.search._window_max_chars
         )
         if alone is not None and not hit.is_widened:
@@ -311,7 +314,7 @@ def test_a_stale_offset_is_not_widened(context, sectioned_corpus):
     text = hit.document.extracted_text
     shifted = replace_fields(hit.document, extracted_text="x" * len(text))
 
-    window, _ = context.search._window_for(
+    window, _ = context.search._windows.around(
         hit.chunk, shifted, context.search._window_max_chars
     )
     assert window is None, "widened a span the stored passage no longer occupies"

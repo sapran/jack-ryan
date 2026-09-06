@@ -1128,6 +1128,122 @@ Unifying that would be a behaviour change inside a change claiming none.
 
 ---
 
+## One owner for the window rule — 2026-09-06
+
+First of the second architecture-review batch — candidates 6 to 8, the three the
+review rated *worth exploring* rather than *strong*.
+
+**What it settles.** `services/search.py` was 671 lines answering three unrelated
+questions, and marked two of the boundaries with its own section comments. The
+window rule was 245 of those lines and had exactly two dependencies on everything
+around it: one store call (`get_document_chunks_around`) and one setting
+(`_window_max_chars`). `_slice` was a method that never said `self`.
+
+That is now `services/windowing.py`, holding a `Windower` built from a **lookup
+function rather than the store**. `StorePort` declares nineteen methods; the
+window rule uses one, and depending on all nineteen meant a test of the rule had
+to build a corpus to answer it. `tests/test_windowing.py` now drives the rule
+against four paragraphs written out in the test — ten tests in 0.07 seconds, no
+store, no ingest, no fixture.
+
+That matters because of a failure this project already had. `CLAUDE.md` records
+that three window tests once passed while proving nothing, because the corpus
+they ran against had one passage per document and a window over a single passage
+is the whole document. The repair at the time was a better fixture. The shape
+that allowed it — inputs implied by a corpus rather than written down — is what
+this change removes.
+
+**The decision that needed measuring, not reasoning.** `MAX_RESPONSE_CHARS` moved
+to the new module and is deliberately **not** re-exported from `search.py`, so a
+stale reference is an `ImportError`. The reason is that
+`tests/test_section_windows.py` monkeypatches it, and the widening loop reads it
+off its own module at call time; an alias would let the patch bind to a name
+nothing consults.
+
+The plan claimed that test's own guard —
+`assert narrowed, "the bound was never reached, so this test says nothing"` —
+would catch it. **It does not**, and the only way to know was to build the
+mutant. With the re-export in place and the patch repointed, the guard *passed*
+and the test failed three assertions later on
+`all(h.text == h.chunk.text for h in narrowed)`. `narrowed` is also set when a
+neighbouring result cuts a window back, so the guard is satisfied by results the
+bound never touched. The protection is real but incidental — it depends on the
+fixture and reports a symptom naming neither the bound nor the patch. Recorded in
+`docs/implementation-notes.md`, not fixed here.
+
+Note also that this is the **opposite** call from `one-owner-for-a-file-signature`
+a day earlier, which required `legacy_office` to import `_OLE2_MAGIC` by name so
+sixteen tests could keep reading it off that module. The rule underneath both is
+the same: a name that survives a move must still mean what its reader thinks. In
+the signature case the readers only read, so an alias is honest; here a reader
+writes, and an alias swallows the write.
+
+**What was actually confirmed.** The 125 moved lines were diffed against their
+originals and are byte-identical — checked with `difflib`, not by eye. Four
+mutations were watched failing and reverted by inverse edit, never by
+`git checkout`: neighbours forced empty (7 of 10 new tests red, three of them on
+their own guards), the forward heading clip removed (2 red across old and new),
+`narrowed` forced `False` (2 red), and the re-export described above.
+
+One assertion in the new tests was wrong when first written — it claimed every
+narrowed result falls back to its passage text — and went red immediately. That
+is the same conflation the parked finding above describes, met from the other
+direction.
+
+**What three reviewers caught that ten new tests had not.** The first version of
+this change was wrong in a way the whole suite was blind to, and two reviewers
+found it independently.
+
+`SearchService._window_max_chars` was kept as a field beside the `Windower` that
+now holds the budget. Before the move that field *was* the live value, read on
+every call; after it, nothing in `src/` read it. Measured, not argued: building
+the `Windower` with a hardcoded `DEFAULT_WINDOW_MAX_CHARS`, or with the
+operator's setting silently doubled, **each passed all 707 tests** — because
+`tests/test_app.py:170`, the composition-root wiring test, asserted on the dead
+copy. An operator setting `window_max_chars: 8000` would have got 3,000-character
+windows while `jackryan status` reported 8,000. That is "stored is not effective"
+in miniature, introduced by a change whose own design document reasons about the
+identical hazard for `MAX_RESPONSE_CHARS` one file over.
+
+It is fixed by making `_window_max_chars` a property reading `Windower.budget`,
+so there is one value. Both mutations now fail that wiring test — `assert 3000 ==
+1234` and `assert 2468 == 1234`.
+
+The review also showed **three branches of the moved rule surviving all ten new
+tests**, two of them surviving the whole suite:
+
+- the **backward** half of `_clip_to_headings` was uncovered anywhere in the
+  repository. A window could reach back across a section heading and pull the
+  section above into a fenced, cited result. Now covered, with a positive
+  control, both halves asserted.
+- `for_results`' `kept is None` branch — the one place a result loses its window
+  entirely to an earlier result, which is the single case the `narrowed` flag
+  exists to disclose. Now covered, using two deliberately overlapping passages
+  as a real chunker produces.
+- `around`'s budget guard. Now covered by asserting the store is asked *nothing*
+  when the budget cannot widen, which is a real property rather than a
+  restatement of the observable.
+
+And it caught the sharpest one: **the new bound test carried the same weak guard
+this change had just parked as a finding.** `assert any(hit.narrowed ...)` reads
+as proof the bound fired and is not, for the reason the parked entry gives. It
+now counts how many results carry a window with and without the bound, which
+only the bound can change; with the bound disabled it fails naming the bound.
+
+Two findings were recorded rather than fixed: `test_widening_is_switched_off_by_a_budget_at_the_chunk_size`
+passes at any budget, and the store lookup is captured at construction.
+
+**What it did not check.** 697 tests passed before and 710 after, which is the
+weak kind of evidence a pure move can offer: a refactor that changes nothing
+observable is also one no existing test can confirm happened. The stronger
+evidence is the byte-identity diff and the mutations. Nothing about window
+behaviour was re-measured, because none changed — retrieval quality was not
+re-run, and `scripts/evaluate_retrieval.py` does not read windows at all
+(`measure()` scores `hit.chunk.text`). Pyright reported diagnostics in the editor
+but resolves imports against the main checkout rather than the worktree, so its
+import errors were noise; CI still runs no type checker.
+
+---
 
 ## What this environment could not do, so you should not trust it was checked
 
