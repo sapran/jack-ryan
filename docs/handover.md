@@ -1190,7 +1190,50 @@ narrowed result falls back to its passage text — and went red immediately. Tha
 is the same conflation the parked finding above describes, met from the other
 direction.
 
-**What it did not check.** 697 tests passed before and 707 after, which is the
+**What three reviewers caught that ten new tests had not.** The first version of
+this change was wrong in a way the whole suite was blind to, and two reviewers
+found it independently.
+
+`SearchService._window_max_chars` was kept as a field beside the `Windower` that
+now holds the budget. Before the move that field *was* the live value, read on
+every call; after it, nothing in `src/` read it. Measured, not argued: building
+the `Windower` with a hardcoded `DEFAULT_WINDOW_MAX_CHARS`, or with the
+operator's setting silently doubled, **each passed all 707 tests** — because
+`tests/test_app.py:170`, the composition-root wiring test, asserted on the dead
+copy. An operator setting `window_max_chars: 8000` would have got 3,000-character
+windows while `jackryan status` reported 8,000. That is "stored is not effective"
+in miniature, introduced by a change whose own design document reasons about the
+identical hazard for `MAX_RESPONSE_CHARS` one file over.
+
+It is fixed by making `_window_max_chars` a property reading `Windower.budget`,
+so there is one value. Both mutations now fail that wiring test — `assert 3000 ==
+1234` and `assert 2468 == 1234`.
+
+The review also showed **three branches of the moved rule surviving all ten new
+tests**, two of them surviving the whole suite:
+
+- the **backward** half of `_clip_to_headings` was uncovered anywhere in the
+  repository. A window could reach back across a section heading and pull the
+  section above into a fenced, cited result. Now covered, with a positive
+  control, both halves asserted.
+- `for_results`' `kept is None` branch — the one place a result loses its window
+  entirely to an earlier result, which is the single case the `narrowed` flag
+  exists to disclose. Now covered, using two deliberately overlapping passages
+  as a real chunker produces.
+- `around`'s budget guard. Now covered by asserting the store is asked *nothing*
+  when the budget cannot widen, which is a real property rather than a
+  restatement of the observable.
+
+And it caught the sharpest one: **the new bound test carried the same weak guard
+this change had just parked as a finding.** `assert any(hit.narrowed ...)` reads
+as proof the bound fired and is not, for the reason the parked entry gives. It
+now counts how many results carry a window with and without the bound, which
+only the bound can change; with the bound disabled it fails naming the bound.
+
+Two findings were recorded rather than fixed: `test_widening_is_switched_off_by_a_budget_at_the_chunk_size`
+passes at any budget, and the store lookup is captured at construction.
+
+**What it did not check.** 697 tests passed before and 710 after, which is the
 weak kind of evidence a pure move can offer: a refactor that changes nothing
 observable is also one no existing test can confirm happened. The stronger
 evidence is the byte-identity diff and the mutations. Nothing about window

@@ -183,6 +183,89 @@ def test_a_heading_line_stops_a_window_that_would_cross_it():
     )
 
 
+def test_a_heading_line_stops_a_window_reaching_back_across_it():
+    """The backward half of the same rule, and the half nothing covered before.
+
+    A window that reaches back past a heading pulls the section above into a
+    result that is fenced as evidence and cited under this passage's span. The
+    heading immediately before the passage is kept, because it names the section
+    the passage is in — that is context, not intrusion.
+    """
+    prev = "The cormorant was recorded twice near the eastern bank of the channel."
+    match = "A kingfisher was seen on the pontoon on the final day of the survey."
+    after = "The dredging began in spring and the contractor reported no obstruction."
+
+    def widened(divider: str) -> str:
+        text, spans = _laid_out([prev, divider, match, after])
+        document = _document(text)
+        # The divider is not a passage; every chunk carries the same heading
+        # path, so the section bounds do not stop the reach and only the `#`
+        # line can.
+        chunks = [
+            _chunk(text, 0, spans[0]),
+            _chunk(text, 1, spans[2]),
+            _chunk(text, 2, spans[3]),
+        ]
+        window = Windower(_neighbours_of(chunks), budget=4000).for_passage(
+            chunks[1], document
+        )
+        assert window is not None, "nothing widened, so this comparison says nothing"
+        return window.text
+
+    behind_a_heading = widened("## Later")
+    assert "cormorant" not in behind_a_heading, (
+        "the window reached back across a heading into the section above"
+    )
+    assert "## Later" in behind_a_heading, (
+        "the heading naming this passage's own section was dropped"
+    )
+    assert "cormorant" in widened("Later notes follow."), (
+        "the window stopped short with no heading to stop it, so the assertion "
+        "above proves nothing about headings"
+    )
+
+
+def test_a_result_whose_surroundings_were_already_returned_gives_up_its_window():
+    """The one place a result loses its window entirely, and must disclose it.
+
+    Adjacent passages overlap by `chunk_overlap_chars` in a real corpus, so an
+    earlier result can already have returned text inside a later one's own
+    passage. There is nothing to pull back to — any window would repeat what the
+    reader already has — and the flag is the only sign it happened.
+    """
+    text = " ".join(f"Sentence {n} of the harbour survey record." for n in range(1, 61))
+    document = _document(text)
+    first = _chunk(text, 0, (0, 400))
+    second = _chunk(text, 1, (350, 750))  # overlaps `first`, as the chunker does
+    third = _chunk(text, 2, (760, 1100))  # unmatched, so `second` has room to grow
+
+    windower = Windower(_neighbours_of([first, second, third]), budget=4000)
+    hits = windower.for_results([_hit(first, document, 1), _hit(second, document, 2)])
+
+    assert hits[1].window is None, (
+        "the second result kept a window over text the first had already returned"
+    )
+    assert hits[1].narrowed, "a result that gave up its window entirely did not say so"
+    assert hits[1].text == second.text
+
+
+def test_a_budget_at_the_passage_size_asks_the_store_nothing(one_section):
+    """A rule that cannot widen must not pay for the neighbours to prove it."""
+    document, chunks = one_section
+    asked: list[tuple[str, int, int]] = []
+
+    def counting(document_id: str, ordinal: int, radius: int) -> list[Chunk]:
+        asked.append((document_id, ordinal, radius))
+        return chunks
+
+    assert Windower(counting, budget=1).for_passage(chunks[1], document) is None
+    assert asked == [], "asked the store for neighbours it had no budget to use"
+    # And the same lookup is reached when there is a budget to spend, so the
+    # assertion above is about the guard rather than about a callable never used.
+    assert Windower(counting, budget=4000).for_passage(chunks[1], document) is not None
+    assert asked == [(DOCUMENT, 1, 3)]
+
+
 def test_a_passage_with_no_neighbours_is_not_widened(one_section):
     """The store answering 'nothing surrounds this' must not become a window."""
     document, chunks = one_section
@@ -247,7 +330,17 @@ def test_the_response_bound_drops_context_and_never_a_result(one_section, monkey
     bounded = windower.for_results([_hit(chunk, document, n + 1) for n, chunk in enumerate(chunks)])
 
     assert [hit.chunk.id for hit in bounded] == [hit.chunk.id for hit in generous]
-    assert any(hit.narrowed for hit in bounded), "the bound was never reached"
+    # Deliberately not `any(hit.narrowed ...)`. That reads like a guard and is
+    # not one: `narrowed` is also set when a neighbouring result trims a window,
+    # which happens here whether the bound fired or not — the same weakness this
+    # change records against the older bound test. Counting windows names the
+    # bound, because only the bound can withdraw one that nothing else contested.
+    assert sum(hit.is_widened for hit in bounded) < sum(
+        hit.is_widened for hit in generous
+    ), (
+        "as many results were widened at a 120-character bound as at 60,000, so "
+        "the bound did nothing and the rest of this test says nothing about it"
+    )
     assert sum(len(hit.text) for hit in bounded) < sum(len(hit.text) for hit in generous)
     # `narrowed` does not imply "window withdrawn" — a result cut back to make
     # room for a neighbour keeps a smaller one. What holds in every case is that

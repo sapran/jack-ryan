@@ -142,14 +142,13 @@ class SearchService:
         self._store = store
         self._casefiles = casefiles
         self._embedder = embedder
-        self._window_max_chars = int(window_max_chars)
         self._reranker = reranker
         self._rerank_depth = int(rerank_depth)
         # The window rule is given the one store question it asks, rather than
         # the store: nineteen port methods would overstate what it depends on,
         # and a test of the rule would then have to build a corpus to answer one
         # of them.
-        self._windows = Windower(store.get_document_chunks_around, self._window_max_chars)
+        self._windows = Windower(store.get_document_chunks_around, window_max_chars)
 
     def resolve_passage(
         self, casefile_reference: str, reference: str
@@ -408,6 +407,20 @@ class SearchService:
         return (ordered + rest)[:limit], scored, RANKED_BY_RERANK
 
     # -- windows -----------------------------------------------------------
+
+    @property
+    def _window_max_chars(self) -> int:
+        """The window budget in force, read from the rule that applies it.
+
+        A property rather than a field. Storing the value here as well would
+        leave a copy nothing reads: two reviewers of the change that moved the
+        window rule out of this file each showed that discarding the operator's
+        setting when building the `Windower` — or silently doubling it — passed
+        the whole suite, because the composition-root wiring test asserted on
+        the copy. An operator would have got a default-sized window while
+        `jackryan status` reported the value they configured.
+        """
+        return self._windows.budget
 
     def passage_window(self, chunk: Chunk, document: Document) -> Window | None:
         """The window around one passage, by the same rule a search result gets.

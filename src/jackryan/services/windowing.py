@@ -205,6 +205,17 @@ class Windower:
         self._neighbours = neighbours
         self._budget = int(budget)
 
+    @property
+    def budget(self) -> int:
+        """The character budget actually in force.
+
+        Readable so that a caller wanting to assert on the configured budget can
+        read the value this rule applies, rather than a copy kept beside it. A
+        copy is what lets a wiring test keep passing while the budget it names
+        reaches nothing.
+        """
+        return self._budget
+
     def for_passage(self, chunk: Chunk, document: Document) -> Window | None:
         """The window around one passage, asked for on its own.
 

@@ -6,6 +6,35 @@ and why it was parked.
 
 ## Parked
 
+- **A window test named for the budget passes whatever the budget is.**
+  `test_widening_is_switched_off_by_a_budget_at_the_chunk_size`
+  (`tests/test_section_windows.py`) builds a `SearchService` with
+  `window_max_chars=1` and asserts nothing widened. Instrumented with the budget
+  forced to 3000 instead, **it still passes**: the document is about 1,100
+  characters in four chunks, the query matches all four, so `_keep_clear` and
+  `_avoid` leave nothing to grow into at any budget. It is the `CLAUDE.md`
+  failure — "test fixtures with single-passage documents cannot exercise a
+  window" — in a slightly larger disguise, alive in the file that records the
+  rule. Found by the silent-failure review of `one-owner-for-the-window-rule`.
+  Parked rather than fixed: the honest repair is a fixture with an unmatched
+  neighbour to widen into, which changes what several other tests in that file
+  retrieve. `tests/test_windowing.py` now covers the same guard directly and
+  proves it by counting the store lookups, so the gap is covered even though
+  this test still says less than its name.
+
+- **The window rule captures its store lookup at construction.**
+  `SearchService.__init__` passes `store.get_document_chunks_around` — a bound
+  method object — to `Windower`, where the old code resolved `self._store` on
+  every call. Replacing the store on a live `SearchService`, or patching the
+  method on the instance or the class, is now silently ignored. Nothing in
+  `src/` or `tests/` does that, so it is inert; it is recorded because it is a
+  trap of exactly the shape the same change reasoned about for
+  `MAX_RESPONSE_CHARS` and guarded against there. The budget half of the same
+  hazard *was* live and was fixed in that change: `_window_max_chars` is a
+  property reading `Windower.budget` rather than a second copy. Parked: making
+  the lookup late-bound means passing the port after all, which is the trade the
+  change deliberately declined.
+
 - **A window test's guard does not guard what its message claims.**
   `test_a_response_that_hits_its_bound_narrows_and_says_so`
   (`tests/test_section_windows.py`) opens with

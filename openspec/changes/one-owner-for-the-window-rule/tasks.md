@@ -47,7 +47,9 @@
       alias with a comment naming its three arguments; verify the comment names
       them in the order `get_document_chunks_around` takes them. *Document id,
       ordinal, radius — the port's order, checked against
-      `storage/port.py:335-337`.*
+      `storage/port.py:366-368`. (First written as `:335-337`, which is
+      `find_documents_by_id_prefix`; caught in review. The order was right, the
+      citation was not.)*
 - [x] 2.6 Add `Windower.__init__(self, neighbours, budget)`; verify it stores the
       budget through `int()` exactly as `SearchService` did, so a string budget
       from configuration behaves as before. *`int(budget)`, and `SearchService`
@@ -167,7 +169,8 @@
 
 - [x] 7.1 Run `pytest -q`; verify 697 passed and 3 skipped, plus the new module's
       tests — a *lower* count means a test was lost in the move. *707 passed, 3
-      skipped: 697 unchanged plus 10 new.*
+      skipped: 697 unchanged plus 10 new. 710 after the review round below added
+      three more.*
 - [x] 7.2 Run `git diff --stat`; verify the lines leaving `search.py` and
       arriving in `windowing.py` match in quantity, since a pure move that does
       not balance is not a pure move. *258 out of `search.py`, 10 back in;
@@ -198,3 +201,54 @@
 - [x] 7.6 Grep the diff for `sk-`, `hf_`, `AKIA`, `ghp_`, `-----BEGIN`,
       `.ts.net`, `/Users/`, `/home/`; verify nothing matches. *Nothing but this
       line and the one above it, which are the patterns themselves.*
+
+## 8. What review found, and what was done about it
+
+- [x] 8.1 Remove the second copy of the window budget; verify by the mutation
+      that previously survived, not by inspection. *`SearchService._window_max_chars`
+      was a field beside `Windower._budget` and was read by nothing in `src/`.
+      Two reviewers found it independently; the silent-failure review measured
+      it: building the `Windower` with a hardcoded `DEFAULT_WINDOW_MAX_CHARS`, or
+      with the setting doubled, **each passed all 707 tests**, because
+      `tests/test_app.py:170` asserted on the copy. It is now a property reading
+      `Windower.budget`. Both mutations re-run and now fail that test —
+      `assert 3000 == 1234` and `assert 2468 == 1234`.*
+- [x] 8.2 Replace the new bound test's guard with one the bound alone can
+      satisfy; verify with the bound disabled. *`assert any(hit.narrowed ...)`
+      was the same weak guard this change had just parked as a finding about the
+      older test — `narrowed` is set by the neighbour path too. It now counts how
+      many results carry a window with and without the bound. With the bound
+      raised to `10**12` it fails first, and by name: "as many results were
+      widened at a 120-character bound as at 60,000".*
+- [x] 8.3 Cover the backward half of `_clip_to_headings`; verify it was
+      uncovered before and is caught now. *It was uncovered anywhere in the
+      repository — a window could reach back across a heading and pull the
+      section above into a fenced, cited result. New test with a positive
+      control; watched failing with `matches = []`: "the window reached back
+      across a heading into the section above".*
+- [x] 8.4 Cover `for_results`' `kept is None` branch; verify it is reachable at
+      all before writing the test. *Traced first: it needs an earlier result to
+      have returned text inside the later one's own passage, which needs two
+      overlapping passages — as a real chunker produces — plus an unmatched
+      neighbour so the later one has room to widen. Built exactly that; watched
+      failing with the flag forced to `False`: "a result that gave up its window
+      entirely did not say so".*
+- [x] 8.5 Cover `around`'s budget guard by a property rather than a
+      restatement; verify the observable alone does not distinguish it. *It does
+      not — deleting the early return leaves `_widen` and `_slice` producing the
+      same `None`. What the guard actually buys is not asking the store, so the
+      test counts lookups: none at a budget of 1, exactly one at 4000. Watched
+      failing with the guard neutered to `budget < 0`.*
+- [x] 8.6 Record what review found that is not being fixed; verify each entry
+      says why. *Two in `docs/implementation-notes.md`:
+      `test_widening_is_switched_off_by_a_budget_at_the_chunk_size` passes at any
+      budget because its fixture leaves nothing to widen into, and the store
+      lookup is captured at construction so swapping the store on a live service
+      is silently ignored. The second is the half of the copy hazard that stayed
+      inert; the budget half was live and was fixed.*
+- [x] 8.7 Confirm no reviewer left a mutant; verify by diff rather than by a
+      green suite. *One of the three reviewers died mid-mutation, with "M4 is a
+      surviving mutant" as its last output. `git status --porcelain` and
+      `git diff HEAD` were both **empty** — only mtimes had moved — and the suite
+      was re-run green afterwards. Checking the diff first is the rule here: a
+      green suite after an adversarial review proves nothing.*

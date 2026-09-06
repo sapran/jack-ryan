@@ -149,3 +149,25 @@ one import line.
 type-checks, so a caller passing the wrong callable fails at the call, not at
 the wiring. This is the same trade `Context.store: StorePort` records, and the
 compensation is the same: a test that the composition root wires the real thing.
+
+**A callable is a narrower dependency and therefore a weaker one.** The test
+double at `tests/test_windowing.py` matches `SqliteStore.get_document_chunks_around`
+today — both are symmetric around the ordinal and both include the matched chunk
+— but a `Callable[[str, int, int], list[Chunk]]` accepts any three-argument
+function. If the store's radius ever becomes exclusive, or it stops returning
+the matched chunk, every direct windowing test stays green and only the
+corpus-driven tests in `tests/test_section_windows.py` notice. That is the price
+of the trade in the first decision above, and it is the reason those tests are
+kept rather than replaced: they are now the contract test for the double.
+
+**The budget and the lookup are captured at construction.** `Windower` holds a
+bound method and an `int`, where the old code resolved `self._store` and
+`self._window_max_chars` on every call. Nothing in this repository swaps a
+store or a budget on a live `SearchService`, so this is inert today. Half of it
+was not: the first version of this change also kept `self._window_max_chars` as
+a field, and two reviewers each showed that discarding or doubling the budget
+when building the `Windower` passed the entire suite, because the wiring test
+asserted on the copy. `_window_max_chars` is now a property reading
+`Windower.budget`, so there is one value and the wiring test reads the effective
+one. The store half is left as a captured reference and recorded rather than
+defended against.
