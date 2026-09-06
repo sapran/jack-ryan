@@ -6,6 +6,18 @@ and why it was parked.
 
 ## Parked
 
+- **`.DS_Store` is not in `.gitignore`, in a public repository on macOS.** Six
+  sit untracked in the working tree today — repository root, `.acordia/`,
+  `openspec/`, `openspec/specs/`, `src/` and `src/jackryan/`. Nothing has
+  leaked, and `gitleaks` would not flag one anyway: they carry no credential.
+  What they carry is a directory listing, so a committed root `.DS_Store` would
+  name the gitignored files beside it — `.env` and `config.yaml` among them,
+  which is the infrastructure-fingerprint class `CLAUDE.md`'s public-repo rule
+  forbids. The footgun is `git add -A`, which is what a hurried commit reaches
+  for; every commit so far has staged explicit paths instead. Parked rather than
+  fixed because a `.gitignore` line is its own commit, and this surfaced while
+  archiving specs.
+
 - **The two scratch-delegate paths rebuild their result differently, and one of
   them drops a field by omission.** `router._extract_as` returns
   `dataclasses.replace(delegated, extractor=...)`, carrying every field the
