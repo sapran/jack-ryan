@@ -1,0 +1,24 @@
+schema: spec-driven
+created: 2026-09-06
+
+# No spec delta. Established by falsification rather than assumed — see
+# `proposal.md` § Impact.
+#
+# Two specs govern this code: `storage-seam` and `schema-migration`. Both were
+# read in full. Every occurrence of "one file" in them means the SQLite
+# **database** file — "Persistence SHALL be a single SQLite file under the
+# configured data directory" — and neither names a Python module, a file layout,
+# or a method anywhere.
+#
+# What they do require is preserved and still asserted by the same tests: the
+# ladder's order and additivity, a version derived from the ladder rather than
+# written by hand, a pre-migration backup taken through a real backup API, two
+# distinct refusal messages for un-migratable-old and newer-than-running, a
+# `threading` lock rather than an asyncio one, and one transaction across a
+# chunk's text, its FTS entry and its vector.
+#
+# The SQL moves verbatim and the frozen schema block moves byte-identically,
+# checked with difflib against origin/develop before the original was deleted.
+# A MODIFIED block for either spec would reproduce it byte-identically, which
+# the delta-authoring guidance says to cut.
+skip_specs: true

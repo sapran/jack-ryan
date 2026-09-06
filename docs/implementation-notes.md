@@ -625,7 +625,7 @@ and why it was parked.
   settle it either way.
 
 - **Keyword ranking inside one casefile depends on what the other casefiles
-  hold.** `search_keyword` in `src/jackryan/storage/sqlite.py` filters rows by
+  hold.** `search_keyword` in `src/jackryan/storage/retrieval.py` filters rows by
   `c.casefile_id`, but orders them by `bm25(chunks_fts)`, and FTS5 computes bm25
   over the whole index — every casefile in the store. Adding a second casefile
   therefore changes the term statistics and can reorder results inside the first,
