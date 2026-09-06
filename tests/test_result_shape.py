@@ -176,7 +176,7 @@ def test_an_over_large_limit_is_still_clamped(loaded):
 
 
 def test_a_response_stays_within_the_text_bound(loaded):
-    from jackryan.services.search import MAX_RESPONSE_CHARS
+    from jackryan.services.windowing import MAX_RESPONSE_CHARS
 
     context, casefile = loaded
     server = build_mcp_server(context)

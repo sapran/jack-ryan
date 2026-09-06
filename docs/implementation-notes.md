@@ -6,6 +6,23 @@ and why it was parked.
 
 ## Parked
 
+- **A window test's guard does not guard what its message claims.**
+  `test_a_response_that_hits_its_bound_narrows_and_says_so`
+  (`tests/test_section_windows.py`) opens with
+  `assert narrowed, "the bound was never reached, so this test says nothing"`,
+  which reads as proof that the response bound was applied. It is not: `narrowed`
+  is also set when another result's passage cuts a window back, and this fixture
+  produces such results whether the bound was reached or not. Measured while
+  moving the window rule to its own module — with `MAX_RESPONSE_CHARS`
+  re-exported so the monkeypatch bound to a name nothing reads, the guard passed
+  and the test failed three assertions later, on
+  `all(h.text == h.chunk.text for h in narrowed)`, which holds only because the
+  bound dominates at 1,200 characters. The test is not wrong today; its guard is
+  weaker than its message, so it protects the monkeypatch's target by accident
+  rather than by design. Parked: tightening it means telling bound-narrowed from
+  neighbour-narrowed, which is the same distinction the `case_get_passage` entry
+  below says the payload cannot express, and belongs with it.
+
 - **`.DS_Store` is not in `.gitignore`, in a public repository on macOS.** Six
   sit untracked in the working tree today — repository root, `.acordia/`,
   `openspec/`, `openspec/specs/`, `src/` and `src/jackryan/`. Nothing has
@@ -82,7 +99,7 @@ and why it was parked.
   a `JackRyanError` to `{"error": code, "message": text}`, discarding the type
   and the traceback, and there is no logging call anywhere in `src/jackryan` —
   `grep` for `import logging`, `getLogger` and `logger.` returns nothing, and
-  `services/search.py:534` concedes it in a comment. This was tolerable as eight
+  `services/search.py:400` concedes it in a comment. This was tolerable as eight
   visible three-line blocks; it is more pointed now that the surface has exactly
   one funnel. An analyst asking why the assistant reported an empty casefile has
   no artifact to consult. Parked rather than fixed: giving this project a logger
@@ -93,7 +110,7 @@ and why it was parked.
 
 - **A lazily-discovered misconfiguration reaches the agent as ordinary data, and
   the two adapters disagree about it.** `RerankerUnavailable` is a `ConfigError`
-  raised at query time from `services/search.py:505`, deliberately not caught
+  raised at query time from `services/search.py:366`, deliberately not caught
   there — the comment says an instance configured for a reranker it cannot load
   "must say so rather than serve the fused order as though nothing were wrong".
   On the agent surface it becomes `{"error": "config_error", ...}`, which only
@@ -109,7 +126,7 @@ and why it was parked.
 - **`case_get_passage` reports a detected corpus inconsistency as an ordinary
   un-widened passage.** `interfaces/mcp/server.py` falls back with
   `body = window.text if window else chunk.text`, and `_slice`
-  (`services/search.py:613`) returns `None` for two unrelated reasons: a window
+  (`services/windowing.py:171`) returns `None` for two unrelated reasons: a window
   that would not help, and a chunk whose stored text no longer matches its own
   offsets — which its docstring says detects a half-completed ingest leaving new
   text against old offsets. Both collapse to `window is None` and the payload
@@ -119,7 +136,7 @@ and why it was parked.
 
 - **An unbuildable reranker is rebuilt on every search.** `reranking/model.py`
   caches only on success — `self._model` stays `None` when `_load` raises — so
-  `check()` at `services/search.py:505` re-runs the import and the model build
+  `check()` at `services/search.py:366` re-runs the import and the model build
   once per request, after both retrievers and fusion have already done their
   work. Harmless while no reranker is named by default, which is why it is
   parked; it becomes a per-query cost the day one is.
@@ -327,7 +344,7 @@ and why it was parked.
   **The real blocker is a published requirement, not the missing code.**
   `openspec/specs/hybrid-search/spec.md:16-17` says both retrievers "SHALL be
   available with no endpoint configured, so an instance can search its corpus
-  offline", and `services/search.py:384` embeds the query on every search. A
+  offline", and `services/search.py:245` embeds the query on every search. A
   remotely-embedded corpus therefore cannot be *searched* while the endpoint is
   down, and the halves cannot be split — a bge-m3 query vector against e5-large
   passage vectors is meaningless, and e5 also prefixes its input (`"passage: "` /
@@ -542,7 +559,7 @@ and why it was parked.
   summary.
 
 - **A window reaches at most three passages either side, whatever the budget
-  says.** `WINDOW_MAX_CHUNKS_EITHER_SIDE` in `src/jackryan/services/search.py`
+  says.** `WINDOW_MAX_CHUNKS_EITHER_SIDE` in `src/jackryan/services/windowing.py`
   caps how far a result may wander from what actually matched, and it is a
   constant rather than a setting. An operator who raises `window_max_chars` far
   above the chunk size therefore gets less than they asked for, silently. Found

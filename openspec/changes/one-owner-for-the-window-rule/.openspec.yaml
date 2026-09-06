@@ -1,0 +1,19 @@
+schema: spec-driven
+created: 2026-09-06
+
+# No spec delta. Established by falsification rather than assumed — see
+# `proposal.md` § Impact.
+#
+# Four published specs describe what a window is and what a caller may learn
+# about it: `hybrid-search` (95-121, 188-239), `mcp-tool-surface` (33-58,
+# 104-124) and `untrusted-content-boundary` (10-33). Every requirement in them
+# is phrased over observable behaviour — the text a result carries, the two
+# spans it declares, whether it says it was narrowed, the bound on a whole
+# response. Not one names a function, a method or a module.
+#
+# This change moves the code that produces those observables and alters none of
+# them: bodies and docstrings move verbatim, the two entry points delegate, and
+# the nineteen existing window tests pass with only their import lines changed.
+# A MODIFIED block for any of the four would reproduce it byte-identically,
+# which the delta-authoring guidance says to cut.
+skip_specs: true
