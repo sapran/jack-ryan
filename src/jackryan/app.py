@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .config import Config, corpus_fingerprint, load_config
+from .config import Config, CorpusIdentity, load_config
 from .embedding import build_embedder
 from .embedding.port import EmbedderPort
 from .errors import ConfigError
@@ -30,13 +30,18 @@ class Context:
     """A configured instance: config, store, and the services over it."""
 
     config: Config
-    corpus_fingerprint: str
-    """The identity the store records and enforces.
+    identity: CorpusIdentity
+    """What the store records and enforces, as a value rather than a string.
 
     Required, not defaulted: a Context built without it would report an empty
     corpus identity from /health and `jackryan status`, which is exactly the
     failure this field exists to prevent — an operator comparing a string that
     cannot explain their refusal.
+
+    One field, where there were two. `corpus_fingerprint` and `summariser_name`
+    were computed from the same three lines and stored apart, with nothing
+    making them agree; the second had no reader in `src/` at all. Both are now
+    views on this one value, below.
     """
 
     store: StorePort
@@ -54,15 +59,29 @@ class Context:
     casefiles: CasefileService
     ingestion: IngestionService
     search: SearchService
-    summariser_name: str = ""
-    """The summariser whose output is folded into what is embedded, or empty.
 
-    Empty when nothing is folded, which is the default — and empty is what keeps
-    `corpus_fingerprint` byte-identical to the value a corpus recorded before
-    summaries existed. Held here because it is the component of corpus identity
-    an operator cannot read off their own configuration: it carries a hash of
-    the shipped prompt as well as the model they named.
-    """
+    @property
+    def corpus_fingerprint(self) -> str:
+        """The identity as the store records it, and as `/health` reports it.
+
+        A view on `identity`, not a copy. The JSON field it feeds is a published
+        surface and keeps its name — as does the `store_meta` key, whose rename
+        needs a migration rung. That naming drift is recorded in
+        `docs/implementation-notes.md` and deliberately not resolved here.
+        """
+        return str(self.identity)
+
+    @property
+    def summariser_name(self) -> str:
+        """The summariser whose output is folded into what is embedded, or empty.
+
+        Empty when nothing is folded, which is the default — and empty is what
+        keeps `corpus_fingerprint` byte-identical to the value a corpus recorded
+        before summaries existed. Readable here because it is the component of
+        corpus identity an operator cannot read off their own configuration: it
+        carries a hash of the shipped prompt as well as the model they named.
+        """
+        return self.identity.summariser
 
     def close(self) -> None:
         self.store.close()
@@ -141,11 +160,14 @@ def build_context(
     # know — see `corpus_fingerprint`. Empty when folding is off, and the
     # component is then omitted entirely, so this string stays byte-identical to
     # the one a corpus recorded before summaries existed.
-    summariser_name = chosen_summariser.name if folding else ""
-    identity = corpus_fingerprint(resolved.contract, chosen.name, summariser_name)
+    identity = CorpusIdentity(
+        resolved.contract,
+        chosen.name,
+        chosen_summariser.name if folding else "",
+    )
     store = SqliteStore(resolved.db_path)
     try:
-        store.initialize(identity, resolved.contract.embed_dimensions)
+        store.initialize(str(identity), resolved.contract.embed_dimensions)
     except Exception:
         # initialize opens the connection before it verifies identity, so a
         # refusal leaves the file, its WAL and its SHM held open on a corpus we
@@ -157,10 +179,9 @@ def build_context(
     return Context(
         config=resolved,
         store=store,
-        corpus_fingerprint=identity,
+        identity=identity,
         embedder=chosen,
         casefiles=casefiles,
-        summariser_name=summariser_name,
         ingestion=IngestionService(
             store,
             casefiles,

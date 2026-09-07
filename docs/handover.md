@@ -1352,6 +1352,65 @@ FTS5 computes over the whole index rather than the casefile.
 
 ---
 
+## One value for corpus identity — 2026-09-07
+
+Last of the second architecture-review batch, and the one where the review was
+**wrong about the size of the problem**.
+
+**What the review claimed, and what is actually true.** It said corpus identity
+is "spread across four files, owned by nothing". Three of the four own their part
+correctly: `app.py` composes from runtime-chosen values, which
+`layered-configuration` *requires* happen where those values are known;
+`summarising/model.py` owns the summariser's name and recipe hash, which is that
+module's business; `storage/` owns the comparison and the refusal, because it
+holds the recorded value. Only `config.py` had genuine duplication — the
+rendering split between `Contract.fingerprint()` and `corpus_fingerprint()`, two
+functions that had to agree on a separator.
+
+**What was real.** `Context` carried two fields, `corpus_fingerprint: str` and
+`summariser_name: str`, computed from the same three lines and stored apart with
+nothing making them agree — and `summariser_name` had **no production reader at
+all**. A grep across `src/` and `scripts/` returned only its own assignment. That
+is the same shape the `casefile-statistics` change fixed: a value on a seam that
+is written and never read.
+
+`Context.identity` is now one `CorpusIdentity`, and both old names are read-only
+properties over it. **The whole suite passed with zero test edits** before the new
+tests were added — which is the evidence that these are views rather than a
+rename, since about thirteen test sites and three production call sites read them.
+
+**The test that could not be written before.** The rule that the `|summariser=`
+component appears exactly when a summariser is folded in was a coincidence of two
+functions agreeing; there was no single thing to state it about. Now:
+`("|summariser=" in str(identity)) == bool(identity.summariser)`. Watched failing
+by appending the component unconditionally — three tests go red, including the
+golden oracle read from a real `store_meta` table.
+
+A second test asserts the two views cannot disagree with the value they read
+from. Watched failing by making `summariser_name` return `""`. Worth knowing:
+`tests/test_summarising.py`'s equivalent assertion is **skipped** without an LLM
+endpoint, so this is real new coverage rather than a duplicate. It also asserts
+the *field* is gone rather than merely shadowed, because a re-added field would
+satisfy the property test while restoring the hazard.
+
+**What was refused.** `CorpusIdentity` gets no `parse`. `tests/test_config.py`
+splits an identity with a parser of its own to prove a crafted summariser name
+containing `|embedder=` cannot impersonate a component; routing that through the
+class would make the check and the thing checked the same code — the same reason
+the escaping oracle is a literal rather than a recomputation. Written into the
+class docstring and `CLAUDE.md` so a later tidy-up does not add it.
+
+**What it did not check.** Both golden literals are unchanged and neither file is
+in the diff, but the retrieval baseline was not re-measured —
+`scripts/evaluate_retrieval.py` needs model weights and does not run in CI, so
+the corpus field's continuity rests on the byte-comparison alone. The parked
+naming drift is untouched: `initialize(contract_fingerprint=…)`, the `store_meta`
+key, and the `"contract"` field in `/health` and `jackryan status` all still say
+*contract* while holding corpus identity. Renaming the stored key needs a
+migration rung and the JSON field is published.
+
+---
+
 ## What this environment could not do, so you should not trust it was checked
 
 - **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real

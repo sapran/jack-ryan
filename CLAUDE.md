@@ -120,6 +120,17 @@ contract-only property is what let a deterministic corpus open under a
 real-model configuration — real vectors compared against hash vectors of the
 same width, which nothing downstream can detect.
 
+**`CorpusIdentity` in `config.py` owns the rendering; `app.py` still owns the
+composition.** The type joins the contract's own fingerprint to the embedder and,
+when folding is on, the summariser, and it applies the omit-when-empty rule. It
+is constructed at the composition root and nowhere else, because that is the only
+place the runtime-chosen values are known — moving construction elsewhere would
+make it a copy of a decision rather than the decision. The store still takes an
+opaque string, so `storage/` imports nothing from `config.py`.
+**It has no `parse`, deliberately**: `tests/test_config.py` splits an identity
+with a parser of its own to prove a crafted name cannot impersonate a component,
+and sharing code with what it checks would defeat that.
+
 ## Pitfalls
 
 - **Schema changes go through the `_STEPS` ladder, never `_SCHEMA`** — both

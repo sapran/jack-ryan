@@ -507,6 +507,59 @@ def test_a_named_summariser_is_part_of_corpus_identity():
     assert folded == f"{unfolded}|summariser=qwen3/9a3f1c2b4d5e"
 
 
+def test_the_summariser_component_appears_exactly_when_there_is_a_summariser():
+    """The omit rule, stated about the one value that holds both halves.
+
+    This could not be asserted before corpus identity was a type. The rendered
+    string and the summariser's name were two fields on `Context`, computed from
+    the same three lines and stored apart, with nothing making them agree — and
+    the name had no reader in `src/` at all. There was no single thing to state
+    the property about.
+
+    The rule is load-bearing in one direction: a component that is absent must
+    contribute nothing, so an instance with folding off produces byte for byte
+    the identity a corpus recorded before summaries existed, and those corpora
+    still open. A component appended unconditionally would refuse the corpora it
+    was added to protect.
+    """
+    from jackryan.config import Contract, CorpusIdentity
+
+    for summariser in ("", "qwen3/9a3f1c2b4d5e"):
+        identity = CorpusIdentity(Contract(), "model", summariser)
+        assert ("|summariser=" in str(identity)) == bool(identity.summariser), (
+            f"the value says summariser={summariser!r} and the string it renders "
+            f"disagrees: {identity}"
+        )
+
+
+def test_the_context_cannot_report_an_identity_it_does_not_hold():
+    """`corpus_fingerprint` and `summariser_name` are views, not copies.
+
+    They were two fields once. A `Context` could be built with a fingerprint
+    naming one summariser and a `summariser_name` naming another, and nothing
+    would notice; the composition root happened to set them consistently.
+    """
+    from dataclasses import fields
+    from types import SimpleNamespace
+
+    from jackryan.app import Context
+    from jackryan.config import Contract, CorpusIdentity
+
+    identity = CorpusIdentity(Contract(), "model", "qwen3/9a3f1c2b4d5e")
+    assert "summariser_name" not in {f.name for f in fields(Context)}, (
+        "the summariser is a second field again, so the two can disagree"
+    )
+    # Read off a bare value rather than a built Context: the property is on the
+    # class, and building one would need a store, an embedder and three services
+    # to assert something about two lines of arithmetic.
+    assert Context.summariser_name.fget(SimpleNamespace(identity=identity)) == (
+        identity.summariser
+    )
+    assert Context.corpus_fingerprint.fget(SimpleNamespace(identity=identity)) == str(
+        identity
+    )
+
+
 def _parsed_identity(identity: str) -> dict[str, str]:
     """Read an identity back the way `_escaped` promises it round-trips.
 
