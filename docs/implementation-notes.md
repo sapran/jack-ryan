@@ -6,6 +6,30 @@ and why it was parked.
 
 ## Parked
 
+- **One test stands between this codebase and a re-applied `ADD COLUMN`.** The
+  re-read under the write lock in `migrations.migrate` — the line that makes the
+  earlier unlocked read safe — is caught by exactly one test,
+  `test_the_version_is_re_read_under_the_write_lock`
+  (`tests/test_migrations.py`). Measured by deleting the re-read and running the
+  whole suite: 709 passed, 1 failed. Skip or delete that test and the seam is
+  unguarded with no second signal anywhere, on a race the code itself documents
+  as real — `docker compose up` and `docker compose run cli` share a data
+  directory and can both open a store on the first run after an upgrade. Found
+  by the silent-failure review of `three-owners-in-the-store`. Parked rather than
+  fixed: a second signal means either a second concurrency test, which is slow
+  and flaky by nature, or a structural guard that makes double application
+  impossible, which is a change to the ladder rather than to its coverage.
+
+- **The race test's closing assertion reads stronger than it is.**
+  `test_the_version_is_re_read_under_the_write_lock` ends with
+  `assert "text_source" in columns_of(store)`, which does not distinguish who
+  added the column — the competing migration or the outer one. The test's real
+  teeth are `assert raced` plus the fact that a double-applied ladder raises
+  `duplicate column name`. That is adequate, and the assertion is not wrong; it
+  just certifies less than a reader would take it to. Same family as the window
+  test's `narrowed` guard recorded above. Parked: tightening it means asserting
+  which process stamped the version, which the store does not record.
+
 - **A window test named for the budget passes whatever the budget is.**
   `test_widening_is_switched_off_by_a_budget_at_the_chunk_size`
   (`tests/test_section_windows.py`) builds a `SearchService` with
@@ -625,7 +649,7 @@ and why it was parked.
   settle it either way.
 
 - **Keyword ranking inside one casefile depends on what the other casefiles
-  hold.** `search_keyword` in `src/jackryan/storage/sqlite.py` filters rows by
+  hold.** `search_keyword` in `src/jackryan/storage/retrieval.py` filters rows by
   `c.casefile_id`, but orders them by `bm25(chunks_fts)`, and FTS5 computes bm25
   over the whole index — every casefile in the store. Adding a second casefile
   therefore changes the term statistics and can reorder results inside the first,

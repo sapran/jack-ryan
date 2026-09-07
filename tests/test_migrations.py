@@ -14,14 +14,15 @@ import sqlite3
 import pytest
 
 from jackryan.errors import ConfigError
-from jackryan.storage.sqlite import (
+from jackryan.storage.migrations import (
     _BASELINE_VERSION,
     _OLDEST_MIGRATABLE,
     _SCHEMA,
+    _SIDECAR_TRIGGER,
     _STEPS,
     SCHEMA_VERSION,
-    SqliteStore,
 )
+from jackryan.storage.sqlite import SqliteStore
 
 DIMENSIONS = 64
 IDENTITY = "chunk_max_chars=400|embed_model=test|embedder=deterministic"
@@ -45,7 +46,7 @@ def build_baseline_store(path, *, version=_BASELINE_VERSION, rows=True):
         "CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors "
         f"USING vec0(embedding float[{DIMENSIONS}])"
     )
-    conn.executescript(SqliteStore._SIDECAR_TRIGGER)
+    conn.executescript(_SIDECAR_TRIGGER)
     conn.execute(
         "INSERT INTO store_meta (key, value) VALUES ('schema_version', ?)", (str(version),)
     )
@@ -499,7 +500,7 @@ def test_a_failing_step_leaves_the_store_at_its_recorded_version(tmp_path, monke
     to retry, and what makes the backup a second line of defence rather than the
     only one.
     """
-    from jackryan.storage import sqlite as mod
+    from jackryan.storage import migrations as mod
 
     broken = mod._Step(
         to_version=SCHEMA_VERSION + 1,
@@ -536,7 +537,7 @@ def test_a_failing_step_leaves_the_store_at_its_recorded_version(tmp_path, monke
         conn.close()
 
 
-def test_the_version_is_re_read_under_the_write_lock(tmp_path):
+def test_the_version_is_re_read_under_the_write_lock(tmp_path, monkeypatch):
     """The unlocked first read is only safe because of the re-read.
 
     The version is read once without a lock so the backup can be taken — SQLite's
@@ -547,23 +548,33 @@ def test_the_version_is_re_read_under_the_write_lock(tmp_path):
     Simulated by migrating the store out from under an in-flight open, which is
     what the re-read exists to notice.
     """
-    from jackryan.storage import sqlite as mod
+    from jackryan.storage import migrations as mod
 
     path = build_baseline_store(tmp_path / "old.db")
 
     store = SqliteStore(path)
-    original = store._backup_before_migrating
+    original = mod.backup_before_migrating
     raced = []
 
-    def migrate_underneath(conn, recorded):
-        original(conn, recorded)
+    def migrate_underneath(conn, store_path, recorded):
+        original(conn, store_path, recorded)
+        # Put the real function back before the nested migration runs. The patch
+        # is on the module now, so it applies to every store in the process; the
+        # instance-level patch it replaced applied only to this one, and leaving
+        # it in place here makes the competing store re-enter this function
+        # forever.
+        monkeypatch.setattr(mod, "backup_before_migrating", original)
         # Another process finishes the whole migration while we hold no lock.
         other = SqliteStore(path)
         other.initialize(IDENTITY, DIMENSIONS)
         other.close()
         raced.append(True)
 
-    store._backup_before_migrating = migrate_underneath
+    # Patched on the module `migrate` reads the name from. It is a module-level
+    # function now rather than a method on the store, so patching the store
+    # would bind a name nothing calls and the race would never be triggered —
+    # which the assertion below would catch.
+    monkeypatch.setattr(mod, "backup_before_migrating", migrate_underneath)
     try:
         store.initialize(IDENTITY, DIMENSIONS)
         assert raced, "the race was never triggered"

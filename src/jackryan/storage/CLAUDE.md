@@ -1,9 +1,16 @@
 # Storage — schema and migrations
 
 These rules live here rather than in the root memory file because `_SCHEMA` and
-`_STEPS` are defined in one file, `sqlite.py`, and adding a column or a step
-means editing it — which is what loads this file. A session that cannot cause
-the failure does not need to carry the warning.
+`_STEPS` are defined in one file in this directory, `migrations.py`, and adding
+a column or a step means editing it — which is what loads this file. A session
+that cannot cause the failure does not need to carry the warning.
+
+That mechanism is why the migration ladder was split out of `sqlite.py` into its
+own module *inside this directory* rather than anywhere else: editing it still
+loads these rules. `migrations.py` also owns `_SIDECAR_TRIGGER` and creates the
+`chunk_vectors` table, so the three artefacts the freeze covers are now made by
+one function, `create_baseline`, instead of assembled at a call site that had to
+remember all three.
 
 `tests/test_migrations.py` names both from outside this directory, so it does
 not load these rules. The additive-only rule and the FTS-trigger rule are

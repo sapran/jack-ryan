@@ -1245,6 +1245,113 @@ import errors were noise; CI still runs no type checker.
 
 ---
 
+## Three owners in the store — 2026-09-06
+
+Second of the second architecture-review batch. `storage/sqlite.py` was 1,155
+lines holding five concerns; it is now 650, with `migrations.py` (434) and
+`retrieval.py` (195) beside it.
+
+**What it settles.** Two of the extracted concerns have a published spec of their
+own and one has a hazard file, `storage/CLAUDE.md`, whose opening sentence
+justified its own existence by where the code sat: *"`_SCHEMA` and `_STEPS` are
+defined in one file, `sqlite.py`, and adding a column or a step means editing it
+— which is what loads this file."* That mechanism is exactly why the ladder went
+to a new module **inside `storage/`** rather than anywhere else; editing it still
+loads the rules. The sentence now says so.
+
+The same file names three artefacts as one frozen shape — the baseline script,
+the `chunk_vectors` table, and `_SIDECAR_TRIGGER` — and warns that leaving any
+out is how the ladder and the create path drift apart. They were three statements
+in `initialize` held together by a comment. They are now one function,
+`create_baseline`.
+
+**What was actually confirmed.** The extracted modules were built by a script
+that slices the original file, not retyped. The frozen block — `_SCHEMA`,
+`_Step`, `_STEPS`, `SCHEMA_VERSION` and their docstrings — diffed **196 lines
+byte-identical** against `origin/develop` with `difflib`, checked before the
+original was deleted. `_mention_filter` diffed **37 lines identical**. Every SQL
+string literal present before the split is present after it. 710 passed, 3
+skipped, unchanged from the branch point.
+
+**Nothing is re-exported from `sqlite.py`**, the same call the window change made
+for `MAX_RESPONSE_CHARS` and for the same reason. Watched: pointing
+`tests/test_migrations.py`'s ladder monkeypatch back at `jackryan.storage.sqlite`
+raises `AttributeError: module 'jackryan.storage.sqlite' has no attribute
+'_Step'` at the line that patches it, rather than binding to a name `migrate`
+does not read.
+
+**The one thing the move broke, and it was not subtle.**
+`test_the_version_is_re_read_under_the_write_lock` stages a race by replacing the
+backup step with a double that finishes a whole competing migration underneath.
+It used to patch **one instance** (`store._backup_before_migrating = …`), so the
+competing store used the real function. Patching
+`migrations.backup_before_migrating` reaches every store in the process, and the
+competitor re-entered the double — `RecursionError`, on the first run. The double
+now restores the original before spawning the competitor and says why.
+
+Worth generalising: **moving a method to a module function widens the blast
+radius of every test double that targets it.** Loud here; it would not have to be.
+
+**The lock stays with the store.** The extracted functions take an open
+connection and hold no lock; `SqliteStore` takes `self._lock` around each call.
+`verify_meta` is the one function that used to take it itself and no longer does.
+A mixin was rejected for a reason rather than a preference: `CLAUDE.md` has one
+rule about locking here, and it stays legible because every acquisition is
+visible in one class — where a mixin would let a later method inherit the lock
+without taking it.
+
+**What two reviewers found.** Both worked from throwaway `git archive` copies
+rather than the worktree, after a previous round where a reviewer died
+mid-mutation; the worktree came back byte-identical both times.
+
+The equivalence review checked what a claim of "pure move" actually needs, by
+AST extraction rather than by reading: `initialize`'s statement order, commit
+point and attribute assignment all match; **14 raise-sites and 13 unique error
+messages on each side**, none added, removed, or changed in interpolation, so
+every rendered message is byte-identical; **26 lock sites on develop and 26
+now**, with one name change.
+
+It also falsified this change's own claim. "No behaviour changes" was too
+strong: three guard clauses that ran *before* the lock now run inside it —
+`search_vector`'s width check, `search_keyword`'s empty-query return,
+`mention_facets`' clause building — because the whole extracted function is
+inside the delegate's `with`. An `RLock` holding a length comparison, a regex and
+some formatting; harmless, and now written down as "no *observable* behaviour
+changes" instead of hidden behind the stronger phrase.
+
+And it found the change had made a comment stale **in the freeze notice itself**:
+`migrations.py` still said `_SIDECAR_TRIGGER` and the `chunk_vectors` statement
+were "in `initialize`", when they had moved to `create_baseline` 200 lines below
+the comment. Precisely the drift that notice exists to prevent. Fixed.
+
+The silent-failure review mutated the four new seams. **All four die**: dropping
+the sidecar trigger fails 7 tests with the exact symptom its own comment predicts
+(`UNIQUE constraint failed on chunk_vectors`, from rowid reuse after a delete);
+dropping the `chunk_vectors` create fails 125 and errors 92; a wrong `dimensions`
+in the delegate fails dozens with the typed `ConfigError` reaching REST.
+
+One is worth knowing about. Deleting **the re-read under the write lock** leaves
+709 passing and fails exactly one test. That single test is the whole guard
+against a re-applied `ADD COLUMN` on a concurrently-migrated store — a race the
+code itself documents as real, since `docker compose up` and `docker compose run
+cli` share a data directory. Recorded, not fixed.
+
+It also confirmed something that was right by construction rather than by intent:
+`initialize` reads `migrations.SCHEMA_VERSION` **by attribute**, so the ladder
+test's monkeypatch reaches the store. A `from`-import there would have left that
+patch half-dead. Now written into `design.md`, so a later import tidy-up has to
+re-point the patch in the same change.
+
+**What it did not check.** The test count is identical before and after, which is
+the weak evidence a pure move can offer; the byte-identity diffs and the
+mutations are the real evidence. `replace_chunks` was not touched and not
+re-verified — it stays whole in `sqlite.py` because its single transaction across
+text, FTS and vectors is the guarantee the seam exists to make. The parked bm25
+finding moved file and stays parked: `search_keyword` still orders by a score
+FTS5 computes over the whole index rather than the casefile.
+
+---
+
 ## What this environment could not do, so you should not trust it was checked
 
 - **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real

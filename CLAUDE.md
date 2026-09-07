@@ -122,8 +122,9 @@ same width, which nothing downstream can detect.
 
 ## Pitfalls
 
-- **Schema changes go through the `_STEPS` ladder, never `_SCHEMA`** — the
-  rules, and why each matters, are in `src/jackryan/storage/CLAUDE.md`.
+- **Schema changes go through the `_STEPS` ladder, never `_SCHEMA`** — both
+  live in `src/jackryan/storage/migrations.py`, and the rules, with why each
+  matters, are in `src/jackryan/storage/CLAUDE.md`.
 - **`Context.store` is the port, and no adapter may touch it.** `storage-seam`
   says no adapter reaches a store directly; the agent surface did, at
   `casefile_statistics`, because `CasefileService` had no `statistics` and
@@ -168,7 +169,9 @@ same width, which nothing downstream can detect.
   what they asked for — and an empty result reads as "this casefile does not
   mention that account", which is the most damaging wrong answer this tool can
   give. The casefile constraint is inside both legs for the same reason and its
-  comment makes the same argument; put any new predicate beside it. Filtering
+  comment makes the same argument; put any new predicate beside it, in
+  `src/jackryan/storage/retrieval.py`, which exists to keep both legs and their
+  shared filter in one place. Filtering
   there also keeps it before fusion, so reranking still only reorders what
   fusion produced, and keeps it out of the scoring path entirely — a filter that
   touched the score would be a third retriever wearing a filter's name.
