@@ -4,6 +4,13 @@ One file holds everything: casefile rows now, and — from M1 — document rows,
 chunk text in an FTS5 index, and their vectors via sqlite-vec. Keeping text
 and vectors in one transactional store is what makes it impossible for them
 to drift apart, so there is no reconciliation problem to solve between them.
+That "one file" is the database, not this module: the schema and its migration
+ladder live in `migrations.py`, and the read queries in `retrieval.py`.
+
+What stays here is the connection, the lock, the row mappers, the CRUD, and
+`replace_chunks` — which is whole and stays whole, because its single
+transaction across a chunk's text, its FTS entry and its vector is the
+guarantee this seam exists to make.
 """
 
 from __future__ import annotations
@@ -96,7 +103,6 @@ class SqliteStore:
 
     # -- lifecycle ---------------------------------------------------------
 
-
     def initialize(self, contract_fingerprint: str, embed_dimensions: int) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self._path, check_same_thread=False)
@@ -130,7 +136,6 @@ class SqliteStore:
             migrations.verify_meta(
                 conn, self._path, "contract_fingerprint", contract_fingerprint
             )
-
 
     def close(self) -> None:
         with self._lock:

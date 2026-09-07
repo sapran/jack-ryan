@@ -92,6 +92,23 @@ the original before spawning the competitor and says why.
 This is worth stating because it generalises: moving a method to a module
 function widens the blast radius of every double that targets it.
 
+### `sqlite.py` reads `migrations.SCHEMA_VERSION` by attribute, never by `from`-import
+
+`initialize` writes `migrations.SCHEMA_VERSION`, not `SCHEMA_VERSION` imported
+from that module. This looks like style and is not.
+
+`tests/test_migrations.py` monkeypatches `SCHEMA_VERSION` on the `migrations`
+module to stage a failing ladder step. An attribute read resolves through the
+module object at call time, so the patch reaches the store. A `from … import
+SCHEMA_VERSION` at the top of `sqlite.py` would bind the value once at import
+and the patch would be **half-dead** — `migrate` would see the raised version
+while `initialize`'s post-migration check saw the old one.
+
+The same applies to `migrations._STEPS` and
+`migrations.backup_before_migrating`, both read as module globals inside
+`migrations.py` itself. A future tidy-up that converts any of these to
+`from`-imports has to re-point the corresponding patch in the same change.
+
 ## Risks / Trade-offs
 
 **A pure move is where a silent edit hides.** Mitigated mechanically: the 196
@@ -110,4 +127,17 @@ should go.
 `self._dimensions`. The value still comes from the same place — the store sets it
 in `initialize` from the contract — but a caller could now pass a different one.
 No caller does; the port's signature is unchanged, and the delegate is the only
-call site.
+call site. Measured rather than assumed: a delegate passing
+`self._dimensions + 1` fails dozens of tests across `test_search`,
+`test_server`, `test_mentions` and `test_section_windows`, with the typed
+`ConfigError` reaching the REST boundary.
+
+**Three guard clauses moved inside the lock**, and the change is real even
+though it is harmless. On develop, `search_vector`'s width check,
+`search_keyword`'s empty-query return, and `mention_facets`' clause building all
+ran *before* `with self._lock:`. Now the whole extracted function runs inside the
+delegate's `with`. The lock is an `RLock`, nothing inside re-acquires it, and the
+widened region holds a length comparison, a regex `findall` and string
+formatting — no I/O. Strictly more atomic, marginally more contended, identical
+answers. The proposal says "no *observable* behaviour changes" rather than "no
+behaviour changes" because of this.

@@ -47,9 +47,10 @@ one has is a guess maintained forever.
 # single fixture. A runner covered only by a fixture rots between the day it is
 # written and the day it is first needed, which is the worst day to find out.
 #
-# `_SIDECAR_TRIGGER` and the `chunk_vectors` statement in `initialize` are part
-# of this freeze. They are separate artefacts, and leaving them out is how the
-# ladder and the create path drift apart.
+# `_SIDECAR_TRIGGER` and the `chunk_vectors` statement in `create_baseline`
+# below are part of this freeze. They are separate artefacts, and leaving them
+# out is how the ladder and the create path drift apart — which is why one
+# function issues all three rather than a call site assembling them.
 # ---------------------------------------------------------------------------
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS store_meta (

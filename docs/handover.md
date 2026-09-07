@@ -1300,9 +1300,51 @@ rule about locking here, and it stays legible because every acquisition is
 visible in one class — where a mixin would let a later method inherit the lock
 without taking it.
 
+**What two reviewers found.** Both worked from throwaway `git archive` copies
+rather than the worktree, after a previous round where a reviewer died
+mid-mutation; the worktree came back byte-identical both times.
+
+The equivalence review checked what a claim of "pure move" actually needs, by
+AST extraction rather than by reading: `initialize`'s statement order, commit
+point and attribute assignment all match; **14 raise-sites and 13 unique error
+messages on each side**, none added, removed, or changed in interpolation, so
+every rendered message is byte-identical; **26 lock sites on develop and 26
+now**, with one name change.
+
+It also falsified this change's own claim. "No behaviour changes" was too
+strong: three guard clauses that ran *before* the lock now run inside it —
+`search_vector`'s width check, `search_keyword`'s empty-query return,
+`mention_facets`' clause building — because the whole extracted function is
+inside the delegate's `with`. An `RLock` holding a length comparison, a regex and
+some formatting; harmless, and now written down as "no *observable* behaviour
+changes" instead of hidden behind the stronger phrase.
+
+And it found the change had made a comment stale **in the freeze notice itself**:
+`migrations.py` still said `_SIDECAR_TRIGGER` and the `chunk_vectors` statement
+were "in `initialize`", when they had moved to `create_baseline` 200 lines below
+the comment. Precisely the drift that notice exists to prevent. Fixed.
+
+The silent-failure review mutated the four new seams. **All four die**: dropping
+the sidecar trigger fails 7 tests with the exact symptom its own comment predicts
+(`UNIQUE constraint failed on chunk_vectors`, from rowid reuse after a delete);
+dropping the `chunk_vectors` create fails 125 and errors 92; a wrong `dimensions`
+in the delegate fails dozens with the typed `ConfigError` reaching REST.
+
+One is worth knowing about. Deleting **the re-read under the write lock** leaves
+709 passing and fails exactly one test. That single test is the whole guard
+against a re-applied `ADD COLUMN` on a concurrently-migrated store — a race the
+code itself documents as real, since `docker compose up` and `docker compose run
+cli` share a data directory. Recorded, not fixed.
+
+It also confirmed something that was right by construction rather than by intent:
+`initialize` reads `migrations.SCHEMA_VERSION` **by attribute**, so the ladder
+test's monkeypatch reaches the store. A `from`-import there would have left that
+patch half-dead. Now written into `design.md`, so a later import tidy-up has to
+re-point the patch in the same change.
+
 **What it did not check.** The test count is identical before and after, which is
-the weak evidence a pure move can offer; the byte-identity diffs and the stale-patch
-mutation are the real evidence. `replace_chunks` was not touched and not
+the weak evidence a pure move can offer; the byte-identity diffs and the
+mutations are the real evidence. `replace_chunks` was not touched and not
 re-verified — it stays whole in `sqlite.py` because its single transaction across
 text, FTS and vectors is the guarantee the seam exists to make. The parked bm25
 finding moved file and stays parked: `search_keyword` still orders by a score

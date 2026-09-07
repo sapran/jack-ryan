@@ -48,9 +48,17 @@ a structural guarantee.
   A module acquiring its own lock would be a second place threading is reasoned
   about, and `CLAUDE.md` has one rule on that subject for a reason.
 
-`sqlite.py` goes 1,155 → 650. No behaviour changes: the SQL moves verbatim, the
-frozen block moves byte-identically, and the port's method signatures are
-untouched.
+`sqlite.py` goes 1,155 → 657. The SQL moves verbatim, the frozen block moves
+byte-identically, and the port's method signatures are untouched.
+
+**No *observable* behaviour changes** — the phrasing matters, because review
+found the stronger claim to be false. Three guard clauses that ran before the
+lock now run inside it: `search_vector`'s width check, `search_keyword`'s
+empty-query return, and `mention_facets`' clause building, because the whole
+extracted function is now inside the delegate's `with`. The region is an
+`RLock` holding a length comparison, a regex `findall` and some string
+formatting — no I/O, nothing that blocks — so the widening is harmless and the
+answers are identical. It is recorded rather than hidden.
 
 **Deliberately not in scope.** The parked bm25 finding — `search_keyword` orders
 by a score FTS5 computes over the whole index, not over the casefile — moves file

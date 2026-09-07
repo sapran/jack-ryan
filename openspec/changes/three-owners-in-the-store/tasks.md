@@ -133,3 +133,56 @@
 - [x] 7.4 Run `openspec validate --all --strict`; verify 18 items pass.
 - [x] 7.5 Leak-grep the diff for `sk-`, `hf_`, `AKIA`, `ghp_`, `-----BEGIN`,
       `.ts.net`, `/Users/`, `/home/`; verify nothing matches.
+
+## 8. What review found, and what was done about it
+
+- [x] 8.1 Correct the freeze notice, which this change made stale in the notice
+      itself; verify the corrected text points at code a reader can find.
+      *`migrations.py:48` still said `_SIDECAR_TRIGGER` and the `chunk_vectors`
+      statement were "in `initialize`". They are in `create_baseline`, 200 lines
+      below the comment. That is exactly the drift the surrounding notice exists
+      to prevent — written into the notice. Now names `create_baseline` and says
+      why one function issues all three.*
+- [x] 8.2 Correct the proposal's "no behaviour changes"; verify the weaker claim
+      is the true one. *Three guard clauses that ran before the lock now run
+      inside it — `search_vector`'s width check, `search_keyword`'s empty-query
+      return, `mention_facets`' clause building — because the whole extracted
+      function is inside the delegate's `with`. Harmless (`RLock`, no I/O in the
+      widened region, identical answers) but real, so the claim is now "no
+      **observable** behaviour changes" and the delta is written into
+      `design.md`.*
+- [x] 8.3 Record why `sqlite.py` reads `migrations.SCHEMA_VERSION` by attribute;
+      verify what a `from`-import would break. *The ladder test patches
+      `SCHEMA_VERSION` on the module. An attribute read resolves at call time so
+      the patch reaches the store; a `from`-import would bind once and leave the
+      patch **half-dead** — `migrate` seeing the raised version while
+      `initialize`'s check saw the old one. Right by construction rather than by
+      intent, so it is now written down.*
+- [x] 8.4 Confirm the four new seams are covered; verify by mutation rather than
+      by reading. *All four die. Dropping `_SIDECAR_TRIGGER` from
+      `create_baseline`: 7 failed, with the exact symptom the trigger's comment
+      predicts — `UNIQUE constraint failed on chunk_vectors` from rowid reuse
+      after a delete. Dropping the `chunk_vectors` create: 125 failed, 92 errors.
+      A wrong `dimensions` in the delegate: dozens failed, typed `ConfigError`
+      reaching REST. Deleting the re-read under the write lock: 1 failed — see
+      8.5.*
+- [x] 8.5 Record that one seam is guarded by a single test; verify the count.
+      *Deleting the re-read leaves 709 passing and fails only
+      `test_the_version_is_re_read_under_the_write_lock`. That test is the sole
+      guard against a re-applied `ADD COLUMN` on a concurrently-migrated store —
+      a race the code documents as real. Recorded in
+      `docs/implementation-notes.md`, not fixed: a second signal means another
+      concurrency test or a structural guard, either of which is its own change.*
+- [x] 8.6 Confirm the restructured race test still stages a real race; verify by
+      observing the competitor's effect, not by reading the double. *Instrumented
+      in a throwaway copy: version on disk goes 4 → 7 and `text_source` appears
+      while the outer store sits between its unlocked read and `BEGIN IMMEDIATE`.
+      `assert raced` proves completion structurally — it is the last statement
+      after `other.close()`, and `backup_before_migrating` is called outside the
+      `try`, so a failure in the nested migration propagates rather than being
+      converted into the ladder's own `ConfigError`. The two `monkeypatch.setattr`
+      calls on one attribute unwind in reverse, so nothing leaks into the suite.*
+- [x] 8.7 Tidy what the deletion left behind; verify the file still parses and
+      the suite is unchanged. *Two double-blank-lines inside the class body, both
+      where deleted code had been, and a module docstring that was the only one
+      of the three not saying how the trio divides. 710 passed, 3 skipped.*
