@@ -6,6 +6,28 @@ and why it was parked.
 
 ## Parked
 
+- **"The fold is on" and "the identity says the fold is on" are computed from
+  different things.** `app.py` decides `folding` from the summariser *object*
+  (`chunk_summaries and chosen_summariser is not None`); `CorpusIdentity.__str__`
+  decides whether to append the `|summariser=` component from the summariser's
+  *name* being truthy. A summariser that exists but reports `name = ""` therefore
+  folds summaries into what is embedded while recording the identity of an
+  unfolded corpus — which is the direction that must never happen, because that
+  corpus then opens under a plain configuration with bare chunks compared against
+  summary-plus-chunk vectors and nothing downstream able to detect it. The
+  reverse direction, appending a component that should be absent, is guarded and
+  tested. Whitespace-only is the same asymmetry once removed:
+  `CorpusIdentity(Contract(), "model", " ")` renders `|summariser= `, which is
+  truthy here but which `build_summariser` would have stripped to nothing — two
+  spellings of "no summariser" reaching two identities. **Not reachable through
+  shipped configuration**: `summarising/__init__.py` strips and rejects an empty
+  `summary_model`, so only `build_context`'s `summariser=` injection seam can
+  produce it, and only test doubles use that today. Found by the silent-failure
+  review of `one-value-for-corpus-identity`. Parked rather than fixed: the honest
+  repair is to make the two definitions agree — refuse at the composition root
+  when folding is on and the summariser's name is empty — which is a new refusal
+  on a startup path and belongs in a change that can argue for it.
+
 - **One test stands between this codebase and a re-applied `ADD COLUMN`.** The
   re-read under the write lock in `migrations.migrate` — the line that makes the
   earlier unlocked read safe — is caught by exactly one test,

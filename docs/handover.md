@@ -1400,6 +1400,44 @@ class would make the check and the thing checked the same code — the same reas
 the escaping oracle is a literal rather than a recomputation. Written into the
 class docstring and `CLAUDE.md` so a later tidy-up does not add it.
 
+**What review found: one guard that was never there.** Dropping `_escaped()`
+around the embedder component left **all 712 tests green**. Of the three composed
+values, `embed_model` and the summariser each had an impersonation test; the
+embedder had none. Worse,
+`test_two_different_configurations_cannot_share_one_identity` looks like it
+covers this and does not — it passes with the escaping removed, because one
+escaped end is enough to break that particular collision, and its own docstring
+warns about exactly that shape of false coverage.
+
+What an unescaped embedder makes reachable is the worst collision available here:
+a name ending `|summariser=q` renders the identity of a corpus folded by
+summariser `q`. A folded corpus would open under an unfolded configuration — bare
+chunks embedded against summary-plus-chunk vectors — with `/health` reporting a
+match. Reachability today is nil, since both shipped embedders name themselves
+with class literals, but `EmbedderPort.name` is a bare `str` on the protocol and
+the argument for escaping it is written in the code. A defence with no test is
+one a later refactor deletes for free.
+`test_an_embedder_name_cannot_impersonate_another_component` now closes it,
+through the reader-side parser so the check and the thing checked stay different
+code. The surviving mutation now fails exactly that test.
+
+The rest held: the two new tests were each watched failing, the golden oracle is
+unchanged and still fires, `docs/retrieval-baseline.json` is not in the diff, and
+removing the `str()` at the store boundary is loud — `sqlite3.ProgrammingError:
+Error binding parameter 2: type 'CorpusIdentity'`.
+
+**One finding recorded, not fixed, and it is the sharper of the two.** "The fold
+is on" and "the identity says the fold is on" are computed from different things:
+`app.py` decides `folding` from the summariser **object**, while `__str__`
+decides the `|summariser=` component from its **name** being truthy. A summariser
+that exists but reports `name = ""` folds summaries into what is embedded while
+recording an unfolded identity — the direction that must never happen, since that
+corpus then opens under a plain configuration undetectably. Not reachable through
+shipped configuration (`build_summariser` rejects an empty `summary_model`), only
+through the `summariser=` injection seam that test doubles use. The repair is a
+refusal at the composition root when folding is on and the name is empty, which
+is a new startup refusal and belongs in a change that can argue for it.
+
 **What it did not check.** Both golden literals are unchanged and neither file is
 in the diff, but the retrieval baseline was not re-measured —
 `scripts/evaluate_retrieval.py` needs model weights and does not run in CI, so

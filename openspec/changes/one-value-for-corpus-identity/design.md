@@ -102,4 +102,15 @@ test.
 string. Those cannot disagree today — the rendering is a total function of the
 fields — but a future component that rendered conditionally on something outside
 the dataclass would make them diverge. Nothing compares identities by value; the
-store compares strings.
+store compares strings. Verified in review: no code path compares two identities,
+hashes one, or uses one as a dict key.
+
+**And it gains a `__repr__` that is not the recorded string.** `str(identity)` is
+the value an operator compares against a refusal; `repr(identity)` is the
+generated dataclass repr, which prints the whole `Contract`. No site formats an
+identity with `!r` today, and a refusal message interpolates the string it read
+from `store_meta` rather than a value. But this is a class whose entire purpose is
+one string, so a later error message written with `!r` would print something an
+operator cannot compare. Recorded rather than fixed: overriding `__repr__` to
+return the rendered string would hide the fields from a debugger, which is the
+opposite trade and no more obviously right.

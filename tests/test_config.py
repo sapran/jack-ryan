@@ -612,6 +612,44 @@ def test_a_summariser_name_cannot_impersonate_another_component():
     )
 
 
+def test_an_embedder_name_cannot_impersonate_another_component():
+    """The third composed value, which had no impersonation test of its own.
+
+    `embed_model` and the summariser each had one; the embedder did not, and
+    removing `_escaped` from the embedder left the whole suite green. The
+    argument for escaping it is written in the code — `EmbedderPort.name` is an
+    unvalidated `str` on the protocol — and a defence with no test is one a
+    later refactor deletes for free.
+
+    What an unescaped embedder makes reachable is the worst collision available
+    here: a name ending `|summariser=q` renders the identity of a corpus folded
+    by summariser `q`. A folded corpus would then open under an unfolded
+    configuration — bare chunks embedded against vectors built from
+    summary-plus-chunk — with `/health` reporting a match.
+
+    `test_two_different_configurations_cannot_share_one_identity` looks like it
+    covers this and does not: it passes with the embedder's escaping removed,
+    because one escaped end is enough to break that particular collision. Its
+    own docstring warns about exactly this shape of false coverage.
+    """
+    from jackryan.config import Contract, corpus_fingerprint
+
+    forged = corpus_fingerprint(Contract(), "model|summariser=q")
+    parsed = _parsed_identity(forged)
+    assert "summariser" not in parsed, (
+        "an embedder name forged the summariser component: a corpus folded by "
+        "'q' and one folded by nothing now share an identity, so either opens "
+        "under the other's configuration with nothing downstream able to tell"
+    )
+    assert parsed["embedder"] == "model|summariser=q", (
+        "the separator did not survive the round trip, so escaping is lossy and "
+        "two embedders that differ can reach one identity"
+    )
+    assert forged != corpus_fingerprint(Contract(), "model", "q"), (
+        "the forged identity equals the genuinely folded one"
+    )
+
+
 def test_the_shipped_example_config_loads(monkeypatch):
     """The template an operator copies must be one the loader accepts.
 

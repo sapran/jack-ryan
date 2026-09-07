@@ -86,3 +86,64 @@
       neither file is in the diff.*
 - [x] 5.3 Run `openspec validate --all --strict`; verify 18 items pass.
 - [x] 5.4 Leak-grep the diff; verify nothing matches.
+
+## 6. What review found
+
+- [x] 6.1 Have the rendered string checked against develop's implementation over
+      hostile inputs, not just the golden literal; verify the check covered the
+      characters escaping exists for. *Review ran both implementations over 4
+      contracts × 22 × 22 name pairs including `""`, `" "`, `"\t"`, `"\x00"`,
+      `"\n"`, `"|"`, `"\\"`, `"=="`, non-ASCII, and `None`/`0`/`False` passed
+      where a `str` belonged: **0 divergences**, including the two-argument
+      default path. Whitespace-only is truthy in both and appends; `None` is
+      falsy in both and omits.*
+- [x] 6.2 Confirm no dataclass field shadows either new property and nothing
+      still passes the old names as keyword arguments; verify from
+      `dataclasses.fields`, not by reading. *Fields are exactly `config`,
+      `identity`, `store`, `embedder`, `casefiles`, `ingestion`, `search`; both
+      old names resolve to `property` objects in `Context.__dict__`. `app.py` is
+      the only construction site and no `dataclasses.replace` on a `Context`
+      exists anywhere.*
+- [x] 6.3 Confirm a value cannot reach the store where a string belonged; verify
+      by removing the `str()`. *Loud, not silent: `sqlite3.ProgrammingError:
+      Error binding parameter 2: type 'CorpusIdentity'`, six tests red in
+      `test_app.py`.*
+- [x] 6.4 Record the `__repr__` observation; verify why it is not fixed.
+      *`repr(identity)` is the generated dataclass repr, not the recorded string.
+      Nothing formats an identity with `!r` today and the refusal message
+      interpolates what it read from `store_meta`. Overriding `__repr__` would
+      hide the fields from a debugger — the opposite trade, no more obviously
+      right — so it is written into `design.md` instead.*
+- [x] 6.6 Close the one unguarded path review found; verify with the mutation
+      that survived. *Dropping `_escaped()` around the embedder left **all 712
+      tests green**. Of the three composed values, `embed_model` and the
+      summariser each had an impersonation test and the embedder had none — and
+      `test_two_different_configurations_cannot_share_one_identity` looks like it
+      covers this and does not, because one escaped end is enough to break that
+      particular collision; its own docstring warns about that shape of false
+      coverage. Added `test_an_embedder_name_cannot_impersonate_another_component`,
+      using the reader-side `_parsed_identity` so the check and the thing checked
+      stay different code. The surviving mutation now fails exactly that test,
+      by name. What it makes reachable is the worst collision available here: an
+      embedder named `model|summariser=q` renders the identity of a corpus folded
+      by `q`, so a folded corpus opens under an unfolded configuration with
+      `/health` reporting a match. Nil reachability today — both shipped
+      embedders name themselves with class literals — but `EmbedderPort.name` is
+      a bare `str` on the protocol, and the argument for escaping it is written
+      in the code.*
+- [x] 6.7 Record the folding asymmetry review found; verify it is not reachable
+      through shipped configuration before parking it. *`app.py` decides
+      `folding` from the summariser **object**; `__str__` decides the component
+      from its **name** being truthy. A summariser with `name = ""` folds while
+      recording an unfolded identity — the direction that must never happen.
+      `summarising/__init__.py` strips and rejects an empty `summary_model`, so
+      only the `summariser=` injection seam reaches it and only test doubles use
+      that. Recorded in `docs/implementation-notes.md`, not fixed: the repair is
+      a new refusal on a startup path and belongs in a change that argues for it.*
+- [x] 6.5 Explain the reviewer's scope note rather than dismissing it. *It
+      reported the diff as also carrying `services/windowing.py` and the storage
+      split. It had diffed against the **local** `develop` ref, stale at
+      `aed01d2` — before #31 and #32 merged. Against `origin/develop`
+      (`ffb6626`) the diff is 9 files and 515 insertions, which is this change
+      alone. Its conclusions are unaffected; it read the right files. Future
+      review briefs should name `origin/develop` explicitly.*
