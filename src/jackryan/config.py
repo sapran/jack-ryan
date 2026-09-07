@@ -305,6 +305,50 @@ class Config:
         return self.data_dir / "jackryan.db"
 
 
+@dataclass(frozen=True)
+class CorpusIdentity:
+    """What a corpus was built under: the contract, plus who filled it.
+
+    A value rather than a string, because the parts and the rendering were kept
+    apart and could disagree. `Context` used to carry `corpus_fingerprint: str`
+    and `summariser_name: str` as two fields computed from the same three lines
+    and stored separately, with nothing making them agree — and
+    `summariser_name` had no reader in `src/` at all. One value with the
+    rendering on it removes the question.
+
+    It owns the composition and nothing else. `Contract.fingerprint()` still
+    renders its own five components; this joins that to the names the code
+    chose at startup. That division is the point of the whole design and is
+    argued at length in `corpus_fingerprint` below: the embedder and the
+    summariser are *composed* in here rather than *declared* in the contract,
+    because a declared copy of something the code decides can disagree with the
+    code.
+
+    Deliberately not parseable. `tests/test_config.py` splits an identity string
+    with a parser of its own to prove that a crafted name cannot impersonate a
+    component; routing that test through a `parse` on this class would make the
+    check and the thing checked the same code, which is what the test exists to
+    avoid.
+    """
+
+    contract: Contract
+    embedder: str
+    summariser: str = ""
+
+    def __str__(self) -> str:
+        """The exact string the store records and refuses on."""
+        # The contract's fingerprint is already escaped component by component,
+        # so it is joined raw; the names composed onto it here are what need
+        # escaping. `EmbedderPort.name` is an unvalidated `str` and a
+        # summariser's name carries an operator-supplied model name, so a name
+        # carrying a separator is exactly how the unreachable collision becomes
+        # reachable.
+        identity = f"{self.contract.fingerprint()}|embedder={_escaped(self.embedder)}"
+        if self.summariser:
+            identity = f"{identity}|summariser={_escaped(self.summariser)}"
+        return identity
+
+
 def corpus_fingerprint(
     contract: Contract, embedder_name: str, summariser_name: str = ""
 ) -> str:
@@ -345,16 +389,13 @@ def corpus_fingerprint(
     and never embedded, so it moves no vector and may be turned on over a corpus
     ingested without it. Which summariser wrote a stored document summary is
     recorded per document instead, beside the summary itself.
+
+    Kept as a function because ten test sites and the retrieval-evaluation
+    oracle call it, and because "give me the string for these three values" is a
+    reasonable thing to ask without holding a value. The rendering itself lives
+    on `CorpusIdentity` above, so there is one implementation of it.
     """
-    # The contract's fingerprint is already escaped component by component, so it
-    # is joined raw; the names composed onto it here are what need escaping.
-    # `EmbedderPort.name` is an unvalidated `str` and a summariser's name carries
-    # an operator-supplied model name, so a name carrying a separator is exactly
-    # how the unreachable collision becomes reachable.
-    identity = f"{contract.fingerprint()}|embedder={_escaped(embedder_name)}"
-    if summariser_name:
-        identity = f"{identity}|summariser={_escaped(summariser_name)}"
-    return identity
+    return str(CorpusIdentity(contract, embedder_name, summariser_name))
 
 
 def canonical_embed_library(declared: str) -> tuple[str, str] | None:

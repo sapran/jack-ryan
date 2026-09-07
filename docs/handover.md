@@ -1352,6 +1352,103 @@ FTS5 computes over the whole index rather than the casefile.
 
 ---
 
+## One value for corpus identity — 2026-09-07
+
+Last of the second architecture-review batch, and the one where the review was
+**wrong about the size of the problem**.
+
+**What the review claimed, and what is actually true.** It said corpus identity
+is "spread across four files, owned by nothing". Three of the four own their part
+correctly: `app.py` composes from runtime-chosen values, which
+`layered-configuration` *requires* happen where those values are known;
+`summarising/model.py` owns the summariser's name and recipe hash, which is that
+module's business; `storage/` owns the comparison and the refusal, because it
+holds the recorded value. Only `config.py` had genuine duplication — the
+rendering split between `Contract.fingerprint()` and `corpus_fingerprint()`, two
+functions that had to agree on a separator.
+
+**What was real.** `Context` carried two fields, `corpus_fingerprint: str` and
+`summariser_name: str`, computed from the same three lines and stored apart with
+nothing making them agree — and `summariser_name` had **no production reader at
+all**. A grep across `src/` and `scripts/` returned only its own assignment. That
+is the same shape the `casefile-statistics` change fixed: a value on a seam that
+is written and never read.
+
+`Context.identity` is now one `CorpusIdentity`, and both old names are read-only
+properties over it. **The whole suite passed with zero test edits** before the new
+tests were added — which is the evidence that these are views rather than a
+rename, since about thirteen test sites and three production call sites read them.
+
+**The test that could not be written before.** The rule that the `|summariser=`
+component appears exactly when a summariser is folded in was a coincidence of two
+functions agreeing; there was no single thing to state it about. Now:
+`("|summariser=" in str(identity)) == bool(identity.summariser)`. Watched failing
+by appending the component unconditionally — three tests go red, including the
+golden oracle read from a real `store_meta` table.
+
+A second test asserts the two views cannot disagree with the value they read
+from. Watched failing by making `summariser_name` return `""`. Worth knowing:
+`tests/test_summarising.py`'s equivalent assertion is **skipped** without an LLM
+endpoint, so this is real new coverage rather than a duplicate. It also asserts
+the *field* is gone rather than merely shadowed, because a re-added field would
+satisfy the property test while restoring the hazard.
+
+**What was refused.** `CorpusIdentity` gets no `parse`. `tests/test_config.py`
+splits an identity with a parser of its own to prove a crafted summariser name
+containing `|embedder=` cannot impersonate a component; routing that through the
+class would make the check and the thing checked the same code — the same reason
+the escaping oracle is a literal rather than a recomputation. Written into the
+class docstring and `CLAUDE.md` so a later tidy-up does not add it.
+
+**What review found: one guard that was never there.** Dropping `_escaped()`
+around the embedder component left **all 712 tests green**. Of the three composed
+values, `embed_model` and the summariser each had an impersonation test; the
+embedder had none. Worse,
+`test_two_different_configurations_cannot_share_one_identity` looks like it
+covers this and does not — it passes with the escaping removed, because one
+escaped end is enough to break that particular collision, and its own docstring
+warns about exactly that shape of false coverage.
+
+What an unescaped embedder makes reachable is the worst collision available here:
+a name ending `|summariser=q` renders the identity of a corpus folded by
+summariser `q`. A folded corpus would open under an unfolded configuration — bare
+chunks embedded against summary-plus-chunk vectors — with `/health` reporting a
+match. Reachability today is nil, since both shipped embedders name themselves
+with class literals, but `EmbedderPort.name` is a bare `str` on the protocol and
+the argument for escaping it is written in the code. A defence with no test is
+one a later refactor deletes for free.
+`test_an_embedder_name_cannot_impersonate_another_component` now closes it,
+through the reader-side parser so the check and the thing checked stay different
+code. The surviving mutation now fails exactly that test.
+
+The rest held: the two new tests were each watched failing, the golden oracle is
+unchanged and still fires, `docs/retrieval-baseline.json` is not in the diff, and
+removing the `str()` at the store boundary is loud — `sqlite3.ProgrammingError:
+Error binding parameter 2: type 'CorpusIdentity'`.
+
+**One finding recorded, not fixed, and it is the sharper of the two.** "The fold
+is on" and "the identity says the fold is on" are computed from different things:
+`app.py` decides `folding` from the summariser **object**, while `__str__`
+decides the `|summariser=` component from its **name** being truthy. A summariser
+that exists but reports `name = ""` folds summaries into what is embedded while
+recording an unfolded identity — the direction that must never happen, since that
+corpus then opens under a plain configuration undetectably. Not reachable through
+shipped configuration (`build_summariser` rejects an empty `summary_model`), only
+through the `summariser=` injection seam that test doubles use. The repair is a
+refusal at the composition root when folding is on and the name is empty, which
+is a new startup refusal and belongs in a change that can argue for it.
+
+**What it did not check.** Both golden literals are unchanged and neither file is
+in the diff, but the retrieval baseline was not re-measured —
+`scripts/evaluate_retrieval.py` needs model weights and does not run in CI, so
+the corpus field's continuity rests on the byte-comparison alone. The parked
+naming drift is untouched: `initialize(contract_fingerprint=…)`, the `store_meta`
+key, and the `"contract"` field in `/health` and `jackryan status` all still say
+*contract* while holding corpus identity. Renaming the stored key needs a
+migration rung and the JSON field is published.
+
+---
+
 ## What this environment could not do, so you should not trust it was checked
 
 - **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real

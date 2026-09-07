@@ -1,0 +1,24 @@
+schema: spec-driven
+created: 2026-09-07
+
+# No spec delta, and this one was closer than the other two in the batch — see
+# `proposal.md` § Impact.
+#
+# `layered-configuration` already requires that "the value reported to an
+# operator as the instance's corpus identity SHALL be the value the store
+# enforces". That was already true and already asserted by
+# `test_the_reported_identity_is_the_one_the_store_enforces`.
+#
+# What this change removes is a disagreement between two *internal* fields on
+# `Context`. `summariser_name` reaches no adapter surface: `/health` and
+# `jackryan status` carry only the identity string. So no operator could ever
+# have observed the inconsistency, and a scenario asserting it would be a claim
+# about implementation rather than about behaviour.
+#
+# The rendered identity string is byte-identical, checked against the literal in
+# `test_escaping_leaves_every_existing_identity_unchanged` — which was read from
+# a real `store_meta` table rather than recomposed from code. The composition
+# rule the archived designs argue for is unchanged: identity is still composed at
+# the composition root from the runtime-chosen values, never declared in the
+# contract.
+skip_specs: true

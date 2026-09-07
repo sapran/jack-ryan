@@ -507,6 +507,59 @@ def test_a_named_summariser_is_part_of_corpus_identity():
     assert folded == f"{unfolded}|summariser=qwen3/9a3f1c2b4d5e"
 
 
+def test_the_summariser_component_appears_exactly_when_there_is_a_summariser():
+    """The omit rule, stated about the one value that holds both halves.
+
+    This could not be asserted before corpus identity was a type. The rendered
+    string and the summariser's name were two fields on `Context`, computed from
+    the same three lines and stored apart, with nothing making them agree — and
+    the name had no reader in `src/` at all. There was no single thing to state
+    the property about.
+
+    The rule is load-bearing in one direction: a component that is absent must
+    contribute nothing, so an instance with folding off produces byte for byte
+    the identity a corpus recorded before summaries existed, and those corpora
+    still open. A component appended unconditionally would refuse the corpora it
+    was added to protect.
+    """
+    from jackryan.config import Contract, CorpusIdentity
+
+    for summariser in ("", "qwen3/9a3f1c2b4d5e"):
+        identity = CorpusIdentity(Contract(), "model", summariser)
+        assert ("|summariser=" in str(identity)) == bool(identity.summariser), (
+            f"the value says summariser={summariser!r} and the string it renders "
+            f"disagrees: {identity}"
+        )
+
+
+def test_the_context_cannot_report_an_identity_it_does_not_hold():
+    """`corpus_fingerprint` and `summariser_name` are views, not copies.
+
+    They were two fields once. A `Context` could be built with a fingerprint
+    naming one summariser and a `summariser_name` naming another, and nothing
+    would notice; the composition root happened to set them consistently.
+    """
+    from dataclasses import fields
+    from types import SimpleNamespace
+
+    from jackryan.app import Context
+    from jackryan.config import Contract, CorpusIdentity
+
+    identity = CorpusIdentity(Contract(), "model", "qwen3/9a3f1c2b4d5e")
+    assert "summariser_name" not in {f.name for f in fields(Context)}, (
+        "the summariser is a second field again, so the two can disagree"
+    )
+    # Read off a bare value rather than a built Context: the property is on the
+    # class, and building one would need a store, an embedder and three services
+    # to assert something about two lines of arithmetic.
+    assert Context.summariser_name.fget(SimpleNamespace(identity=identity)) == (
+        identity.summariser
+    )
+    assert Context.corpus_fingerprint.fget(SimpleNamespace(identity=identity)) == str(
+        identity
+    )
+
+
 def _parsed_identity(identity: str) -> dict[str, str]:
     """Read an identity back the way `_escaped` promises it round-trips.
 
@@ -556,6 +609,44 @@ def test_a_summariser_name_cannot_impersonate_another_component():
     assert parsed["summariser"] == "qwen3|embedder=model", (
         "the separator did not survive the round trip, so escaping is lossy and "
         "two summarisers that differ can reach one identity"
+    )
+
+
+def test_an_embedder_name_cannot_impersonate_another_component():
+    """The third composed value, which had no impersonation test of its own.
+
+    `embed_model` and the summariser each had one; the embedder did not, and
+    removing `_escaped` from the embedder left the whole suite green. The
+    argument for escaping it is written in the code — `EmbedderPort.name` is an
+    unvalidated `str` on the protocol — and a defence with no test is one a
+    later refactor deletes for free.
+
+    What an unescaped embedder makes reachable is the worst collision available
+    here: a name ending `|summariser=q` renders the identity of a corpus folded
+    by summariser `q`. A folded corpus would then open under an unfolded
+    configuration — bare chunks embedded against vectors built from
+    summary-plus-chunk — with `/health` reporting a match.
+
+    `test_two_different_configurations_cannot_share_one_identity` looks like it
+    covers this and does not: it passes with the embedder's escaping removed,
+    because one escaped end is enough to break that particular collision. Its
+    own docstring warns about exactly this shape of false coverage.
+    """
+    from jackryan.config import Contract, corpus_fingerprint
+
+    forged = corpus_fingerprint(Contract(), "model|summariser=q")
+    parsed = _parsed_identity(forged)
+    assert "summariser" not in parsed, (
+        "an embedder name forged the summariser component: a corpus folded by "
+        "'q' and one folded by nothing now share an identity, so either opens "
+        "under the other's configuration with nothing downstream able to tell"
+    )
+    assert parsed["embedder"] == "model|summariser=q", (
+        "the separator did not survive the round trip, so escaping is lossy and "
+        "two embedders that differ can reach one identity"
+    )
+    assert forged != corpus_fingerprint(Contract(), "model", "q"), (
+        "the forged identity equals the genuinely folded one"
     )
 
 
