@@ -25,7 +25,15 @@ import sqlite_vec
 
 from ..errors import ConfigError, ConflictError
 from . import migrations, retrieval
-from .port import Casefile, CasefileStatistics, Chunk, Document, Mention, MentionFacet
+from .port import (
+    Casefile,
+    CasefileStatistics,
+    Chunk,
+    Document,
+    DocumentPage,
+    Mention,
+    MentionFacet,
+)
 
 
 def _to_iso(value: datetime) -> str:
@@ -34,6 +42,47 @@ def _to_iso(value: datetime) -> str:
 
 def _from_iso(value: str) -> datetime:
     return datetime.fromisoformat(value)
+
+
+def _document_selection(
+    include_expanded: bool, parent_id: str | None
+) -> tuple[str, str, str]:
+    """The predicate, the ordering and the selection's name — decided once.
+
+    Returned together rather than computed at each call site because the page
+    and the count must run under the *same* predicate: a total counted under a
+    wider predicate than the rows silently tells a caller there is more, and one
+    counted under a narrower predicate hides evidence behind a `truncated` of
+    false. This is the same argument the mention filter makes for living inside
+    the retrievers' SQL rather than over their results.
+
+    Two orderings, because the two selections are read for different reasons. A
+    casefile's intake is chronological — newest first is what an analyst who has
+    just ingested something wants. A container's contents share their parent's
+    ingest instant almost exactly, so `created_at` orders them arbitrarily while
+    the containment path orders them the way the container does.
+
+    Every ordering ends in `d.id`, which is unique, so each is a total order and
+    a page boundary cannot land in the middle of a tie. That is deliberately
+    unlike the fused-ranking rule, which forbids breaking a tie by an identifier:
+    that rule exists so two stores built from the same documents rank alike, and
+    document ids differ between stores. Here the requirement is only that one
+    unchanged store pages consistently, and `d.id` is reached only when two
+    documents are equal on every corpus value before it.
+    """
+    if parent_id is not None:
+        return (
+            " AND d.parent_id = ?",
+            " ORDER BY d.containment_path, d.created_at, d.id",
+            "children",
+        )
+    if include_expanded:
+        return "", " ORDER BY d.created_at DESC, d.containment_path, d.id", "all"
+    return (
+        " AND d.parent_id IS NULL",
+        " ORDER BY d.created_at DESC, d.containment_path, d.id",
+        "ingested",
+    )
 
 
 def _row_to_casefile(row: sqlite3.Row) -> Casefile:
@@ -314,14 +363,6 @@ class SqliteStore:
             ).fetchone()
         return _row_to_document(row) if row else None
 
-    def list_children(self, document_id: str) -> list[Document]:
-        with self._lock:
-            rows = self._db.execute(
-                "SELECT * FROM documents WHERE parent_id = ? ORDER BY containment_path",
-                (document_id,),
-            ).fetchall()
-        return [_row_to_document(r) for r in rows]
-
     def ancestors(self, document_id: str) -> list[Document]:
         """The chain from the directly ingested file down to this document's parent.
 
@@ -383,29 +424,71 @@ class SqliteStore:
             ).fetchall()
         return [_row_to_document(r) for r in rows]
 
-    def list_documents(
-        self, casefile_id: str, include_expanded: bool = False
-    ) -> list[Document]:
-        """A casefile's documents, newest first.
+    def list_document_page(
+        self,
+        casefile_id: str,
+        include_expanded: bool = False,
+        parent_id: str | None = None,
+        offset: int = 0,
+        limit: int = -1,
+    ) -> DocumentPage:
+        """One page of a casefile's documents, and how many the selection holds.
 
-        Expanded children are excluded unless asked for: three archives that
-        expand to forty thousand documents are three things an analyst put in,
-        and an inventory that returns forty thousand rows is not an inventory.
         Each row carries how many children it has, so a caller can see there is
-        more to reach without paying to fetch it.
+        more to reach without paying to fetch it — and so a container nested
+        inside another is markable, which the children selection is the whole
+        reason for.
         """
-        clause = "" if include_expanded else " AND d.parent_id IS NULL"
+        clause, order, selection = _document_selection(include_expanded, parent_id)
+        predicate = f" WHERE d.casefile_id = ?{clause}"
+        binds: tuple[object, ...] = (
+            (casefile_id,) if parent_id is None else (casefile_id, parent_id)
+        )
         with self._lock:
+            total = self._db.execute(
+                f"SELECT COUNT(*) AS total FROM documents d{predicate}", binds
+            ).fetchone()["total"]
+            # The page is chosen on a narrow query and widened afterwards.
+            # Ordering `SELECT d.*` directly puts `extracted_text` through the
+            # sorter, so a single page of a 40,000-document casefile would cost
+            # the whole corpus's text in memory — the exact cost this page
+            # exists to avoid.
             rows = self._db.execute(
                 "SELECT d.*, ("
                 "   SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id"
                 " ) AS child_count"
                 " FROM documents d"
-                f" WHERE d.casefile_id = ?{clause}"
-                " ORDER BY d.created_at DESC",
-                (casefile_id,),
+                " JOIN (SELECT d.id FROM documents d"
+                f"{predicate}{order} LIMIT ? OFFSET ?) chosen ON chosen.id = d.id"
+                # Repeated, and load-bearing: a join does not preserve the
+                # subquery's order, so without this the rows come back in
+                # whatever order the join produced and consecutive pages
+                # overlap.
+                f"{order}",
+                (*binds, int(limit), int(offset)),
             ).fetchall()
-        return [_row_to_document(r) for r in rows]
+        return DocumentPage(
+            documents=[_row_to_document(r) for r in rows],
+            total_matching=total,
+            offset=int(offset),
+            limit=int(limit),
+            selection=selection,
+        )
+
+    def list_documents(
+        self, casefile_id: str, include_expanded: bool = False
+    ) -> list[Document]:
+        """A casefile's documents, unbounded.
+
+        Every adapter reaches `list_document_page` instead: this loads each
+        document's whole extracted text, which is the entire corpus for a real
+        one. It remains for callers that legitimately want a small casefile in
+        full, and it delegates rather than repeating the predicate, so the two
+        cannot come to disagree about what "the casefile's documents" means.
+        """
+        return self.list_document_page(
+            casefile_id, include_expanded=include_expanded
+        ).documents
 
     # -- chunks ------------------------------------------------------------
 

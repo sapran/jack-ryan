@@ -677,7 +677,9 @@ def test_a_content_routed_container_expands(context, tmp_path):
     )
     parent = next(d for d in everything if d.filename == "'bundle.zip'")
     assert parent.extractor.startswith(f"{CONTENT_ROUTED}+")
-    children = context.ingestion.list_children(casefile.short_id, parent.id)
+    children = context.ingestion.list_document_page(
+        casefile.short_id, parent.id
+    ).documents
     assert [c.filename for c in children] == ["orders.xlsx"]
     assert "архива" in children[0].extracted_text
 

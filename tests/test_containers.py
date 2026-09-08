@@ -76,7 +76,9 @@ def test_the_container_is_a_document_and_its_entries_are_its_children(
     top = context.store.list_documents(casefile.id)
     assert [d.filename for d in top] == ["bundle.zip"]
     assert top[0].child_count == 2
-    children = context.store.list_children(top[0].id)
+    children = context.store.list_document_page(
+        casefile.id, parent_id=top[0].id
+    ).documents
     assert {c.filename for c in children} == {"a.txt", "b.txt"}
     assert all(c.parent_id == top[0].id for c in children)
 
@@ -191,7 +193,9 @@ def test_an_attachment_is_a_child_of_its_message(context, casefile, tmp_path):
     context.ingestion.ingest(casefile.short_id, path)
 
     message = context.store.list_documents(casefile.id)[0]
-    children = context.store.list_children(message.id)
+    children = context.store.list_document_page(
+        casefile.id, parent_id=message.id
+    ).documents
     assert [c.filename for c in children] == ["schedule.txt"]
     assert "rent schedule" in children[0].extracted_text
 
@@ -206,7 +210,9 @@ def test_a_mailbox_is_expanded_into_its_messages(context, casefile, tmp_path):
     context.ingestion.ingest(casefile.short_id, path)
 
     mailbox = context.store.list_documents(casefile.id)[0]
-    children = context.store.list_children(mailbox.id)
+    children = context.store.list_document_page(
+        casefile.id, parent_id=mailbox.id
+    ).documents
     assert len(children) == 2
     subjects = " ".join(c.extracted_text for c in children)
     assert "First" in subjects and "Second" in subjects
@@ -375,7 +381,9 @@ def test_children_are_reachable_through_the_service(context, casefile, tmp_path)
     context.ingestion.ingest(casefile.short_id, bundle)
     container = context.ingestion.list_documents(casefile.short_id)[0]
 
-    children = context.ingestion.list_children(casefile.short_id, container.short_id)
+    children = context.ingestion.list_document_page(
+        casefile.short_id, container.short_id
+    ).documents
 
     assert [c.filename for c in children] == ["a.txt"]
 

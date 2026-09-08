@@ -77,7 +77,10 @@ async def test_every_advertised_tool_still_declares_its_parameters(server):
     expected = {
         "case_list_casefiles": (set(), []),
         "case_casefile_overview": ({"casefile"}, ["casefile"]),
-        "case_list_documents": ({"casefile"}, ["casefile"]),
+        "case_list_documents": (
+            {"casefile", "parent", "expanded", "offset", "limit"},
+            ["casefile"],
+        ),
         "case_search": ({"casefile", "query", "limit", "mention"}, ["casefile", "query"]),
         "case_mentions": ({"casefile", "kind", "limit"}, ["casefile"]),
         "case_get_passage": ({"casefile", "chunk_id"}, ["casefile", "chunk_id"]),
