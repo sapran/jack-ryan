@@ -576,7 +576,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
                 text_source=found.text_source,
                 locations_recorded=record.verdict,
                 also_found_at=tuple(
-                    one_line(location.containment_path, 200)
+                    one_line(location.full_path, 200)
                     for location in record.also_found_at
                 ),
                 locations_total=record.recorded.total,

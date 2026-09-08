@@ -397,7 +397,11 @@ class SqliteStore:
         return _row_to_document(row) if row else None
 
     def record_document_location(
-        self, document_id: str, containment_path: str, first_seen_at: datetime
+        self,
+        document_id: str,
+        source_root: str,
+        containment_path: str,
+        first_seen_at: datetime,
     ) -> bool:
         # INSERT OR IGNORE, never OR REPLACE: the first observation's timestamp
         # is the fact worth keeping, and the return value is how the caller
@@ -406,8 +410,9 @@ class SqliteStore:
         with self._lock:
             cursor = self._db.execute(
                 "INSERT OR IGNORE INTO document_locations"
-                " (document_id, containment_path, first_seen_at) VALUES (?, ?, ?)",
-                (document_id, containment_path, _to_iso(first_seen_at)),
+                " (document_id, source_root, containment_path, first_seen_at)"
+                " VALUES (?, ?, ?, ?)",
+                (document_id, source_root, containment_path, _to_iso(first_seen_at)),
             )
             self._db.commit()
             return cursor.rowcount > 0
@@ -415,10 +420,13 @@ class SqliteStore:
     def document_locations(self, document_id: str, limit: int) -> DocumentLocationSet:
         """One document's recorded locations, bounded, and how many there are.
 
-        Ordered by when each was first observed and then by the path itself, so
-        the ordering is total: two locations recorded inside one ingest run can
-        share a timestamp, and a bound falling inside a tie would return a
+        Ordered by when each was first observed and then by the location itself,
+        so the ordering is total: two locations recorded inside one ingest run
+        can share a timestamp, and a bound falling inside a tie would return a
         different subset between two calls on an unchanged corpus.
+
+        The earliest is returned first, which is what lets a caller identify the
+        one the document itself reports without comparing strings against it.
         """
         with self._lock:
             total = self._db.execute(
@@ -426,14 +434,16 @@ class SqliteStore:
                 (document_id,),
             ).fetchone()["total"]
             rows = self._db.execute(
-                "SELECT containment_path, first_seen_at FROM document_locations"
-                " WHERE document_id = ? ORDER BY first_seen_at, containment_path"
+                "SELECT source_root, containment_path, first_seen_at"
+                " FROM document_locations WHERE document_id = ?"
+                " ORDER BY first_seen_at, source_root, containment_path"
                 " LIMIT ?",
                 (document_id, int(limit)),
             ).fetchall()
         return DocumentLocationSet(
             locations=[
                 DocumentLocation(
+                    source_root=r["source_root"],
                     containment_path=r["containment_path"],
                     first_seen_at=_from_iso(r["first_seen_at"]),
                 )

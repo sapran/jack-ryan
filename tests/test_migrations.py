@@ -10,6 +10,7 @@ without noticing.
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
@@ -202,6 +203,41 @@ def test_an_older_store_gains_the_ingest_run_record(tmp_path):
         # And no run is invented for it: a casefile filled before the record
         # existed must read as unaccounted-for, not as clean.
         assert store.ingestion_coverage("c1").runs == 0
+    finally:
+        store.close()
+
+
+def test_a_document_carried_forward_reports_its_locations_as_unknown(tmp_path):
+    """A document that predates the location record must never claim otherwise.
+
+    Its source locations were overwritten by whichever copy was ingested last,
+    and nothing can recover them. The column defaults to 0 so every such row
+    says so without the migration writing anything — and recording a location
+    for it afterwards must not raise the flag, because one observation is not
+    the whole set.
+    """
+    path = build_baseline_store(tmp_path / "old.db")
+    store = SqliteStore(path)
+    try:
+        store.initialize(IDENTITY, DIMENSIONS)
+
+        document = store.get_document("d1")
+        assert document is not None
+        assert document.locations_recorded is False, (
+            "a document carried forward claimed its locations were recorded"
+        )
+        # No location is invented for it either: the only timestamp available
+        # is `created_at`, which is when the document was first ingested and
+        # not when any particular copy was observed.
+        assert store.document_locations("d1", 20).total == 0
+
+        recorded = store.record_document_location(
+            "d1", "/dumps/alpha", "lease.md", datetime.now(timezone.utc)
+        )
+        assert recorded is True
+        assert store.get_document("d1").locations_recorded is False, (
+            "recording one location raised the flag on a document that predates it"
+        )
     finally:
         store.close()
 

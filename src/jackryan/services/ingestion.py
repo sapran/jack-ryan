@@ -35,6 +35,7 @@ from ..storage.port import (
     IngestRun,
     Mention,
     StorePort,
+    join_location,
 )
 from ..summarising.port import SummariserPort, SummaryError
 from .casefiles import CasefileService
@@ -92,6 +93,10 @@ class IngestOutcome:
     # "known", "new", "unknown", or empty for an outcome that never got that
     # far — a failed document.
     location: str = ""
+    # The followable path this run observed the document at: the ingest root
+    # joined to the containment path. Carried already joined so the report and
+    # the query path cannot spell one location two ways.
+    location_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -177,8 +182,12 @@ class IngestReport:
         found in a second place was ingested, so the run covered everything it
         was offered. Folding this into `limitations` would flip `complete` to
         false and report a discovery as a shortfall.
+
+        Each is the followable path — the ingest root joined to the containment
+        path — because the root is the whole of what distinguishes the second
+        custodian's copy from the first's.
         """
-        return [o.containment_path for o in self.outcomes if o.location == LOCATION_NEW]
+        return [o.location_path for o in self.outcomes if o.location == LOCATION_NEW]
 
     @property
     def complete(self) -> bool:
@@ -217,12 +226,16 @@ class DocumentLocationRecord:
 
     @property
     def also_found_at(self) -> list[DocumentLocation]:
-        """Every recorded location except the one the document itself reports."""
-        return [
-            location
-            for location in self.recorded.locations
-            if location.containment_path != self.document.containment_path
-        ]
+        """Every recorded location except the one the document itself reports.
+
+        Identified by position rather than by comparing paths: the store returns
+        the earliest observation first, and the earliest is by definition the
+        one the document's own filename and containment path were taken from.
+        Comparing `containment_path` instead would drop both of two locations
+        that share a relative path under different roots — which is the case
+        this record exists for.
+        """
+        return self.recorded.locations[1:]
 
     @property
     def truncated(self) -> bool:
@@ -245,12 +258,20 @@ class DocumentLocationRecord:
             "overwritten"
         )
 
+
 @dataclass(frozen=True)
 class _Work:
     """One file waiting to be ingested, and where it came from."""
 
     path: Path
     root: Path
+    # What the analyst pointed at, as the recorded location's qualifier. Kept
+    # apart from `root` because the two diverge exactly where it matters: for a
+    # document produced by expansion, `root` is the scratch directory its bytes
+    # were materialised into — new on every run — while this is inherited from
+    # the top-level file, so a container reingested from the same place records
+    # no new location.
+    source_root: str
     # The directory this file's own children may be written into, if it has any.
     parent_id: str | None
     depth: int
@@ -473,11 +494,17 @@ class IngestionService:
         the thing the identity rule exists to prevent. Its names survive in each
         file's containment path.
         """
+        # Resolved, because a location is recorded to be followed later and a
+        # path relative to whatever directory the command happened to run in
+        # cannot be. This is the qualifier that makes two dumps each holding
+        # `note.txt` at their top level two locations rather than one.
         if path.is_dir():
+            source_root = str(path.resolve())
             return [
                 _Work(
                     path=child,
                     root=path,
+                    source_root=source_root,
                     parent_id=None,
                     depth=0,
                     containment_path=str(child.relative_to(path)),
@@ -489,6 +516,7 @@ class IngestionService:
             _Work(
                 path=path,
                 root=path.parent,
+                source_root=str(path.parent.resolve()),
                 parent_id=None,
                 depth=0,
                 containment_path=path.name,
@@ -543,6 +571,14 @@ class IngestionService:
                     _Work(
                         path=materialised,
                         root=nested_root,
+                        # Inherited, deliberately not `nested_root`: that is a
+                        # scratch directory recreated on every run, so recording
+                        # it would insert a fresh location row and report a
+                        # false discovery each time this container was
+                        # reingested. The top-level root plus this entry's
+                        # containment path is also what a person actually
+                        # follows — open that archive, find this entry.
+                        source_root=work.source_root,
                         parent_id=document.id,
                         depth=work.depth + 1,
                         containment_path=f"{work.containment_path}/{child.name}",
@@ -667,7 +703,7 @@ class IngestionService:
             # before the chunks, so a document that reached this point has its
             # location whatever happens next.
             location_is_new = self._store.record_document_location(
-                stored.id, work.containment_path, now
+                stored.id, work.source_root, work.containment_path, now
             )
             # Mentions travel with the chunks rather than in a later call:
             # `replace_chunks` mints every chunk id afresh, so a separate write
@@ -692,6 +728,9 @@ class IngestionService:
                     chunks=len(prepared),
                     containment_path=work.containment_path,
                     location=location,
+                    location_path=join_location(
+                        work.source_root, work.containment_path
+                    ),
                 ),
                 stored,
                 extraction,

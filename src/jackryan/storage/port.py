@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Protocol
 
 
@@ -86,12 +87,34 @@ class Document:
         return self.parent_id is not None
 
 
+def join_location(source_root: str, containment_path: str) -> str:
+    """The path a person follows to find a document's bytes by hand.
+
+    One definition, called by both the query path and the ingest report, so the
+    two cannot spell a location differently.
+    """
+    return str(PurePosixPath(source_root) / containment_path)
+
+
 @dataclass(frozen=True)
 class DocumentLocation:
-    """One place a document's bytes were observed."""
+    """One place a document's bytes were observed.
 
+    Two fields rather than one path, because a containment path is relative to
+    whatever was ingested. `source_root` is what the analyst pointed at — the
+    folder for a walk, the file's own directory for a named file, and for a
+    document produced by expansion the root of the top-level file it came out
+    of, so that the two together are always followable from one end to the
+    other.
+    """
+
+    source_root: str
     containment_path: str
     first_seen_at: datetime
+
+    @property
+    def full_path(self) -> str:
+        return join_location(self.source_root, self.containment_path)
 
 
 @dataclass(frozen=True)
@@ -109,6 +132,7 @@ class DocumentLocationSet:
     @property
     def truncated(self) -> bool:
         return len(self.locations) < self.total
+
 
 @dataclass(frozen=True)
 class Chunk:
@@ -455,7 +479,11 @@ class StorePort(Protocol):
     ) -> Document | None: ...
 
     def record_document_location(
-        self, document_id: str, containment_path: str, first_seen_at: datetime
+        self,
+        document_id: str,
+        source_root: str,
+        containment_path: str,
+        first_seen_at: datetime,
     ) -> bool:
         """Record where a document's bytes were observed. True when it was new.
 

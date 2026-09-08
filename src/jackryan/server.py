@@ -247,7 +247,7 @@ def create_app(context: Context | None = None) -> FastAPI:
             "locations_recorded": record.verdict,
             "locations": record.recorded.total,
             "also_found_at": [
-                location.containment_path for location in record.also_found_at
+                location.full_path for location in record.also_found_at
             ],
             "locations_truncated": record.truncated,
             "locations_note": record.note,

@@ -316,7 +316,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 row["locations"] = record.recorded.total
                 if args.json:
                     row["also_found_at"] = [
-                        location.containment_path for location in record.also_found_at
+                        location.full_path for location in record.also_found_at
                     ]
                     row["locations_truncated"] = record.truncated
                     if record.note:
@@ -325,7 +325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else:
                     _print(row, False)
                     for location in record.also_found_at:
-                        print(f"also found at {location.containment_path}")
+                        print(f"also found at {location.full_path}")
                     if record.truncated:
                         print(f"… {record.recorded.total} locations recorded in total")
                     # The wording comes from the record, never written out here:
