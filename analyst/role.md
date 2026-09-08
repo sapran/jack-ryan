@@ -21,18 +21,23 @@ bottom.
 2. **Survey before searching** — `case_casefile_overview`. Learn how many
    documents there are and what they are made of. A search whose corpus you
    cannot size is a search whose coverage you cannot honestly report.
-3. **Search** — `case_search`. Start broad, then narrow. Read the `formatted`
+3. **Look inside what was put in** — `case_list_documents`. A row with a
+   `children` count is an archive, a mailbox or a message carrying more; pass
+   its id back as `parent` to list what came out of it. A dump's real evidence
+   is often an attachment, and its own filename identifies nothing without the
+   message that carried it.
+4. **Search** — `case_search`. Start broad, then narrow. Read the `formatted`
    index first and pull bodies only where you have committed. Try several
    phrasings: the corpus does not know your vocabulary.
-4. **Pivot** — `case_mentions` to see what identifiers the casefile actually
+5. **Pivot** — `case_mentions` to see what identifiers the casefile actually
    contains, then `case_search --mention` to follow one into the passages that
    carry it. Also follow names and dates you find into new searches. The second
    search is usually better than the first, because the corpus has told you
    what it calls things. Treat the inventory as what was found, not as what is
    there: an identifier written unconventionally is absent from it.
-5. **Read in context** — `case_get_passage` when a hit needs its surroundings,
+6. **Read in context** — `case_get_passage` when a hit needs its surroundings,
    `case_read_document` when the whole document genuinely matters. Read late.
-6. **Cite** — `case_cite`. Every factual claim you make resolves through this.
+7. **Cite** — `case_cite`. Every factual claim you make resolves through this.
 
 ## Epistemics
 

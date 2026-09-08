@@ -73,6 +73,119 @@ and why it was parked.
   in one step and breaks `tests/test_rar_containers.py:438`, which pins the
   current per-extractor semantics; that wants its own change with its own
   argument, not a rider on a disclosure fix.
+- **A bounded document page still materialises every returned document's full
+  `extracted_text`.** The page query selects `d.*` and `_row_to_document` builds
+  a whole `Document` per row, but nothing returns that text: the agent row and
+  both human surfaces use only `len(document.extracted_text)`, as `characters`.
+  Measured on 220 synthetic documents of distinct content, a page of 200 loaded
+  9,506,920 characters (9.5 MB) to report 200 integers; the unbounded listing it
+  replaces loaded 10,431,190. On the real corpus a page of five carried 2.9 M
+  characters, so the 200-row ceiling is order 10**8 characters — hundreds of
+  megabytes of Python strings — reachable in one model-issued
+  `case_list_documents(casefile, expanded=true, limit=200)` or one
+  `GET /api/casefiles/<ref>/documents?expanded=true&limit=200`, with no rate
+  limit above either surface. The repository has already decided this question
+  the other way once: `CasefileStatistics` sums characters in SQL precisely
+  because loading every document's text to measure it costs the whole corpus in
+  memory for one integer. **Parked because the fix needs a new domain field, not
+  a new query.** Projecting `LENGTH(d.extracted_text) AS characters` requires
+  `Document` to carry an optional `character_count` populated only when a query
+  aliases it — the `child_count` precedent — plus both renderers reading it
+  instead of `len(...)`. That touches the port's domain object and every surface
+  that shows a document, which is a change that should be argued on its own
+  rather than folded into a paging change. The interim `MAX_DOCUMENT_PAGE` is
+  200 and is a row bound, not a byte bound. Note the in-code comment at the
+  query claims only that the narrow id subquery keeps `extracted_text` out of
+  the *sorter*, which is true and a different claim.
+
+- **`one_line` strips whitespace only, so control characters and Unicode bidi
+  overrides reach the agent's index and the analyst's terminal intact.** It
+  collapses with `" ".join(text.split())`, and `str.split()` removes only
+  whitespace: ESC, BEL and U+202E RIGHT-TO-LEFT OVERRIDE are not whitespace.
+  Archive entry names are attacker-controlled in a real dump. Measured with an
+  entry named `invoice\x1b[31m\u202egpj.exe\x07.txt`, all three survive into
+  `formatted`, into a row's `filename`, and into `found_at` — so a crafted name
+  can recolour or rewrite the terminal of the analyst reading the index, and the
+  bidi override is the classic extension-spoofing trick that makes
+  `…\u202egpj.exe.txt` render as though it ended in `.txt`. **Pre-existing**:
+  `one_line`, `_render_document` and `formatted` all predate the paged listing,
+  which only widened the surface slightly by echoing a resolved container's
+  filename and containment path through the same helper. Parked rather than
+  fixed here because the right fix is one sanitiser applied at every corpus-text
+  boundary — the fence, the citation, the human renderers — and choosing between
+  stripping and escaping is a change of its own. It is the finding worth landing
+  next after the byte bound above.
+
+- **A document reached by listing cannot be cited without a search.**
+  `case_cite` needs a `chunk_id`, and no tool hands one back for a document
+  reached through `case_list_documents`: `case_read_document` returns text and
+  provenance but no chunk identifiers. So the container-navigation journey —
+  list the intake, enter a container, read a child — has to fall back to
+  `case_search` to obtain an id before it can cite what it just read. That
+  partly defeats the point of the capability, whose premise is that a container
+  is exactly where retrieval is least likely to surface the evidence. Parked
+  because closing it means adding chunk identifiers to a read payload, which is
+  a `mcp-tool-surface` contract change and needs its own delta. The journey test
+  is named and documented for what it actually proves — reaching and *reading*
+  without a search — after an earlier version claimed more.
+
+- **The offset repair skips a document that vanished mid-pass, and no field of
+  its report can say so.** `repair_mention_offsets` lists a casefile's document
+  ids, then re-reads each one under a separate lock; when the row has gone by
+  then, `get_document` returns `None` and the loop `continue`s *before*
+  `documents_examined` is incremented. So the count cannot overstate what was
+  read, but it understates it invisibly, and a pass that missed documents reads
+  exactly like one that had none to miss — while those documents' mentions keep
+  counting one occurrence twice. Reachable only by a concurrent delete between
+  the two locked reads, which the shipped deployment does allow: the store's
+  lock is per-process and `docker-compose.yml` runs the `cli` service and the
+  API against one file. The repository has already made this judgement the other
+  way once, in `IngestReport.refusals` — *"Reported rather than dropped: silence
+  here reads as 'everything was ingested'"*. Parked, not fixed: the published
+  `mentions` requirement enumerates what the report carries — documents, chunks,
+  unlocatable chunks, positions corrected — so a fifth counter is a delta to
+  that requirement and belongs in a change that can argue for it. Found by the
+  silent-failure review of `a-chunk-begins-where-its-text-does`.
+
+- **The `repair` CLI branch never reads `args.repair_command`.** The parser
+  declares it with `required=True`, and `main` branches on
+  `args.command == "repair"` and then runs `repair_mention_offsets`
+  unconditionally. Correct today, because argparse admits exactly one value —
+  and latent: the day a second subcommand is added under `repair` (the group's
+  own help, "recompute derived data an earlier ingest recorded wrongly", plainly
+  anticipates one), invoking it will silently perform the mention-offset
+  *write* and hand back a plausible four-field report for a pass nobody asked
+  for. A write running under another command's name is the worst shape this can
+  take. The neighbouring `document` branch, twelve lines above, does dispatch on
+  its own discriminator. One line to close; parked because a code change now
+  needs its own change directory.
+
+- **`recompute_mention_offsets` takes an unscoped chunk-id mapping.** Its
+  predicate is `WHERE chunk_id = ?` alone, so nothing in the store constrains
+  the write to one casefile — the compartment is held only by
+  `repair_mention_offsets` deriving the ids from documents of the casefile it
+  resolved. Every other write on the port is keyed by an owning entity, and
+  `replace_chunks` twenty lines above argues the point at length: it derives
+  `document_id` and `casefile_id` from the parent chunk rather than trusting the
+  caller, because a compartment breach must be *"unreachable rather than merely
+  unused"* on a seam a second producer will arrive through. This new method is
+  the same kind of seam, written the other way. Not reachable today: one caller,
+  ids derived from a resolved casefile, and no adapter may reach the store. The
+  fix is a `casefile_id` parameter in the predicate; parked because changing a
+  port signature deserves an argued proposal rather than a drive-by.
+
+- **The published `mentions` requirement "mentions are written in the same
+  transaction that writes its chunks" now has a second writer, and nothing says
+  the reading that reconciles them.** `recompute_mention_offsets` updates a
+  mention row in a transaction that writes no chunk. The guarantee the
+  requirement exists to protect is intact — its own rationale is entirely about
+  `chunk_id` staying resolvable, the repair never creates, replaces or re-points
+  a mention, and its UPDATE matches nothing once a chunk id has been replaced —
+  so "written" plainly means "created" in context. Parked because that reading
+  is currently left to the reader: one clause in the requirement ("a later pass
+  that corrects the derived document position is not such a write") would make
+  the capability self-consistent, and editing a published spec needs a change
+  directory.
 
 - **"The fold is on" and "the identity says the fold is on" are computed from
   different things.** `app.py` decides `folding` from the summariser *object*

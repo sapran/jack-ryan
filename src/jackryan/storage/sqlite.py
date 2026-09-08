@@ -30,6 +30,7 @@ from .port import (
     CasefileStatistics,
     Chunk,
     Document,
+    DocumentPage,
     IngestionCoverage,
     IngestRun,
     Mention,
@@ -43,6 +44,57 @@ def _to_iso(value: datetime) -> str:
 
 def _from_iso(value: str) -> datetime:
     return datetime.fromisoformat(value)
+
+
+def _document_selection(
+    include_expanded: bool, parent_id: str | None
+) -> tuple[str, str, str]:
+    """The predicate, the ordering and the selection's name — decided once.
+
+    Returned together rather than computed at each call site because the page
+    and the count must run under the *same* predicate: a total counted under a
+    wider predicate than the rows silently tells a caller there is more, and one
+    counted under a narrower predicate hides evidence behind a `truncated` of
+    false. This is the same argument the mention filter makes for living inside
+    the retrievers' SQL rather than over their results.
+
+    Two orderings, because the two selections are read for different reasons. A
+    casefile's intake is chronological — newest first is what an analyst who has
+    just ingested something wants. A container's contents share their parent's
+    ingest instant almost exactly, so `created_at` orders them arbitrarily while
+    the containment path orders them the way the container does.
+
+    Every ordering ends in `d.id`, which is unique, so each is a total order and
+    a page boundary cannot land in the middle of a tie. That is deliberately
+    unlike the fused-ranking rule, which forbids breaking a tie by an identifier:
+    that rule exists so two stores built from the same documents rank alike, and
+    document ids differ between stores. Here the requirement is only that one
+    unchanged store pages consistently, and `d.id` is reached only when two
+    documents are equal on every corpus value before it.
+
+    No test exercises the tie-break, and that is a property of the corpus rather
+    than a gap in the tests: `created_at` is a per-document `datetime.now()` at
+    microsecond resolution, and two siblings cannot share a containment path, so
+    ingestion cannot produce two documents equal on every key before `d.id`.
+    Removing the trailing keys was mutated and left the suite green. They stay
+    because a total order is what `mcp-tool-surface` requires and because
+    uniqueness that rests on clock resolution stops being true quietly — a
+    coarser clock, a restored backup, or a bulk insert sharing one timestamp is
+    all it takes. Do not "simplify" them on the strength of a green suite.
+    """
+    if parent_id is not None:
+        return (
+            " AND d.parent_id = ?",
+            " ORDER BY d.containment_path, d.created_at, d.id",
+            "children",
+        )
+    if include_expanded:
+        return "", " ORDER BY d.created_at DESC, d.containment_path, d.id", "all"
+    return (
+        " AND d.parent_id IS NULL",
+        " ORDER BY d.created_at DESC, d.containment_path, d.id",
+        "ingested",
+    )
 
 
 def _row_to_casefile(row: sqlite3.Row) -> Casefile:
@@ -323,14 +375,6 @@ class SqliteStore:
             ).fetchone()
         return _row_to_document(row) if row else None
 
-    def list_children(self, document_id: str) -> list[Document]:
-        with self._lock:
-            rows = self._db.execute(
-                "SELECT * FROM documents WHERE parent_id = ? ORDER BY containment_path",
-                (document_id,),
-            ).fetchall()
-        return [_row_to_document(r) for r in rows]
-
     def ancestors(self, document_id: str) -> list[Document]:
         """The chain from the directly ingested file down to this document's parent.
 
@@ -392,29 +436,97 @@ class SqliteStore:
             ).fetchall()
         return [_row_to_document(r) for r in rows]
 
-    def list_documents(
-        self, casefile_id: str, include_expanded: bool = False
-    ) -> list[Document]:
-        """A casefile's documents, newest first.
+    def list_document_page(
+        self,
+        casefile_id: str,
+        include_expanded: bool = False,
+        parent_id: str | None = None,
+        offset: int = 0,
+        limit: int = -1,
+    ) -> DocumentPage:
+        """One page of a casefile's documents, and how many the selection holds.
 
-        Expanded children are excluded unless asked for: three archives that
-        expand to forty thousand documents are three things an analyst put in,
-        and an inventory that returns forty thousand rows is not an inventory.
         Each row carries how many children it has, so a caller can see there is
-        more to reach without paying to fetch it.
+        more to reach without paying to fetch it — and so a container nested
+        inside another is markable, which the children selection is the whole
+        reason for.
+
+        `offset` is floored here as well as in the service, because the reported
+        `offset` must be the one SQLite actually applied: it is what
+        `continue_from` is computed from, and SQLite silently treats a negative
+        OFFSET as zero. A page that returned the first rows while reporting
+        `offset=-2` would hand back a `continue_from` of 0 and repeat them. The
+        service is the only caller that clamps, and the tests reach this method
+        directly, so the hole was one positional argument away.
+
+        `limit` is either negative, meaning unbounded, or at least 1. A `limit`
+        of 0 returns no rows while the count still reports the selection's
+        size, so `truncated` stays true and a caller following `continue_from`
+        never advances. The service clamps it to at least 1; this method does
+        not second-guess a deliberate negative.
         """
-        clause = "" if include_expanded else " AND d.parent_id IS NULL"
+        clause, order, selection = _document_selection(include_expanded, parent_id)
+        predicate = f" WHERE d.casefile_id = ?{clause}"
+        start = max(0, int(offset))
+        binds: tuple[object, ...] = (
+            (casefile_id,) if parent_id is None else (casefile_id, parent_id)
+        )
         with self._lock:
+            total = self._db.execute(
+                f"SELECT COUNT(*) AS total FROM documents d{predicate}", binds
+            ).fetchone()["total"]
+            # The page is chosen on a narrow query and widened afterwards.
+            # Ordering `SELECT d.*` directly puts `extracted_text` through the
+            # sorter, so a single page of a 40,000-document casefile would cost
+            # the whole corpus's text in memory — the exact cost this page
+            # exists to avoid.
             rows = self._db.execute(
                 "SELECT d.*, ("
                 "   SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id"
                 " ) AS child_count"
                 " FROM documents d"
-                f" WHERE d.casefile_id = ?{clause}"
-                " ORDER BY d.created_at DESC",
-                (casefile_id,),
+                " JOIN (SELECT d.id FROM documents d"
+                f"{predicate}{order} LIMIT ? OFFSET ?) chosen ON chosen.id = d.id"
+                # Repeated deliberately, and it is insurance rather than an
+                # observed necessity — the distinction is worth stating,
+                # because the obvious comment here is an overstatement.
+                # SQL guarantees nothing about the row order a join produces,
+                # so the subquery's ordering is not inherited. Measured on this
+                # SQLite, `EXPLAIN QUERY PLAN` reports `SCAN chosen` driving
+                # the join and probing `d` by primary key, which happens to
+                # emit the subquery's order; a sweep at 6, 20, 60, 200 and 600
+                # children paged correctly with this line removed. It stays
+                # because that plan is a choice SQLite is free to change — an
+                # added index or a future planner would silently reorder pages
+                # — and because `mcp-tool-surface` requires paging to repeat
+                # and omit nothing. Removing it cannot be caught by a test
+                # through the public path, which is the reason to keep it, not
+                # a reason to drop it.
+                f"{order}",
+                (*binds, int(limit), start),
             ).fetchall()
-        return [_row_to_document(r) for r in rows]
+        return DocumentPage(
+            documents=[_row_to_document(r) for r in rows],
+            total_matching=total,
+            offset=start,
+            limit=int(limit),
+            selection=selection,
+        )
+
+    def list_documents(
+        self, casefile_id: str, include_expanded: bool = False
+    ) -> list[Document]:
+        """A casefile's documents, unbounded.
+
+        Every adapter reaches `list_document_page` instead: this loads each
+        document's whole extracted text, which is the entire corpus for a real
+        one. It remains for callers that legitimately want a small casefile in
+        full, and it delegates rather than repeating the predicate, so the two
+        cannot come to disagree about what "the casefile's documents" means.
+        """
+        return self.list_document_page(
+            casefile_id, include_expanded=include_expanded
+        ).documents
 
     # -- chunks ------------------------------------------------------------
 
@@ -708,6 +820,56 @@ class SqliteStore:
                 (document_id, ordinal - int(radius), ordinal + int(radius)),
             ).fetchall()
         return [_row_to_chunk(row) for row in rows]
+
+    def list_document_ids(self, casefile_id: str) -> list[str]:
+        """Identifiers only, so a maintenance pass need not hold the corpus.
+
+        `list_documents` carries every row's extracted text, which is the whole
+        of a casefile. Ordered so a run over it is reproducible.
+        """
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id FROM documents WHERE casefile_id = ?"
+                " ORDER BY created_at, id",
+                (casefile_id,),
+            ).fetchall()
+        return [row["id"] for row in rows]
+
+    def list_document_chunks(self, document_id: str) -> list[Chunk]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM chunks WHERE document_id = ? ORDER BY ordinal",
+                (document_id,),
+            ).fetchall()
+        return [_row_to_chunk(row) for row in rows]
+
+    def recompute_mention_offsets(self, text_starts: dict[str, int]) -> int:
+        """Only `document_offset`, and only where it differs.
+
+        The derivation is the one `replace_chunks` makes at write time — the
+        chunk's start plus the mention's own chunk-relative offset — from a
+        start the caller established against the document's text rather than
+        from the one recorded on the chunk.
+
+        The `<>` predicate is what makes a repeated run report nothing rather
+        than rewriting every row and claiming a correction.
+        """
+        if not text_starts:
+            return 0
+        with self._lock:
+            db = self._db
+            try:
+                cursor = db.executemany(
+                    "UPDATE mentions SET document_offset = ? + char_start"
+                    " WHERE chunk_id = ? AND document_offset <> ? + char_start",
+                    [(start, chunk_id, start) for chunk_id, start in text_starts.items()],
+                )
+                changed = cursor.rowcount
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+        return changed
 
     # -- retrieval ---------------------------------------------------------
     #

@@ -340,6 +340,47 @@ class IngestionCoverage:
     documents_before_first_run: int
 
 
+@dataclass(frozen=True)
+class DocumentPage:
+    """One bounded page of a casefile's documents, and what it is a page of.
+
+    A domain object rather than a tuple or a dict, for the reason
+    `CasefileStatistics` gives: a count offered without its name is a count a
+    caller can misread, and a mapping puts the field names in strings where a
+    rename is silent.
+    """
+
+    documents: list[Document]
+    # How many documents the selection holds in the store, which is not how many
+    # this page carries. Both are needed: an agent that cannot tell "this is all
+    # of them" from "this is the first fifty" reports the first fifty as
+    # coverage.
+    total_matching: int
+    offset: int
+    limit: int
+    # Which set was listed: `ingested` for the casefile's intake, `all` for every
+    # document in it, `children` for one container's direct contents. Derived by
+    # the store from the arguments it was given, so two adapters cannot name the
+    # same selection differently.
+    selection: str
+    # The container this page is inside, when one was asked for. Set by the
+    # service layer, which resolved the reference; the store leaves it empty
+    # because the store is handed an identifier, not a reference. The same
+    # arrangement as `Document.child_count`, which only the query that aliases it
+    # populates.
+    parent: Document | None = None
+
+    @property
+    def truncated(self) -> bool:
+        """Whether documents matching this selection were left unreturned."""
+        return self.offset + len(self.documents) < self.total_matching
+
+    @property
+    def continue_from(self) -> int | None:
+        """The offset that resumes this listing, or `None` when it ended."""
+        return self.offset + len(self.documents) if self.truncated else None
+
+
 class StorePort(Protocol):
     """What the service layer requires of a store."""
 
@@ -380,8 +421,6 @@ class StorePort(Protocol):
 
     def delete_document(self, document_id: str) -> bool: ...
 
-    def list_children(self, document_id: str) -> list[Document]: ...
-
     def ancestors(self, document_id: str) -> list[Document]: ...
 
     def descendant_ids(self, document_id: str) -> list[str]: ...
@@ -391,6 +430,27 @@ class StorePort(Protocol):
     def list_documents(
         self, casefile_id: str, include_expanded: bool = False
     ) -> list[Document]: ...
+
+    def list_document_page(
+        self,
+        casefile_id: str,
+        include_expanded: bool = False,
+        parent_id: str | None = None,
+        offset: int = 0,
+        limit: int = -1,
+    ) -> DocumentPage:
+        """One bounded page of a casefile's documents, and the size of the set.
+
+        `parent_id` selects one document's direct children, and takes precedence
+        over `include_expanded`: children are expansions by definition, so the
+        two cannot conflict. A negative `limit` is SQLite's own "no bound", used
+        by the unbounded listing above and by nothing else.
+
+        The count SHALL be computed under the same predicate as the page. A total
+        derived from a different predicate than the rows is a number a caller
+        cannot act on, and nothing downstream detects it.
+        """
+        ...
 
     def replace_chunks(
         self,
@@ -425,6 +485,33 @@ class StorePort(Protocol):
     def get_document_chunks_around(
         self, document_id: str, ordinal: int, radius: int
     ) -> list[Chunk]: ...
+
+    def list_document_ids(self, casefile_id: str) -> list[str]:
+        """Every document in a casefile, expansions included, oldest first.
+
+        Identifiers rather than documents, and that is the whole reason it
+        exists: `list_documents` carries each row's extracted text, so a
+        maintenance pass over a casefile would hold the corpus in memory in
+        order to walk it. Ordered so that a run is reproducible.
+        """
+        ...
+
+    def list_document_chunks(self, document_id: str) -> list[Chunk]:
+        """One document's chunks, in ordinal order."""
+        ...
+
+    def recompute_mention_offsets(self, text_starts: dict[str, int]) -> int:
+        """Rewrite the document position of every mention on the named chunks.
+
+        Takes, per chunk identifier, where that chunk's stored text begins in
+        its document, and sets each mention's position to that plus the
+        mention's own chunk-relative offset — the same derivation
+        `replace_chunks` makes at write time, from a value the caller has
+        established against the document's text. Returns how many rows actually
+        changed, so a caller can report a correction and tell a repeated run
+        from a first one. Nothing else about a mention is touched.
+        """
+        ...
 
     def search_keyword(
         self,

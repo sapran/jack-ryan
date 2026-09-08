@@ -16,7 +16,8 @@ from mcp.types import ToolAnnotations
 
 from ... import __version__
 from ...app import Context
-from ...storage.port import Casefile, Document
+from ...services.ingestion import DEFAULT_DOCUMENT_PAGE
+from ...storage.port import Casefile, Document, DocumentPage
 from ...services.casefiles import (
     COVERAGE_COMPLETE,
     COVERAGE_INCOMPLETE,
@@ -43,21 +44,26 @@ Work in this order, and resist starting at the end:
    report coverage for. Read `ingestion.coverage` here: unless it says
    `complete`, an empty search result may mean the evidence was never
    ingested rather than that the casefile does not mention the thing.
-3. `case_mentions` — the identifiers the casefile actually contains: email
+3. `case_list_documents` — the documents themselves, a page at a time. A row
+   carrying a `children` count is a container: pass its id back as `parent` to
+   list what came out of it, and again to go deeper. Evidence in a real dump
+   often sits inside something an analyst dropped in whole, and neither the
+   overview nor a search will tell you what a container held.
+4. `case_mentions` — the identifiers the casefile actually contains: email
    addresses, telephone numbers, bank accounts, registration numbers, each
    with how many times and in how many documents. Ask before you guess what to
    search for. It is an inventory of what was *found*, never a claim about what
    is there.
-4. `case_search` — hybrid keyword and semantic retrieval. Start broad, then
+5. `case_search` — hybrid keyword and semantic retrieval. Start broad, then
    narrow. Read the `formatted` index first and pull bodies only where you
    have committed. `mention` narrows a search to passages carrying one
    identifier — that is how an entry from `case_mentions` becomes a pivot.
-5. `case_get_passage` — a passage with the surrounding text of its section,
+6. `case_get_passage` — a passage with the surrounding text of its section,
    when a hit needs its surroundings to be intelligible. The passage stays the
    thing you cite; the surroundings are there to be read.
-6. `case_read_document` — the full text, bounded. Read this late; it is the
+7. `case_read_document` — the full text, bounded. Read this late; it is the
    most expensive thing you can do and rarely the fastest route to an answer.
-7. `case_cite` — turn a passage into a citation. Every factual claim you make
+8. `case_cite` — turn a passage into a citation. Every factual claim you make
    should resolve through this to a document and a span.
 
 Epistemics this corpus demands:
@@ -118,6 +124,24 @@ def _render_document(document: Document) -> dict[str, Any]:
         # returning the forty thousand documents an archive might hold.
         row["children"] = document.child_count
     return row
+
+
+def _nothing_listed(page: DocumentPage) -> str:
+    """Why a page is empty, without claiming more than that.
+
+    Each message must be true of the page that produced it. "No documents in
+    this casefile" said of a container's empty contents, or of a page past the
+    end, is the same class of false negative as an empty result standing in for
+    an unknown facet kind.
+    """
+    if page.offset and page.total_matching:
+        return (
+            f"No documents at offset {page.offset}; "
+            f"{page.total_matching} in this selection."
+        )
+    if page.selection == "children":
+        return "Nothing was expanded out of this document."
+    return "No documents in this casefile."
 
 
 def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
@@ -272,13 +296,42 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
 
     @server.tool(
         name="case_list_documents",
-        description="List a casefile's documents. Useful when the corpus is small enough to enumerate.",
+        description=(
+            "List a casefile's documents, one bounded page at a time. With no "
+            "`parent`, the documents an analyst put in. With `parent` set to a "
+            "document id, what was expanded out of that document — an archive's "
+            "entries, a message's attachments, a mailbox's messages — which is "
+            "how you reach evidence that search has not surfaced. A row's "
+            "`children` count marks a document you can enter this way; the rows "
+            "of one `parent` are each other's siblings. `expanded` ignores the "
+            "hierarchy and lists every document in the casefile. `total` counts "
+            "the rows in this page and `total_matching` the whole selection; "
+            "when `truncated` is true, call again with `offset` set to "
+            "`continue_from`."
+        ),
         annotations=_annotations_for("case_list_documents"),
     )
     @returns_error_payload
-    async def case_list_documents(casefile: str) -> dict[str, Any]:
-        documents = await off_loop(context.ingestion.list_documents, casefile)
-        rows = [_render_document(d) for d in documents]
+    async def case_list_documents(
+        casefile: str,
+        parent: str = "",
+        expanded: bool = False,
+        offset: int = 0,
+        limit: int = DEFAULT_DOCUMENT_PAGE,
+    ) -> dict[str, Any]:
+        # Positional, and that is load-bearing for the same reason `case_search`
+        # states at its own call: `anyio.to_thread.run_sync` forwards only
+        # positional arguments, so a keyword here is a TypeError at the first
+        # paged call rather than at import.
+        page = await anyio.to_thread.run_sync(
+            context.ingestion.list_document_page,
+            casefile,
+            parent,
+            expanded,
+            offset,
+            limit,
+        )
+        rows = [_render_document(d) for d in page.documents]
         formatted = (
             "\n".join(
                 f"{r['short_id']}  {one_line(r.get('found_at') or r['filename'], 60):<40}"
@@ -286,9 +339,25 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
                 + (f"  (+{r['children']} inside)" if r.get("children") else "")
                 for r in rows
             )
-            or "No documents in this casefile."
+            or _nothing_listed(page)
         )
-        return listing_payload(rows, formatted=formatted)
+        payload = listing_payload(rows, formatted=formatted)
+        payload["offset"] = page.offset
+        payload["total_matching"] = page.total_matching
+        payload["truncated"] = page.truncated
+        payload["continue_from"] = page.continue_from
+        payload["selection"] = page.selection
+        if page.parent is not None:
+            # Echoed so an agent that passed a prefix can see which container it
+            # entered, and can cite it: an attachment's own name identifies
+            # nothing without the thing that carried it.
+            payload["parent"] = {
+                "document_id": page.parent.id,
+                "short_id": page.parent.short_id,
+                "filename": one_line(page.parent.filename, 200),
+                "found_at": one_line(page.parent.containment_path, 200),
+            }
+        return payload
 
     # -- retrieval ---------------------------------------------------------
 

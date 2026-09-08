@@ -193,8 +193,24 @@ meaning rather than cut at a chunk boundary.
 
 The window SHALL be taken from the document's extracted text as one contiguous
 span. It SHALL NOT be assembled by joining chunk texts: chunks overlap by
-configuration, so joining them repeats text, and a chunk's stored text has been
-stripped of the whitespace its offsets still describe.
+configuration, so joining them repeats text.
+
+A chunk's offsets SHALL be treated as selecting its stored text up to
+surrounding whitespace, and not exactly. A chunk's offsets now name the trimmed
+span, but rows written before that was true name the window the text was trimmed
+from, and one store may hold both. Every comparison between a chunk's stored
+text and the extracted text at its offsets SHALL therefore trim before
+comparing; an exact comparison would treat every earlier row as inconsistent and
+withdraw its window.
+
+A window that adds nothing but whitespace to the passage SHALL NOT be reported
+as a window. A window identical to the passage is not a window, and neither is
+one that differs from it by a blank line: reported as widened, it makes "was
+this widened" answer yes for something with nothing in it to read, and names two
+spans in provenance that a reader cannot tell apart. This SHALL be decided by
+comparing the text rather than the span, because the two are not the same test —
+a section's last passage is followed by the paragraph break its own span no
+longer covers, so the span differs while the text does not.
 
 The window SHALL be bounded by a character budget, SHALL NOT cross a document
 boundary, and SHALL NOT extend past a heading boundary in a document that has
@@ -237,6 +253,11 @@ passage to be counted as two pieces of evidence.
 
 - **WHEN** two results match chunks close enough that widening one would reach into the other
 - **THEN** the later result is narrowed, and no text beyond the overlap the contract gives adjacent chunks appears twice in the response
+
+#### Scenario: A widening that adds only whitespace is not a window
+
+- **WHEN** the only room a passage has to grow into is the blank line that follows it
+- **THEN** no window is reported, and the result carries the passage alone
 
 ### Requirement: A search may be filtered to passages carrying a given identifier
 

@@ -26,11 +26,36 @@ from ..ingestion.quality_gate import QualityGate
 from ..ingestion.router import FormatRouter
 from ..mentions import default_extractors
 from ..mentions.port import MentionExtractor
-from ..storage.port import Chunk, Document, IngestRun, Mention, StorePort
+from ..storage.port import (
+    Chunk,
+    Document,
+    DocumentPage,
+    IngestRun,
+    Mention,
+    StorePort,
+)
 from ..summarising.port import SummariserPort, SummaryError
 from .casefiles import CasefileService
 
 MAX_FILE_BYTES = 512 * 1024 * 1024
+
+# One definition each, imported by both adapters. Deliberately unlike
+# `MAX_SEARCH_RESULTS`, which the agent surface sets below the service's own
+# bound: a search result carries prose, a listing row carries metadata, so
+# there is nothing for a second, tighter adapter bound to protect.
+DEFAULT_DOCUMENT_PAGE = 50
+MAX_DOCUMENT_PAGE = 200
+
+# The largest value SQLite accepts as an INTEGER bind. An offset is floored at
+# zero and capped here rather than left unbounded: anything larger reaches the
+# driver and raises `OverflowError`, which is not a `JackRyanError` and so
+# escapes the agent surface's one error translation, making the tool raise
+# instead of answering. Both published rules forbid that — an out-of-range
+# argument is clamped rather than refused, and a tool returns a payload rather
+# than raising. Clamping costs nothing: every offset a caller could act on is
+# many orders of magnitude below this, and one this large returns an empty page
+# that still reports the selection's true size.
+MAX_DOCUMENT_OFFSET = 2**63 - 1
 
 
 @dataclass(frozen=True)
@@ -102,6 +127,16 @@ class IngestReport:
         help a caller who read `complete` and stopped.
         """
         return not self.limitations
+
+
+@dataclass(frozen=True)
+class MentionOffsetRepair:
+    """What a pass over a casefile's mention positions examined and changed."""
+
+    documents_examined: int
+    chunks_examined: int
+    chunks_unlocatable: int
+    mentions_corrected: int
 
 
 @dataclass(frozen=True)
@@ -670,6 +705,56 @@ class IngestionService:
         notes = [c.summary for c in chunks] if self._fold_summaries else [c.text for c in chunks]
         return self._summariser.summarise_document(notes)
 
+    # -- repair ------------------------------------------------------------
+
+    def repair_mention_offsets(self, casefile_reference: str) -> MentionOffsetRepair:
+        """Recompute where each mention sits in its document, from the stored text.
+
+        A mention's document position is derived when its chunk is written, from
+        that chunk's recorded start. Chunks written while the recorded start
+        named the untrimmed window are wrong by the trimmed whitespace, so two
+        overlapping chunks place one occurrence twice and the inventory counts it
+        twice. Recomputing the position corrects that without re-extracting,
+        re-chunking or re-embedding anything.
+
+        Operator-invoked rather than a migration step: locating a stored text
+        inside the span its offsets name is not expressible in the schema
+        ladder's statements, and a corpus is not rewritten in place because
+        somebody opened it.
+
+        Writes only the derived position. Where a chunk's stored text is not
+        found inside its own span — a half-completed ingest leaving new text
+        against old offsets, the same inconsistency `Windower._slice` declines to
+        widen — that chunk is counted and left alone: a position guessed for it
+        would resolve and be wrong.
+        """
+        casefile = self._casefiles.resolve(casefile_reference)
+        documents = chunks_seen = unlocatable = corrected = 0
+        for document_id in self._store.list_document_ids(casefile.id):
+            document = self._store.get_document(document_id)
+            if document is None:
+                continue
+            documents += 1
+            text = document.extracted_text
+            starts: dict[str, int] = {}
+            for chunk in self._store.list_document_chunks(document_id):
+                chunks_seen += 1
+                # Searched inside the span the offsets name and never in the
+                # whole document: the same text can occur elsewhere, and a match
+                # found there would move the mention into a passage nobody chose.
+                within = text[chunk.char_start : chunk.char_end].find(chunk.text)
+                if within < 0:
+                    unlocatable += 1
+                    continue
+                starts[chunk.id] = chunk.char_start + within
+            corrected += self._store.recompute_mention_offsets(starts)
+        return MentionOffsetRepair(
+            documents_examined=documents,
+            chunks_examined=chunks_seen,
+            chunks_unlocatable=unlocatable,
+            mentions_corrected=corrected,
+        )
+
     # -- queries -----------------------------------------------------------
 
     def list_documents(
@@ -681,14 +766,75 @@ class IngestionService:
         it: three archives holding forty thousand documents are three things an
         analyst added. Every adapter reaches the rule here, so none of them has
         to know it.
+
+        Adapters use `list_document_page`; this returns the whole casefile, and
+        loads every document's text to do it.
         """
         casefile = self._casefiles.resolve(casefile_reference)
         return self._store.list_documents(casefile.id, include_expanded=include_expanded)
 
-    def list_children(self, casefile_reference: str, reference: str) -> list[Document]:
-        """What was expanded directly out of one document."""
-        document = self.resolve_document(casefile_reference, reference)
-        return self._store.list_children(document.id)
+    def list_document_page(
+        self,
+        casefile_reference: str,
+        parent_reference: str = "",
+        include_expanded: bool = False,
+        offset: int = 0,
+        limit: int = DEFAULT_DOCUMENT_PAGE,
+    ) -> DocumentPage:
+        """A bounded page of a casefile's documents, or of one container's contents.
+
+        An empty `parent_reference` lists what an analyst put in, or everything
+        in the casefile when `include_expanded` is set. A reference lists what
+        was expanded directly out of that document, and takes precedence:
+        children are expansions, so the two selections cannot contradict each
+        other, and the returned page names which one it is rather than leaving
+        an agent to infer it.
+
+        **Both bounds are clamped, not just the limit**, and both ends of each:
+        `limit` to between 1 and `MAX_DOCUMENT_PAGE`, `offset` to between 0 and
+        `MAX_DOCUMENT_OFFSET`. Clamped rather than refused, as every other bound
+        on this surface is — the agent surface has no request-validation layer
+        above it and an over-large argument is a harmless mistake. The offset's
+        upper bound is the one that is easy to assume unnecessary: it was
+        missing, and a value above SQLite's integer range reached the driver and
+        raised `OverflowError`, which is not a `JackRyanError`, so the tool
+        raised instead of answering.
+
+        **The second parameter is a reference, not `include_expanded`** — unlike
+        `list_documents`, whose flag sits second. The order is the one the agent
+        surface forwards positionally through `anyio.to_thread.run_sync`, which
+        passes no keywords, so it must not be rearranged. Migrating a
+        `list_documents(cf, True)` call by changing the method name alone passes
+        `True` as `parent_reference` and raises `AttributeError` on `.strip()`,
+        which is not a `JackRyanError` and so escapes both adapters'
+        translations. Pass `include_expanded=` by keyword.
+        """
+        casefile = self._casefiles.resolve(casefile_reference)
+        bounded = max(1, min(int(limit), MAX_DOCUMENT_PAGE))
+        start = min(max(0, int(offset)), MAX_DOCUMENT_OFFSET)
+
+        # Checked before resolving, because `resolve_document` refuses an empty
+        # reference — and an omitted parent is the default, not a mistake.
+        candidate = (parent_reference or "").strip()
+        parent = (
+            self.resolve_document(casefile_reference, candidate) if candidate else None
+        )
+        page = self._store.list_document_page(
+            casefile.id,
+            include_expanded=include_expanded,
+            parent_id=parent.id if parent else None,
+            offset=start,
+            limit=bounded,
+        )
+        if parent is None:
+            return page
+        # `resolve_document`'s queries select `*` and alias no `child_count`, so
+        # the resolved parent reports zero children while the page's own
+        # `total_matching` — counted under exactly the parent's direct-child
+        # predicate — says otherwise. Nothing renders it today, but handing back
+        # an object that contradicts itself is the very defect this change fixes
+        # for rows: a container reported as a leaf.
+        return replace(page, parent=replace(parent, child_count=page.total_matching))
 
     def containment_chain(self, casefile_reference: str, reference: str) -> list[Document]:
         """The documents from the ingested file down to this one, inclusive.

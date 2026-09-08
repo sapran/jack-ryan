@@ -123,6 +123,26 @@ span it actually returned, not the span of the passage alone. A payload whose
 declared position covers less than the text it carries cannot be checked against
 the source by hand.
 
+A listing SHALL be bounded like a read, and SHALL carry both how many entries it
+returned and how many the selection holds. The two SHALL be separately named: a
+caller that cannot tell the whole set from the first page of it reports the first
+page as coverage, which is the failure this surface's epistemics exist to
+prevent. An entry carries metadata rather than prose, but a listing that
+materialises every matching document to return the first few pays for the whole
+corpus's text to answer a question about its shape.
+
+Where entries remain, the payload SHALL say so and SHALL carry the position to
+continue from, in the same vocabulary a truncated read uses. One continuation
+contract across the surface rather than two: an agent that has learned to follow
+a truncated read should not have to learn a second spelling to follow a truncated
+listing.
+
+Paging an unchanged selection SHALL return each entry exactly once across the
+pages. The ordering SHALL therefore be total, so that a page boundary cannot fall
+inside a tie and repeat or skip an entry. An ordering that leaves two entries
+interchangeable is not wrong within one page and is silently wrong across two,
+and the caller cannot detect it: every page is individually well-formed.
+
 #### Scenario: A long document reports truncation and where to continue
 
 - **WHEN** a document longer than the read bound is read
@@ -142,6 +162,16 @@ the source by hand.
 
 - **WHEN** a tool returns a passage together with the text around it
 - **THEN** the payload's declared span covers all the text it returned, and separately identifies the matched passage within it
+
+#### Scenario: A listing reports the size of the selection it paged
+
+- **WHEN** a listing returns fewer entries than the selection holds
+- **THEN** it reports both counts, marks itself truncated, and carries the offset to continue from
+
+#### Scenario: Paging an unchanged selection omits and repeats nothing
+
+- **WHEN** a selection is paged to its end and the corpus has not changed
+- **THEN** the pages together carry each matching entry exactly once
 
 ### Requirement: A failing tool returns a typed payload rather than raising
 

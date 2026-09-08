@@ -24,7 +24,32 @@ def test_chunking_is_reproducible():
 
 def test_offsets_locate_each_chunk_in_the_source():
     for chunk in chunk_text(TEXT, max_chars=120, overlap_chars=20):
-        assert TEXT[chunk.char_start : chunk.char_end].strip() == chunk.text
+        assert TEXT[chunk.char_start : chunk.char_end] == chunk.text
+
+
+def test_offsets_select_a_chunk_whose_window_opened_on_whitespace():
+    """Catches offsets that name the window rather than the text stored from it.
+
+    The whitespace sits at exactly the offset the second window starts from —
+    `max_chars - overlap_chars`, where the chunker steps back to — so the second
+    chunk's stored text begins three characters after its window does. A single
+    newline throughout: a blank line would be a paragraph break, the boundary
+    would move, and the fixture would stop proving anything.
+    """
+    text = "A" * 350 + " \n " + "B" * 400
+    assert text[400 - 50].isspace(), (
+        "the second window does not open on whitespace, so this fixture cannot "
+        "tell a window's offsets from its text's"
+    )
+
+    chunks = chunk_text(text, max_chars=400, overlap_chars=50)
+
+    assert len(chunks) > 1, "one chunk cannot show an overlapping window's offsets"
+    for chunk in chunks:
+        assert text[chunk.char_start : chunk.char_end] == chunk.text, (
+            f"chunk {chunk.ordinal}'s offsets select "
+            f"{text[chunk.char_start : chunk.char_end]!r}, not its stored text"
+        )
 
 
 def test_chunks_are_ordered_and_numbered_from_zero():
