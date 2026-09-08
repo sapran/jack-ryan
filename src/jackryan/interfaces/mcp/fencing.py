@@ -50,6 +50,11 @@ def provenance(
     char_end: int | None = None,
     heading_path: str = "",
     containment_path: str = "",
+    locations_recorded: str = "",
+    observed_at: tuple[str, ...] = (),
+    locations_total: int = 0,
+    locations_truncated: bool = False,
+    locations_note: str = "",
     text_source: str = "",
     matched_chunk_id: str = "",
     matched_char_start: int | None = None,
@@ -78,6 +83,18 @@ def provenance(
     recognition is a transcription of what is on the page, however unreliable,
     whereas a summary is a claim about it. Emitted only when non-empty, so a
     provenance block for a document's own text never asserts a producer.
+
+    The `locations` block carries every place the same bytes were observed, each
+    joined to the root it was ingested from — the whole set, earliest first,
+    not the ones other than `found_at`. A relative path cannot say which dump
+    it came from, so a block naming the document's own location relatively
+    beside root-qualified others would report a different set depending on
+    which copy was ingested first. `total` counts the record's whole set and
+    `observed_at` is bounded. It is emitted only when it says something — more
+    than one location, or a record that cannot answer — so a document found in
+    one place produces exactly the block it produced before this existed. Every
+    path in it is document- and filesystem-derived to the same degree as
+    `found_at`, and is collapsed by the caller on the same terms.
     """
     block: dict[str, Any] = {
         "casefile_id": casefile_id,
@@ -87,6 +104,28 @@ def provenance(
     }
     if containment_path and containment_path != filename:
         block["found_at"] = containment_path
+    # Only when it says something: a document found in one place, with a whole
+    # record, produces exactly the block it produced before this existed.
+    #
+    # The second test is `locations_note`, not the verdict word. The note is
+    # non-empty exactly when the record cannot answer, and it is computed by
+    # the service — so this adapter does not spell the service's vocabulary a
+    # second time. Comparing against a literal `"complete"` here would fail
+    # open the day that word changed: every ordinary document would start
+    # carrying the block.
+    if len(observed_at) > 1 or locations_note:
+        locations: dict[str, Any] = {
+            "recorded": locations_recorded,
+            # Every location the record holds, earliest first, each carrying
+            # the root it was ingested from. `found_at` above stays the one a
+            # citation names.
+            "observed_at": list(observed_at),
+            "total": locations_total,
+            "truncated": locations_truncated,
+        }
+        if locations_note:
+            locations["note"] = locations_note
+        block["locations"] = locations
     if char_start is not None:
         block["char_start"] = char_start
     if char_end is not None:

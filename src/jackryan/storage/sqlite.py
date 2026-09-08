@@ -30,6 +30,8 @@ from .port import (
     CasefileStatistics,
     Chunk,
     Document,
+    DocumentLocation,
+    DocumentLocationSet,
     DocumentPage,
     IngestionCoverage,
     IngestRun,
@@ -133,6 +135,12 @@ def _row_to_document(row: sqlite3.Row) -> Document:
         containment_path=row["containment_path"],
         identity_path=row["identity_path"],
         child_count=row["child_count"] if "child_count" in row.keys() else 0,
+        # A real column, so it is read directly: every query feeding this
+        # function selects `*` or `d.*`, and a guard would only mask one that
+        # forgot it. `location_count` is aliased by the listing query alone,
+        # so it takes the same guard `child_count` above does.
+        locations_recorded=bool(row["locations_recorded"]),
+        location_count=row["location_count"] if "location_count" in row.keys() else 0,
     )
 
 
@@ -304,10 +312,10 @@ class SqliteStore:
             self._db.execute(
                 "INSERT INTO documents (id, casefile_id, content_hash, filename, media_type,"
                 " byte_size, extracted_text, extractor, text_source, summary, summary_by,"
-                " created_at, updated_at, parent_id, containment_path, identity_path)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " created_at, updated_at, parent_id, containment_path, identity_path,"
+                " locations_recorded)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(casefile_id, content_hash, identity_path) DO UPDATE SET"
-                "   filename = excluded.filename,"
                 "   media_type = excluded.media_type,"
                 "   byte_size = excluded.byte_size,"
                 "   extracted_text = excluded.extracted_text,"
@@ -324,8 +332,20 @@ class SqliteStore:
                 "   summary = excluded.summary,"
                 "   summary_by = excluded.summary_by,"
                 "   updated_at = excluded.updated_at,"
-                "   parent_id = excluded.parent_id,"
-                "   containment_path = excluded.containment_path",
+                # `filename` and `containment_path` are deliberately absent from
+                # this list, like `created_at` above: they are the *first*
+                # location this document's bytes were observed at, and a later
+                # copy found elsewhere must not overwrite them. Every observed
+                # location is kept in `document_locations`; this column is the
+                # one a citation names, so it has to be stable or a citation
+                # written yesterday points somewhere else today.
+                #
+                # `locations_recorded` is absent for a different reason: only an
+                # insert can honestly claim that the location record is whole
+                # from the start. A document migrated in from an older schema
+                # must keep saying it predates the record however often it is
+                # reingested.
+                "   parent_id = excluded.parent_id",
                 (
                     document.id,
                     document.casefile_id,
@@ -343,6 +363,7 @@ class SqliteStore:
                     document.parent_id,
                     document.containment_path,
                     document.identity_path,
+                    int(document.locations_recorded),
                 ),
             )
             self._db.commit()
@@ -376,6 +397,62 @@ class SqliteStore:
                 (casefile_id, content_hash, identity_path),
             ).fetchone()
         return _row_to_document(row) if row else None
+
+    def record_document_location(
+        self,
+        document_id: str,
+        source_root: str,
+        containment_path: str,
+        first_seen_at: datetime,
+    ) -> bool:
+        # INSERT OR IGNORE, never OR REPLACE: the first observation's timestamp
+        # is the fact worth keeping, and the return value is how the caller
+        # tells a newly discovered copy from an ordinary reingest of a known
+        # one. OR REPLACE would report every reingest as a discovery.
+        with self._lock:
+            cursor = self._db.execute(
+                "INSERT OR IGNORE INTO document_locations"
+                " (document_id, source_root, containment_path, first_seen_at)"
+                " VALUES (?, ?, ?, ?)",
+                (document_id, source_root, containment_path, _to_iso(first_seen_at)),
+            )
+            self._db.commit()
+            return cursor.rowcount > 0
+
+    def document_locations(self, document_id: str, limit: int) -> DocumentLocationSet:
+        """One document's recorded locations, bounded, and how many there are.
+
+        Ordered by when each was first observed and then by the location itself,
+        so the ordering is total: two locations recorded inside one ingest run
+        can share a timestamp, and a bound falling inside a tie would return a
+        different subset between two calls on an unchanged corpus.
+
+        The earliest is returned first, which is what lets a caller identify the
+        one the document itself reports without comparing strings against it.
+        """
+        with self._lock:
+            total = self._db.execute(
+                "SELECT COUNT(*) AS total FROM document_locations WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()["total"]
+            rows = self._db.execute(
+                "SELECT source_root, containment_path, first_seen_at"
+                " FROM document_locations WHERE document_id = ?"
+                " ORDER BY first_seen_at, source_root, containment_path"
+                " LIMIT ?",
+                (document_id, int(limit)),
+            ).fetchall()
+        return DocumentLocationSet(
+            locations=[
+                DocumentLocation(
+                    source_root=r["source_root"],
+                    containment_path=r["containment_path"],
+                    first_seen_at=_from_iso(r["first_seen_at"]),
+                )
+                for r in rows
+            ],
+            total=total,
+        )
 
     def ancestors(self, document_id: str) -> list[Document]:
         """The chain from the directly ingested file down to this document's parent.
@@ -485,7 +562,13 @@ class SqliteStore:
             rows = self._db.execute(
                 "SELECT d.*, ("
                 "   SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id"
-                " ) AS child_count"
+                " ) AS child_count, ("
+                # Same shape and the same order of cost as the child count
+                # already paid, and it is what makes "which documents were
+                # found in several places" answerable by scanning a listing
+                # rather than by opening every document in turn.
+                "   SELECT COUNT(*) FROM document_locations l WHERE l.document_id = d.id"
+                " ) AS location_count"
                 " FROM documents d"
                 " JOIN (SELECT d.id FROM documents d"
                 f"{predicate}{order} LIMIT ? OFFSET ?) chosen ON chosen.id = d.id"

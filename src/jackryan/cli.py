@@ -40,6 +40,15 @@ def _render_document(document: Document) -> dict[str, Any]:
         row["found_at"] = document.containment_path
     if document.child_count:
         row["children"] = document.child_count
+    # Only when it says something, like `children` above: a document found in
+    # one place is the ordinary case and adding a column of ones would widen
+    # every table for nothing.
+    # A pre-record document has no row for its own location, so `> 1` would
+    # mark it one location too late: its first recorded location is already an
+    # additional one. The flag is on every listing row because the query
+    # selects `d.*`, so this costs no extra read.
+    if document.location_count > (1 if document.locations_recorded else 0):
+        row["locations"] = document.location_count
     if document.summary:
         # Added only when present, so a table for a corpus ingested without a
         # summariser keeps the shape it has today. Model-written, so the producer
@@ -236,6 +245,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print("\nThis run did not cover everything it was offered:")
                     for line in report.limitations:
                         print(f"  {line}")
+                # A separate block below the limitations one, and phrased as a
+                # finding rather than a shortfall: the run is still complete.
+                # A copy found somewhere new was read and stored.
+                if report.new_locations:
+                    print(
+                        "\nAlready in this casefile, and now recorded at a "
+                        "location it had not been seen at:"
+                    )
+                    for path in report.new_locations:
+                        print(f"  {path}")
             return 1 if report.failed and not report.ingested else 0
 
         if args.command == "search":
@@ -362,7 +381,39 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "No documents yet. Add some with: jackryan ingest <casefile> <path>",
                 )
             else:
-                _print(_render_document(context.ingestion.resolve_document(args.casefile, args.reference)), args.json)
+                record = context.ingestion.document_locations(
+                    args.casefile, args.reference
+                )
+                row = _render_document(record.document)
+                row["locations_recorded"] = record.verdict
+                # Set unconditionally here, unlike the listing above: this is a
+                # single document's full record, and a person reading it needs
+                # `1` to mean one rather than having to infer it from an absent
+                # key.
+                row["locations"] = record.recorded.total
+                if args.json:
+                    row["observed_at"] = [
+                        location.full_path for location in record.observed_at
+                    ]
+                    row["locations_truncated"] = record.truncated
+                    if record.note:
+                        row["locations_note"] = record.note
+                    _print(row, True)
+                else:
+                    _print(row, False)
+                    # Every recorded location, each with its root, rather
+                    # than "the others": the document's own path above is
+                    # relative to a root no column holds, so listing only the
+                    # rest would show a different set depending on which copy
+                    # was ingested first.
+                    for location in record.observed_at:
+                        print(f"observed at {location.full_path}")
+                    if record.truncated:
+                        print(f"… {record.recorded.total} locations recorded in total")
+                    # The wording comes from the record, never written out here:
+                    # one caveat, one spelling, on every surface.
+                    if record.note:
+                        print(record.note)
             return 0
 
         if args.command == "repair":

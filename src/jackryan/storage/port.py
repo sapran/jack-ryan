@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Protocol
 
 
@@ -64,6 +65,17 @@ class Document:
     # How many documents were expanded directly out of this one. Carried so a
     # listing can show that there is more to reach without fetching it.
     child_count: int = 0
+    # Whether this document's source locations were recorded from the moment it
+    # was created. False for every row that predates the location record: its
+    # `containment_path` is one location it was observed at, and any others were
+    # overwritten before they could be kept. A surface that treated the recorded
+    # rows as the whole set for such a document would be asserting something it
+    # cannot know.
+    locations_recorded: bool = False
+    # How many source locations are recorded for this document. Carried so a
+    # listing can mark a file found in several places without fetching them —
+    # the `child_count` precedent, and populated only when a query aliases it.
+    location_count: int = 0
 
     @property
     def short_id(self) -> str:
@@ -73,6 +85,53 @@ class Document:
     def is_expanded(self) -> bool:
         """Whether this document came out of another rather than off disk."""
         return self.parent_id is not None
+
+
+def join_location(source_root: str, containment_path: str) -> str:
+    """The path a person follows to find a document's bytes by hand.
+
+    One definition, called by both the query path and the ingest report, so the
+    two cannot spell a location differently.
+    """
+    return str(PurePosixPath(source_root) / containment_path)
+
+
+@dataclass(frozen=True)
+class DocumentLocation:
+    """One place a document's bytes were observed.
+
+    Two fields rather than one path, because a containment path is relative to
+    whatever was ingested. `source_root` is what the analyst pointed at — the
+    folder for a walk, the file's own directory for a named file, and for a
+    document produced by expansion the root of the top-level file it came out
+    of, so that the two together are always followable from one end to the
+    other.
+    """
+
+    source_root: str
+    containment_path: str
+    first_seen_at: datetime
+
+    @property
+    def full_path(self) -> str:
+        return join_location(self.source_root, self.containment_path)
+
+
+@dataclass(frozen=True)
+class DocumentLocationSet:
+    """A document's recorded source locations, bounded, and how many there are.
+
+    Facts only. Whether the set may be treated as whole is the service layer's
+    rule, and lives with the verdict rather than here — the same split
+    `IngestionCoverage` and `CasefileCoverage` already make.
+    """
+
+    locations: list[DocumentLocation]
+    total: int
+
+    @property
+    def truncated(self) -> bool:
+        return len(self.locations) < self.total
 
 
 @dataclass(frozen=True)
@@ -493,6 +552,35 @@ class StorePort(Protocol):
     def find_document_by_hash(
         self, casefile_id: str, content_hash: str, identity_path: str = ""
     ) -> Document | None: ...
+
+    def record_document_location(
+        self,
+        document_id: str,
+        source_root: str,
+        containment_path: str,
+        first_seen_at: datetime,
+    ) -> bool:
+        """Record where a document's bytes were observed. True when it was new.
+
+        Recorded for every document, including one produced by expansion.
+
+        An expansion has one location per root its container was ingested from
+        — not one location full stop. Its containment path counts toward
+        identity but carries no root, so the same archive ingested from two
+        dumps expands to one document with two locations. Synthesising an
+        expansion's single location from its containment path instead of
+        recording it would therefore lose the second custodian for every
+        archived file, silently.
+
+        Uniform on purpose: a caller asking where a document was found gets one
+        answer shape, and no surface has to branch on how the document came to
+        exist.
+        """
+        ...
+
+    def document_locations(
+        self, document_id: str, limit: int
+    ) -> DocumentLocationSet: ...
 
     def delete_document(self, document_id: str) -> bool: ...
 

@@ -230,6 +230,42 @@ _STEPS: tuple[_Step, ...] = (
             " ON ingest_runs(casefile_id, started_at, id)",
         ),
     ),
+    _Step(
+        to_version=9,
+        reason=(
+            "documents record every source location their bytes were observed at, so a"
+            " second copy no longer overwrites the first"
+        ),
+        statements=(
+            # No separate index: a composite PRIMARY KEY on a rowid table gets
+            # an implicit unique index, whose leftmost prefix is document_id —
+            # which is the only way this table is ever queried. A second index
+            # would be a copy of that one.
+            #
+            # `source_root` is part of the key because a containment path is
+            # relative to whatever was ingested: two dumps each holding
+            # `note.txt` at their top level produce the same path, and without
+            # the root they would collide into one location — losing exactly
+            # the second custodian this table exists to record. It is the
+            # *top-level* ingest root, inherited by an expansion rather than
+            # taken from the scratch directory its entries are materialised
+            # into: that directory is new on every run, which would insert a
+            # fresh row and report a false discovery each time a container was
+            # reingested.
+            "CREATE TABLE IF NOT EXISTS document_locations ("
+            " document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,"
+            " source_root TEXT NOT NULL,"
+            " containment_path TEXT NOT NULL,"
+            " first_seen_at TEXT NOT NULL,"
+            " PRIMARY KEY (document_id, source_root, containment_path))",
+            # Zero for every row that already exists, which is exactly what it
+            # has to mean: those documents predate the record and their
+            # overwritten locations cannot be recovered. Only an insert by the
+            # new code may claim otherwise, which is why `upsert_document`
+            # never names this column in its DO UPDATE SET.
+            "ALTER TABLE documents ADD COLUMN locations_recorded INTEGER NOT NULL DEFAULT 0",
+        ),
+    ),
 )
 """The ladder, in order. Every step may only ADD.
 
