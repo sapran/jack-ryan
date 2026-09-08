@@ -20,7 +20,7 @@ from .ingestion.containers import rar_status
 from .ingestion.legacy_office import converter_status
 from .app import Context, build_context
 from .services.ingestion import DEFAULT_DOCUMENT_PAGE
-from .rendering import render_casefile, render_document, render_hit
+from .rendering import render_casefile, render_document, render_hit, render_report
 from .errors import (
     AmbiguousReferenceError,
     ConflictError,
@@ -197,21 +197,7 @@ def create_app(context: Context | None = None) -> FastAPI:
         # Ingestion is long and synchronous; running it on the event loop would
         # freeze every other request for its duration.
         report = await run_in_threadpool(ctx.ingestion.ingest, reference, payload.path)
-        return {
-            "casefile_id": report.casefile_id,
-            "ingested": report.ingested,
-            "failed": report.failed,
-            "outcomes": [
-                {
-                    "path": o.path,
-                    "status": o.status,
-                    "document_id": o.document_id,
-                    "chunks": o.chunks,
-                    "detail": o.detail,
-                }
-                for o in report.outcomes
-            ],
-        }
+        return render_report(report)
 
     @app.get("/api/casefiles/{reference}/documents")
     async def list_documents(

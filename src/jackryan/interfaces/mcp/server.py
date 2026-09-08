@@ -18,6 +18,10 @@ from ... import __version__
 from ...app import Context
 from ...services.ingestion import DEFAULT_DOCUMENT_PAGE
 from ...storage.port import Casefile, Document, DocumentPage
+from ...services.casefiles import (
+    COVERAGE_COMPLETE,
+    COVERAGE_INCOMPLETE,
+)
 from .annotations import stamp_for
 from .errors import returns_error_payload
 from .fencing import NOTICE, fence, new_nonce, provenance, read_as
@@ -37,7 +41,9 @@ Work in this order, and resist starting at the end:
 1. `case_list_casefiles` — establish what exists.
 2. `case_casefile_overview` — learn how big it is and what it is made of
    before you search it. A search you cannot size is a search you cannot
-   report coverage for.
+   report coverage for. Read `ingestion.coverage` here: unless it says
+   `complete`, an empty search result may mean the evidence was never
+   ingested rather than that the casefile does not mention the thing.
 3. `case_list_documents` — the documents themselves, a page at a time. A row
    carrying a `children` count is a container: pass its id back as `parent` to
    list what came out of it, and again to go deeper. Evidence in a real dump
@@ -179,7 +185,10 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         name="case_casefile_overview",
         description=(
             "Size and shape of a casefile — document count, formats, and total text — "
-            "so a search can be reported with honest coverage. Call before searching."
+            "so a search can be reported with honest coverage. Call before searching. "
+            "`ingestion.coverage` says whether the recorded ingest runs account for "
+            "everything offered — `unknown` means no record exists, never that the "
+            "casefile is complete."
         ),
         annotations=_annotations_for("case_casefile_overview"),
     )
@@ -193,6 +202,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         # reason.
         resolved = await off_loop(context.casefiles.resolve, casefile)
         stats = await off_loop(context.casefiles.statistics, casefile)
+        coverage = await off_loop(context.casefiles.coverage, casefile)
 
         by_type = stats.by_type
         # Say what was counted. A casefile of three archives holding forty
@@ -207,6 +217,43 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             if expanded
             else f"{stats.documents} documents"
         )
+        recorded = coverage.recorded
+        # An unrecorded thing is disclosed as unrecorded, never defaulted —
+        # the vocabulary `read_as` already established for an absent
+        # per-document record. A casefile whose record cannot answer is the
+        # case an agent most needs told, because it is the one where an empty
+        # search result is least safe to read as absence.
+        if coverage.verdict == COVERAGE_COMPLETE:
+            coverage_line = (
+                f"coverage: complete — {recorded.runs} recorded ingest runs, "
+                "none reported a limitation"
+            )
+        elif coverage.verdict == COVERAGE_INCOMPLETE:
+            coverage_line = (
+                f"coverage: incomplete — {recorded.runs_with_limitations} of "
+                f"{recorded.runs} recorded ingest runs reported a limitation; "
+                "an empty search may mean missing evidence rather than absence"
+            )
+        elif recorded.runs == 0:
+            coverage_line = (
+                "coverage: unknown — no ingest run is recorded for this casefile, "
+                "so nothing about it can be claimed as complete; an empty search "
+                "may mean missing evidence rather than absence"
+            )
+        elif recorded.continuity_breaks:
+            coverage_line = (
+                f"coverage: unknown — {recorded.continuity_breaks} times the record "
+                "stops accounting for what the casefile holds, so a run happened "
+                "that was never recorded; an empty search may mean missing "
+                "evidence rather than absence"
+            )
+        else:
+            coverage_line = (
+                f"coverage: unknown — {recorded.documents_before_first_run} documents "
+                "predate the first recorded ingest run, so how they arrived is "
+                "unrecorded; an empty search may mean missing evidence rather than "
+                "absence"
+            )
         formatted = (
             f"{one_line(resolved.title, 80)} ({one_line(resolved.slug, 40)})\n"
             f"{composition}, {stats.characters:,} characters of extracted text\n"
@@ -216,6 +263,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
                 )
                 or "  (empty)"
             )
+            + f"\n{coverage_line}"
         )
         return {
             "casefile": _render_casefile(resolved),
@@ -224,6 +272,25 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             "documents_expanded": stats.documents_expanded,
             "total_characters": stats.characters,
             "documents_by_type": by_type,
+            "ingestion": {
+                "coverage": coverage.verdict,
+                "runs_recorded": recorded.runs,
+                "runs_with_limitations": recorded.runs_with_limitations,
+                # Named for what it counts, not for what a reader would like it
+                # to count. `IngestReport.ingested` counts every stored item —
+                # containers and their expanded children alike — and counts a
+                # reingest again, so two clean ingests of one folder sum to
+                # twice its size. A key called `documents_…` beside
+                # `document_count` invited an agent to compare the two and
+                # explain away a corpus that had apparently lost documents.
+                "items_ingested_by_recorded_runs": recorded.items_ingested,
+                "items_failed": recorded.items_failed,
+                "entries_refused": recorded.entries_refused,
+                "files_without_extractor": recorded.files_without_extractor,
+                "bounds_reached": list(recorded.bounds_reached),
+                "documents_predating_the_record": recorded.documents_before_first_run,
+                "record_stops_accounting": recorded.continuity_breaks,
+            },
             "formatted": formatted,
         }
 

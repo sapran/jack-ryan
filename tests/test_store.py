@@ -143,6 +143,53 @@ def test_deleting_a_casefile_takes_its_documents_and_chunks(tmp_path):
     store.close()
 
 
+def test_deleting_a_casefile_deletes_its_ingest_records(tmp_path):
+    """The cascade the step's comment claims, checked rather than trusted.
+
+    The step adds no trigger, on the argument that `casefiles.id` is a real
+    foreign-key parent and `PRAGMA foreign_keys=ON` is set in `initialize`.
+    That argument is correct and it is also exactly the kind of claim that is
+    silently wrong — the two sidecars next to it *do* need a trigger.
+    """
+    from jackryan.storage.port import Casefile, IngestRun
+
+    store = make_store(tmp_path, dimensions=4)
+    now = datetime.now(timezone.utc)
+
+    def casefile_named(slug):
+        return store.create_casefile(
+            Casefile(
+                id=uuid.uuid4().hex, slug=slug, title=slug.title(), description="",
+                created_at=now, updated_at=now,
+            )
+        )
+
+    doomed = casefile_named("doomed")
+    kept = casefile_named("kept")
+
+    for casefile in (doomed, kept):
+        for _ in range(2):
+            store.record_ingest_run(
+                IngestRun(
+                    id=uuid.uuid4().hex, casefile_id=casefile.id,
+                    started_at=now, finished_at=now, documents_before=0,
+                    documents_after=0,
+                    items_ingested=1, items_failed=0, entries_refused=0,
+                    files_without_extractor=0, exhausted_by="",
+                )
+            )
+    assert store.ingestion_coverage(doomed.id).runs == 2
+    assert store.ingestion_coverage(kept.id).runs == 2
+
+    store.delete_casefile(doomed.id)
+
+    assert store.ingestion_coverage(doomed.id).runs == 0
+    assert store.ingestion_coverage(kept.id).runs == 2, (
+        "deleting one casefile took another's records"
+    )
+    store.close()
+
+
 def test_the_same_hash_in_one_casefile_reuses_the_row(tmp_path):
     store = make_store(tmp_path, dimensions=4)
     casefile = make_casefile(store)

@@ -704,3 +704,112 @@ def test_only_the_rounding_separates_the_two_hit_renderings(context, corpus):
     # And the rounding is not a no-op on this fixture, or the four assertions
     # above would agree for a reason that has nothing to do with rounding.
     assert from_cli["rerank_score"] != from_rest["rerank_score"]
+
+
+async def rest_post(app, path, payload):
+    """One POST against the REST app itself, the GET helper's twin.
+
+    Separate rather than folded into `rest_get`: a POST carries a body and a
+    content-type header, and threading both through the GET helper's signature
+    would make every existing caller pass two arguments it has no use for.
+    """
+    body = json.dumps(payload).encode()
+    messages: list[dict] = []
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message):
+        messages.append(message)
+
+    await app(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "root_path": "",
+            "headers": [
+                (b"host", b"testserver"),
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+            "client": ("127.0.0.1", 51234),
+            "server": ("testserver", 80),
+            "app": app,
+        },
+        receive,
+        send,
+    )
+    status = next(m["status"] for m in messages if m["type"] == "http.response.start")
+    out = b"".join(
+        m.get("body", b"") for m in messages if m["type"] == "http.response.body"
+    )
+    assert status == 200, f"REST answered {status}: {out.decode(errors='replace')}"
+    return json.loads(out)
+
+
+def test_the_two_human_surfaces_return_the_same_ingest_result(
+    context, tmp_path, monkeypatch, capsys
+):
+    """One ingest, two surfaces, one answer — including why it fell short.
+
+    The coverage fields are the ones a caller decides whether to trust the
+    corpus on, so a surface missing one of them is a surface that reports a
+    partial ingest as a whole one. Both surfaces built this payload
+    independently before.
+    """
+    folder = tmp_path / "drop"
+    folder.mkdir()
+    (folder / "lease.md").write_text("# Lease\n\nThe harbour lease was awarded.\n", "utf-8")
+    (folder / "activate.bat").write_bytes(b"@echo off\r\nnet use z: \\\\server\\share\r\n")
+    (folder / "empty.txt").write_text("", encoding="utf-8")
+
+    for_cli = context.casefiles.create("Cli Intake")
+    for_rest = context.casefiles.create("Rest Intake")
+
+    cli_payload = cli_json(
+        context, monkeypatch, capsys, ["ingest", for_cli.short_id, str(folder)]
+    )
+    rest_payload = anyio.run(
+        rest_post,
+        rest_app(context),
+        f"/api/casefiles/{for_rest.short_id}/ingest",
+        {"path": str(folder)},
+    )
+
+    assert set(cli_payload) == set(rest_payload)
+    # Two casefiles ingesting one folder, so `casefile_id` and each outcome's
+    # `document_id` differ by construction. They are excluded the way `score`
+    # is above, and everything that describes *coverage* is compared whole —
+    # which is the part a caller decides whether to trust the corpus on.
+    def without_identifiers(payload):
+        return {
+            **{k: v for k, v in payload.items() if k != "casefile_id"},
+            "outcomes": [
+                {k: v for k, v in outcome.items() if k != "document_id"}
+                for outcome in payload["outcomes"]
+            ],
+        }
+
+    assert without_identifiers(cli_payload) == without_identifiers(rest_payload)
+    # The ids are still asserted to be *present* on both, or dropping the field
+    # from one surface would pass the comparison above.
+    for payload in (cli_payload, rest_payload):
+        stored = [o for o in payload["outcomes"] if o["status"] == "ingested"]
+        assert stored and all(o["document_id"] for o in stored)
+
+    # And the values are the ones the run actually had, not merely equal to each
+    # other: two surfaces both reporting `complete: true` would agree here.
+    assert cli_payload["complete"] is False
+    assert cli_payload["skipped"] == ["activate.bat"]
+    assert cli_payload["refusals"] == []
+    assert cli_payload["exhausted_by"] is None
+    assert cli_payload["ingested"] == 1
+    assert cli_payload["failed"] == 1
+    assert any("no registered extractor" in line for line in cli_payload["limitations"])
+    assert any("failed to be read" in line for line in cli_payload["limitations"])

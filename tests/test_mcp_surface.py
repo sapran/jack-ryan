@@ -210,7 +210,25 @@ async def test_the_overview_reports_the_corpus_it_was_asked_about(
         "documents_expanded",
         "total_characters",
         "documents_by_type",
+        "ingestion",
         "formatted",
+    }
+    # The nested block gets the same treatment as the top level, and for the
+    # same reason: four of these keys are read by no other test, so a rename
+    # would otherwise pass every value-by-value assertion in the suite. Proved
+    # by mutation — renaming `bounds_reached` to `bounds` left the whole suite
+    # green until this assertion existed.
+    assert set(body["ingestion"]) == {
+        "coverage",
+        "runs_recorded",
+        "runs_with_limitations",
+        "items_ingested_by_recorded_runs",
+        "items_failed",
+        "entries_refused",
+        "files_without_extractor",
+        "bounds_reached",
+        "documents_predating_the_record",
+        "record_stops_accounting",
     }
 
     documents = context.ingestion.list_documents(mixed.short_id, include_expanded=True)
@@ -254,6 +272,291 @@ async def test_the_overview_omits_the_expansion_clause_when_nothing_was_expanded
     assert body["documents_expanded"] == 0
     assert "3 documents" in body["formatted"]
     assert "expanded from containers" not in body["formatted"]
+
+
+@pytest.mark.anyio
+async def test_a_casefile_with_no_recorded_run_reports_unknown_coverage(server, loaded):
+    """No record is `unknown`, never `complete`.
+
+    The distinction the whole disclosure exists for: an agent reading
+    `complete` here would treat an empty search result as absence, and this is
+    the case where that is least safe.
+    """
+    context, _ = loaded
+    empty = context.casefiles.create("Nothing Ingested")
+    body = await call(server, "case_casefile_overview", {"casefile": empty.short_id})
+
+    assert body["ingestion"]["coverage"] == "unknown"
+    assert body["ingestion"]["runs_recorded"] == 0
+    assert "no ingest run is recorded" in body["formatted"]
+    # The spec requires this clause of *every* non-complete verdict, and
+    # `unknown` is the state the design calls least safe to read as absence —
+    # it is also the state every casefile predating this capability will read.
+    # Only the `incomplete` line carried it until this assertion existed.
+    assert "an empty search may mean missing evidence" in body["formatted"]
+
+
+@pytest.mark.anyio
+async def test_documents_predating_the_record_keep_the_verdict_unknown(
+    server, loaded, tmp_path
+):
+    """A corpus filled before the record existed can never read `complete`.
+
+    This is the test the whole design turns on. Deleting the run rows stands in
+    for a casefile filled before this capability shipped — which is every
+    casefile that exists today. Without `documents_before`, the clean second
+    run below would make the casefile claim `complete` while most of its
+    documents arrived by a route no record describes: a confident wrong answer,
+    which is worse than the silence this change removes.
+    """
+    context, casefile = loaded
+
+    # Stand in for a pre-change corpus: the documents are there, the record is
+    # not. Raw SQL because no service method deletes a run record, deliberately
+    # — nothing in the domain may forget that a run happened.
+    context.store._db.execute("DELETE FROM ingest_runs")
+    context.store._db.commit()
+    before = context.casefiles.statistics(casefile.short_id).documents
+    assert before > 0, "the fixture must leave documents behind"
+
+    body_before = await call(
+        server, "case_casefile_overview", {"casefile": casefile.short_id}
+    )
+    assert body_before["ingestion"]["coverage"] == "unknown"
+    assert body_before["ingestion"]["runs_recorded"] == 0
+
+    # Now one clean recorded run on top. The verdict must stay `unknown`.
+    folder = tmp_path / "later"
+    folder.mkdir()
+    (folder / "later.md").write_text("# Later\n\nAdded after the record began.\n", "utf-8")
+    assert context.ingestion.ingest(casefile.short_id, folder).complete
+
+    body = await call(server, "case_casefile_overview", {"casefile": casefile.short_id})
+    assert body["ingestion"]["coverage"] == "unknown", (
+        "a clean run over an unaccounted-for corpus is not completeness"
+    )
+    assert body["ingestion"]["runs_recorded"] == 1
+    assert body["ingestion"]["documents_predating_the_record"] == before
+    assert "predate the first recorded ingest run" in body["formatted"]
+    assert "an empty search may mean missing evidence" in body["formatted"]
+
+
+@pytest.mark.anyio
+async def test_a_recorded_limitation_makes_the_casefile_incomplete(server, loaded, tmp_path):
+    """A known gap is stated as a gap, with the warning an agent needs."""
+    context, _ = loaded
+
+    folder = tmp_path / "mixed"
+    folder.mkdir()
+    (folder / "good.md").write_text("# Good\n\nA readable document.\n", "utf-8")
+    (folder / "activate.bat").write_bytes(b"@echo off\r\nnet use z: \\\\server\\share\r\n")
+
+    partial = context.casefiles.create("Partly Filled")
+    report = context.ingestion.ingest(partial.short_id, folder)
+    assert not report.complete
+
+    body = await call(server, "case_casefile_overview", {"casefile": partial.short_id})
+    assert body["ingestion"]["coverage"] == "incomplete"
+    assert body["ingestion"]["runs_with_limitations"] == 1
+    assert body["ingestion"]["files_without_extractor"] == 1
+    assert "an empty search may mean missing evidence" in body["formatted"]
+
+
+@pytest.mark.anyio
+async def test_a_casefile_filled_only_by_clean_runs_reports_complete(server, loaded, tmp_path):
+    """The one state in which an empty result may be read as absence.
+
+    Separate from the three tests above rather than parametrised, following the
+    convention the expansion-clause pair states: branches asserting opposite
+    things about one string belong in separate tests.
+    """
+    context, _ = loaded
+
+    folder = tmp_path / "clean"
+    folder.mkdir()
+    (folder / "one.md").write_text("# One\n\nThe only document offered.\n", "utf-8")
+
+    fresh = context.casefiles.create("Cleanly Filled")
+    assert context.ingestion.ingest(fresh.short_id, folder).complete
+
+    body = await call(server, "case_casefile_overview", {"casefile": fresh.short_id})
+    assert body["ingestion"]["coverage"] == "complete"
+    assert body["ingestion"]["runs_recorded"] == 1
+    assert body["ingestion"]["documents_predating_the_record"] == 0
+    assert "coverage: complete" in body["formatted"]
+    assert "unknown" not in body["formatted"]
+    assert "incomplete" not in body["formatted"]
+
+
+@pytest.mark.anyio
+async def test_a_run_that_raised_part_way_keeps_the_verdict_unknown(
+    server, loaded, tmp_path
+):
+    """An abort in the middle is as unaccounted-for as one at the beginning.
+
+    The sharpest case this capability has, and the one it originally got wrong.
+    A run that raises is deliberately never recorded — but the documents it
+    wrote before raising stay in the corpus. When that run is the *second* or
+    later, the earliest recorded run still began against an empty casefile and
+    every recorded run is clean, so a verdict resting on
+    `documents_before_first_run` alone said `complete` while offered files were
+    missing. Reproduced exactly that way before `continuity_breaks` existed:
+    four documents held, six offered, verdict `complete`.
+
+    What makes the absence detectable is the pair of counts either side of each
+    run: the third run finds more documents than the first left behind.
+    """
+    context, _ = loaded
+    case = context.casefiles.create("Aborted Midway")
+
+    first = tmp_path / "first"
+    first.mkdir()
+    (first / "one.md").write_text("# One\n\nThe first document.\n", "utf-8")
+    (first / "two.md").write_text("# Two\n\nThe second document.\n", "utf-8")
+    assert context.ingestion.ingest(case.short_id, first).complete
+
+    doomed = tmp_path / "doomed"
+    doomed.mkdir()
+    for name in ("three", "four", "five"):
+        (doomed / f"{name}.md").write_text(f"# {name}\n\nDocument {name}.\n", "utf-8")
+
+    # Raise after the first document is stored, so the run leaves evidence
+    # behind and no record of itself — a killed process, a store error, or a
+    # `record_ingest_run` write that itself failed all land here.
+    real = context.ingestion._ingest_work
+    seen = {"n": 0}
+
+    def raising(casefile_id, work):
+        seen["n"] += 1
+        if seen["n"] > 1:
+            raise KeyError("something went wrong mid-ingest")
+        return real(casefile_id, work)
+
+    context.ingestion._ingest_work = raising
+    with pytest.raises(KeyError):
+        context.ingestion.ingest(case.short_id, doomed)
+    context.ingestion._ingest_work = real
+
+    last = tmp_path / "last"
+    last.mkdir()
+    (last / "six.md").write_text("# Six\n\nDocument six.\n", "utf-8")
+    assert context.ingestion.ingest(case.short_id, last).complete
+
+    body = await call(server, "case_casefile_overview", {"casefile": case.short_id})
+    assert body["ingestion"]["coverage"] == "unknown", (
+        "an abort after a clean run leaves documents no record accounts for"
+    )
+    # Both recorded runs are clean, which is exactly why a limitation count
+    # cannot catch this and the continuity of the record has to.
+    assert body["ingestion"]["runs_with_limitations"] == 0
+    assert body["ingestion"]["runs_recorded"] == 2
+    assert body["ingestion"]["record_stops_accounting"] == 1
+    assert body["ingestion"]["documents_predating_the_record"] == 0
+    assert "stops accounting for what the casefile holds" in body["formatted"]
+    assert "an empty search may mean missing evidence" in body["formatted"]
+
+
+@pytest.mark.anyio
+async def test_a_failed_document_makes_the_casefile_incomplete(server, loaded, tmp_path):
+    """`items_failed` must reach the recorded verdict, not just the run report.
+
+    One of three limitation kinds that the run report proved and the *record*
+    did not: setting `items_failed=0` on the written row left the whole suite
+    green, so a casefile whose only run lost a document read `complete`.
+    """
+    context, _ = loaded
+    case = context.casefiles.create("Failed Document")
+    folder = tmp_path / "drop"
+    folder.mkdir()
+    (folder / "good.md").write_text("# Good\n\nA readable document.\n", "utf-8")
+    (folder / "empty.txt").write_text("", encoding="utf-8")
+
+    report = context.ingestion.ingest(case.short_id, folder)
+    assert report.failed == 1
+
+    body = await call(server, "case_casefile_overview", {"casefile": case.short_id})
+    assert body["ingestion"]["coverage"] == "incomplete"
+    assert body["ingestion"]["runs_with_limitations"] == 1
+    assert body["ingestion"]["items_failed"] == 1
+
+
+@pytest.mark.anyio
+async def test_a_refused_container_entry_makes_the_casefile_incomplete(
+    server, loaded, tmp_path
+):
+    """`entries_refused` must reach the recorded verdict. Second of the three."""
+    import zipfile
+
+    context, _ = loaded
+    case = context.casefiles.create("Refused Entry")
+    bundle = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("good.txt", "readable")
+        archive.writestr("photo.raw", "\x00\x01")
+
+    report = context.ingestion.ingest(case.short_id, bundle)
+    assert report.refusals
+
+    body = await call(server, "case_casefile_overview", {"casefile": case.short_id})
+    assert body["ingestion"]["coverage"] == "incomplete"
+    assert body["ingestion"]["runs_with_limitations"] == 1
+    assert body["ingestion"]["entries_refused"] >= 1
+
+
+@pytest.mark.anyio
+async def test_a_bound_that_stopped_expansion_makes_the_casefile_incomplete(
+    server, loaded, tmp_path
+):
+    """`exhausted_by` must reach the recorded verdict, and name the bound.
+
+    Third of the three, and the only one carrying a string rather than a count:
+    `bounds_reached` is read by no other test, so it is asserted by value here.
+    """
+    import zipfile
+
+    context, _ = loaded
+    case = context.casefiles.create("Bound Reached")
+    bundle = tmp_path / "wide.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for index in range(8):
+            archive.writestr(f"note-{index}.txt", f"body {index}")
+
+    context.ingestion._limits = (4, 3, 64 * 1024 * 1024)
+    report = context.ingestion.ingest(case.short_id, bundle)
+    assert report.exhausted_by is not None
+
+    body = await call(server, "case_casefile_overview", {"casefile": case.short_id})
+    assert body["ingestion"]["coverage"] == "incomplete"
+    assert body["ingestion"]["runs_with_limitations"] == 1
+    assert body["ingestion"]["bounds_reached"] == [report.exhausted_by]
+
+
+@pytest.mark.anyio
+async def test_a_reingest_does_not_claim_the_casefile_grew(server, loaded, tmp_path):
+    """The item count says items, and the casefile still reads complete.
+
+    A reingest counts again — `IngestReport.ingested` counts `reingested` too —
+    so two clean passes over one folder sum to twice its size. That figure sits
+    beside `document_count` in the same payload, and under its former name,
+    `documents_from_recorded_runs`, an agent comparing the two would have had to
+    conclude the corpus had lost documents.
+    """
+    context, _ = loaded
+    case = context.casefiles.create("Reingested Twice")
+    folder = tmp_path / "drop"
+    folder.mkdir()
+    (folder / "lease.md").write_text("# Lease\n\nThe harbour lease was awarded.\n", "utf-8")
+
+    assert context.ingestion.ingest(case.short_id, folder).complete
+    assert context.ingestion.ingest(case.short_id, folder).complete
+
+    body = await call(server, "case_casefile_overview", {"casefile": case.short_id})
+    assert body["document_count"] == 1
+    assert body["ingestion"]["items_ingested_by_recorded_runs"] == 2
+    # A reingest stores no new document, so the record still accounts for the
+    # corpus exactly and the verdict stays complete.
+    assert body["ingestion"]["record_stops_accounting"] == 0
+    assert body["ingestion"]["coverage"] == "complete"
 
 
 @pytest.mark.anyio

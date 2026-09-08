@@ -87,6 +87,32 @@ def test_ingest_prints_a_line_per_document(capsys, corpus):
     code, out, _ = run(["ingest", "harbour-inquiry", str(corpus)], capsys)
     assert code == 0
     assert "3 ingested, 0 failed" in out
+    # The negative twin of the test below: a clean run must not warn. A summary
+    # that always warns teaches an operator to ignore the warning.
+    assert "did not cover everything it was offered" not in out
+
+
+def test_an_incomplete_run_says_so_in_the_human_summary(capsys, tmp_path):
+    """A person reading the summary must be told the run fell short.
+
+    The counts alone read as a whole result: "1 ingested, 0 failed" is exactly
+    what a complete run prints, and the file nothing could read leaves no trace
+    in either number.
+    """
+    folder = tmp_path / "drop"
+    folder.mkdir()
+    (folder / "lease.md").write_text("# Lease\n\nThe harbour lease was awarded.\n", "utf-8")
+    (folder / "activate.bat").write_bytes(b"@echo off\r\nnet use z: \\\\server\\share\r\n")
+
+    run(["--json", "casefile", "create", "Mixed Drop"], capsys)
+    code, out, _ = run(["ingest", "mixed-drop", str(folder)], capsys)
+
+    # An incomplete run is a real result, not a failure: a non-zero code here
+    # would break every script that ingests a folder of mixed content.
+    assert code == 0
+    assert "1 ingested, 0 failed" in out
+    assert "did not cover everything it was offered" in out
+    assert "no registered extractor" in out
 
 
 def test_search_says_so_when_nothing_matches(capsys, corpus):

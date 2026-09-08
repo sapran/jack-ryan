@@ -191,6 +191,45 @@ _STEPS: tuple[_Step, ...] = (
             "CREATE INDEX IF NOT EXISTS idx_mentions_chunk ON mentions(chunk_id)",
         ),
     ),
+    # No trigger, for the same reason the mentions step above needs none:
+    # `casefiles.id` is a real foreign-key parent and `PRAGMA foreign_keys=ON`
+    # is set in `initialize`, so deleting a casefile deletes its run records.
+    # `_SIDECAR_TRIGGER` exists only because `chunks_fts` and `chunk_vectors`
+    # are virtual tables, which never observe a cascade at all. This step adds
+    # no column to `chunks_fts`, so that trigger and the FTS column list are
+    # untouched.
+    _Step(
+        to_version=8,
+        reason="each completed ingest run is recorded, so a casefile can say how completely it was filled",
+        statements=(
+            "CREATE TABLE IF NOT EXISTS ingest_runs ("
+            " id TEXT PRIMARY KEY,"
+            " casefile_id TEXT NOT NULL REFERENCES casefiles(id) ON DELETE CASCADE,"
+            " started_at TEXT NOT NULL, finished_at TEXT NOT NULL,"
+            # How many documents the casefile held before and after this run.
+            #
+            # `documents_before` alone answers only "did evidence predate the
+            # *first* record". The pair answers the question that matters: does
+            # the record account for everything now in the corpus. A run that
+            # raises part way is deliberately never recorded, but the documents
+            # it already wrote stay — so the next run's `documents_before`
+            # exceeds the previous run's `documents_after`, and that gap is the
+            # only evidence left that a run happened and was not recorded. It
+            # also catches a killed process and a `record_ingest_run` write that
+            # itself failed, neither of which any marker on a run row could.
+            " documents_before INTEGER NOT NULL DEFAULT 0,"
+            " documents_after INTEGER NOT NULL DEFAULT 0,"
+            " items_ingested INTEGER NOT NULL DEFAULT 0,"
+            " items_failed INTEGER NOT NULL DEFAULT 0,"
+            " entries_refused INTEGER NOT NULL DEFAULT 0,"
+            " files_without_extractor INTEGER NOT NULL DEFAULT 0,"
+            # '' rather than NULL for "no bound was reached", matching
+            # `text_source` and `summary_by`.
+            " exhausted_by TEXT NOT NULL DEFAULT '')",
+            "CREATE INDEX IF NOT EXISTS idx_ingest_runs_casefile"
+            " ON ingest_runs(casefile_id, started_at, id)",
+        ),
+    ),
 )
 """The ladder, in order. Every step may only ADD.
 

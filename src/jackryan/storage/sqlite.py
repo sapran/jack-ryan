@@ -31,6 +31,8 @@ from .port import (
     Chunk,
     Document,
     DocumentPage,
+    IngestionCoverage,
+    IngestRun,
     Mention,
     MentionFacet,
 )
@@ -710,6 +712,101 @@ class SqliteStore:
             documents_expanded=totals["expanded"],
             characters=totals["characters"],
             by_type={(r["media_type"] or "unknown"): r["count"] for r in by_type},
+        )
+
+    def record_ingest_run(self, run: IngestRun) -> None:
+        """Record a completed run.
+
+        Eleven named columns rather than a serialised blob: the aggregate below
+        sums four of them, orders on two and compares two across consecutive
+        rows, none of which a blob could be asked to do without unpacking every
+        row.
+        """
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO ingest_runs (id, casefile_id, started_at, finished_at,"
+                " documents_before, documents_after, items_ingested, items_failed,"
+                " entries_refused, files_without_extractor, exhausted_by)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run.id,
+                    run.casefile_id,
+                    _to_iso(run.started_at),
+                    _to_iso(run.finished_at),
+                    run.documents_before,
+                    run.documents_after,
+                    run.items_ingested,
+                    run.items_failed,
+                    run.entries_refused,
+                    run.files_without_extractor,
+                    run.exhausted_by,
+                ),
+            )
+            self._db.commit()
+
+    def ingestion_coverage(self, casefile_id: str) -> IngestionCoverage:
+        """What the recorded runs add up to, counted in the database.
+
+        Four statements in one lock hold, so the totals, the earliest run, the
+        bounds and the continuity check all describe the same instant. The
+        verdict they support is deliberately not computed here: it is a domain
+        rule, and a store that held one could disagree with the service layer
+        about what its own counts mean.
+        """
+        with self._lock:
+            totals = self._db.execute(
+                "SELECT COUNT(*) AS runs,"
+                "       COALESCE(SUM(items_failed > 0 OR entries_refused > 0"
+                "                    OR files_without_extractor > 0 OR exhausted_by <> ''), 0)"
+                "           AS limited,"
+                "       COALESCE(SUM(items_ingested), 0) AS ingested,"
+                "       COALESCE(SUM(items_failed), 0) AS failed,"
+                "       COALESCE(SUM(entries_refused), 0) AS refused,"
+                "       COALESCE(SUM(files_without_extractor), 0) AS unroutable"
+                " FROM ingest_runs WHERE casefile_id = ?",
+                (casefile_id,),
+            ).fetchone()
+            # An ordered read rather than MIN(documents_before): deleting
+            # documents makes the minimum stop being the earliest run's value,
+            # and it is the earliest run that decides whether anything predates
+            # the record. The tie-break on `id` keeps it deterministic, the same
+            # discipline `retrieval.py` applies to fused ranks — a value that
+            # varies between runs of an unchanged corpus cannot be reasoned
+            # about.
+            first = self._db.execute(
+                "SELECT documents_before FROM ingest_runs WHERE casefile_id = ?"
+                " ORDER BY started_at, id LIMIT 1",
+                (casefile_id,),
+            ).fetchone()
+            bounds = self._db.execute(
+                "SELECT DISTINCT exhausted_by FROM ingest_runs"
+                " WHERE casefile_id = ? AND exhausted_by <> '' ORDER BY exhausted_by",
+                (casefile_id,),
+            ).fetchall()
+            # Where the record stops accounting for the corpus. A run that
+            # raised part way is never recorded, but the documents it wrote
+            # before raising stay — so the next run finds more documents than
+            # the last recorded run left behind, and this gap is the only trace
+            # of it. `LAG` compares consecutive rows in the same order the
+            # earliest-run read uses, so one ordering decides both.
+            breaks = self._db.execute(
+                "SELECT COUNT(*) AS breaks FROM ("
+                "  SELECT documents_before,"
+                "         LAG(documents_after) OVER (ORDER BY started_at, id) AS previous_after"
+                "    FROM ingest_runs WHERE casefile_id = ?"
+                ") WHERE previous_after IS NOT NULL AND documents_before <> previous_after",
+                (casefile_id,),
+            ).fetchone()
+        return IngestionCoverage(
+            runs=totals["runs"],
+            runs_with_limitations=totals["limited"],
+            items_ingested=totals["ingested"],
+            items_failed=totals["failed"],
+            entries_refused=totals["refused"],
+            files_without_extractor=totals["unroutable"],
+            bounds_reached=tuple(row["exhausted_by"] for row in bounds),
+            continuity_breaks=breaks["breaks"],
+            documents_before_first_run=first["documents_before"] if first else 0,
         )
 
     def get_document_chunks_around(

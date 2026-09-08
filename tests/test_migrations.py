@@ -126,6 +126,73 @@ def test_the_migration_survives_closing_the_store(tmp_path):
         conn.close()
 
 
+def test_an_older_store_gains_the_ingest_run_record(tmp_path):
+    """A store built before the run record opens and gains the table.
+
+    The mechanical guards below cover the additive rule and the version
+    derivation. What they cannot say is that this particular step reaches an
+    old store and leaves its evidence alone, which is the only thing an
+    operator with a filled corpus cares about.
+
+    Two stores, not one. `migrate` computes `confirmed` **once** and then runs
+    every step whose `to_version` exceeds it, so from the baseline this step
+    applies even if its `to_version` duplicated the one before it. A store
+    already stamped at the previous version is the case that depends on the
+    version being higher.
+
+    **This test does not pin `to_version`, and cannot.** `previous` is derived
+    from `_STEPS`, so a duplicated version moves it too and this stays green —
+    measured, not supposed. What pins it is
+    `test_the_ladder_versions_strictly_increase`, which asserts the property
+    instead of consuming the value. This half is here for the behaviour: that a
+    store one rung down really does arrive with the table.
+    """
+    expected_columns = {
+        "id",
+        "casefile_id",
+        "started_at",
+        "finished_at",
+        "documents_before",
+        "documents_after",
+        "items_ingested",
+        "items_failed",
+        "entries_refused",
+        "files_without_extractor",
+        "exhausted_by",
+    }
+
+    previous = max(
+        step.to_version for step in _STEPS if step.to_version < SCHEMA_VERSION
+    )
+    at_previous = build_baseline_store(tmp_path / "at-previous.db", version=previous)
+    store = SqliteStore(at_previous)
+    try:
+        store.initialize(IDENTITY, DIMENSIONS)
+        assert set(columns_of(store, "ingest_runs")) == expected_columns, (
+            f"a store stamped at {previous} did not reach the run-record step"
+        )
+    finally:
+        store.close()
+
+    path = build_baseline_store(tmp_path / "old.db")
+    store = SqliteStore(path)
+    try:
+        store.initialize(IDENTITY, DIMENSIONS)
+
+        assert set(columns_of(store, "ingest_runs")) == expected_columns
+        # The document written at the baseline still reads. A migration that
+        # reached the evidence would be the one unrecoverable failure here.
+        document = store._db.execute(
+            "SELECT extracted_text FROM documents WHERE id='d1'"
+        ).fetchone()
+        assert document["extracted_text"] == "the lease text"
+        # And no run is invented for it: a casefile filled before the record
+        # existed must read as unaccounted-for, not as clean.
+        assert store.ingestion_coverage("c1").runs == 0
+    finally:
+        store.close()
+
+
 def test_documents_written_before_the_column_still_read(tmp_path):
     # A document ingested before text_source existed has no honest value, so it
     # gets the empty default and discloses itself as unrecorded downstream.
@@ -352,6 +419,32 @@ def test_every_step_says_why():
 def test_the_version_is_derived_from_the_ladder():
     assert SCHEMA_VERSION == max(
         (s.to_version for s in _STEPS), default=_BASELINE_VERSION
+    )
+
+
+def test_the_ladder_versions_strictly_increase():
+    """Two steps may never declare the same version, and none may go backwards.
+
+    Not pedantry about tidiness — it is the only thing that makes a step
+    reachable. `migrate` computes the store's version once and then runs every
+    step whose `to_version` exceeds it, so from the baseline a step declaring a
+    version already used still applies and looks perfectly healthy. The store
+    it silently skips is one already stamped at that version: `migrate` returns
+    early on `recorded == SCHEMA_VERSION`, and the duplicate step never runs
+    against the stores that most need it — the ones already in service.
+
+    Asserted as a property of the ladder rather than through a migrated store,
+    because any test that derives "the previous version" from `_STEPS` moves
+    with the very value a mistake would change, and passes. That was measured:
+    the two-store test above stayed green against a duplicated version for
+    exactly that reason.
+    """
+    versions = [step.to_version for step in _STEPS]
+    assert versions == sorted(set(versions)), (
+        f"the ladder's versions must strictly increase, got {versions}"
+    )
+    assert versions[0] > _BASELINE_VERSION, (
+        f"the first step must climb above the baseline {_BASELINE_VERSION}"
     )
 
 
