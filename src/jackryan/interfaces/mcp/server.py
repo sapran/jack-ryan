@@ -17,7 +17,13 @@ from mcp.types import ToolAnnotations
 from ... import __version__
 from ...app import Context
 from ...services.ingestion import DEFAULT_DOCUMENT_PAGE
-from ...storage.port import Casefile, Document, DocumentPage
+from ...services.search import DEFAULT_CARRIER_PAGE
+from ...storage.port import (
+    Casefile,
+    Document,
+    DocumentPage,
+    MentionDocumentPage,
+)
 from ...services.casefiles import (
     COVERAGE_COMPLETE,
     COVERAGE_INCOMPLETE,
@@ -58,12 +64,17 @@ Work in this order, and resist starting at the end:
    narrow. Read the `formatted` index first and pull bodies only where you
    have committed. `mention` narrows a search to passages carrying one
    identifier — that is how an entry from `case_mentions` becomes a pivot.
-6. `case_get_passage` — a passage with the surrounding text of its section,
+6. `case_mention_documents` — every document carrying one identifier, a page
+   at a time. `case_search` ranks and stops at a bounded number of passages, so
+   its `total` counts what it returned and never what the casefile holds; this
+   enumerates the whole carrier set instead. Each row carries a passage id, so
+   a document reached this way can be read and cited without searching for it.
+7. `case_get_passage` — a passage with the surrounding text of its section,
    when a hit needs its surroundings to be intelligible. The passage stays the
    thing you cite; the surroundings are there to be read.
-7. `case_read_document` — the full text, bounded. Read this late; it is the
+8. `case_read_document` — the full text, bounded. Read this late; it is the
    most expensive thing you can do and rarely the fastest route to an answer.
-8. `case_cite` — turn a passage into a citation. Every factual claim you make
+9. `case_cite` — turn a passage into a citation. Every factual claim you make
    should resolve through this to a document and a span.
 
 Epistemics this corpus demands:
@@ -142,6 +153,29 @@ def _nothing_listed(page: DocumentPage) -> str:
     if page.selection == "children":
         return "Nothing was expanded out of this document."
     return "No documents in this casefile."
+
+
+def _no_carriers(page: MentionDocumentPage) -> str:
+    """Why a carrier page is empty, without claiming more than that.
+
+    The same rule `_nothing_listed` states: "no document carries this" said of
+    a page past the end is the same class of false negative as an empty result
+    standing in for an unknown facet kind.
+
+    The decision is `page.beyond_the_end`, which is the page's own, so this
+    surface and the CLI cannot come to answer one question differently. Only
+    the wording is this adapter's.
+    """
+    if page.beyond_the_end:
+        return (
+            f"No documents at offset {page.offset}; "
+            f"{page.total_matching} carry this identifier."
+        )
+    return (
+        "No document in this casefile carries this identifier. The inventory "
+        "records what the extractors found, so an identifier written "
+        "unconventionally is absent from it rather than absent from the corpus."
+    )
 
 
 def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
@@ -370,7 +404,10 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             "an uncalibrated value comparable only within this response — not a "
             "confidence, and not comparable with another query's. "
             "`mention` narrows the search to passages carrying one identifier, as "
-            "`kind:value` or a bare value — take one from `case_mentions`."
+            "`kind:value` or a bare value — take one from `case_mentions`. "
+            "`total` counts the passages this response returned, never how many the "
+            "casefile holds — for every document carrying an identifier, use "
+            "`case_mention_documents`."
         ),
         annotations=_annotations_for("case_search"),
     )
@@ -393,6 +430,86 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             context.search.search, casefile, query, bounded, mention
         )
         return search_payload(hits, query=query, casefile_id=resolved.id)
+
+    @server.tool(
+        name="case_mention_documents",
+        description=(
+            "Every document in a casefile carrying one identifier, a bounded page "
+            "at a time. Use this when you need the whole set rather than the best "
+            "matches: `case_search` ranks and stops, so its `total` counts the "
+            "passages it returned and never how many documents hold the "
+            "identifier. Take a value from `case_mentions` and pass it as "
+            "`mention`, as `kind:value` or a bare value. `mentions` on a row "
+            "counts that document's occurrences and `chunk_id` addresses the "
+            "first of them, so you can read and cite the evidence without "
+            "searching for it. `total` counts the rows in this page and "
+            "`total_matching` the whole carrier set; when `truncated` is true, "
+            "call again with `offset` set to `continue_from`. `value` reports the "
+            "normalised form actually matched, which may differ from what you "
+            "passed."
+        ),
+        annotations=_annotations_for("case_mention_documents"),
+    )
+    @returns_error_payload
+    async def case_mention_documents(
+        casefile: str,
+        mention: str,
+        offset: int = 0,
+        limit: int = DEFAULT_CARRIER_PAGE,
+    ) -> dict[str, Any]:
+        # Positional, and load-bearing for the reason `case_search` states at
+        # its own call: `anyio.to_thread.run_sync` forwards no keywords, so a
+        # keyword here is a TypeError at the first real call rather than at
+        # import.
+        page = await anyio.to_thread.run_sync(
+            context.search.mention_documents,
+            casefile,
+            mention,
+            offset,
+            limit,
+        )
+        rows = [
+            {
+                **_render_document(carrier.document),
+                "mentions": carrier.mentions,
+                "chunk_id": carrier.chunk_id,
+            }
+            for carrier in page.carriers
+        ]
+        body = (
+            "\n".join(
+                f"{r['mentions']:>5} ×  [{r['chunk_id'][:8]}]  "
+                f"{one_line(r.get('found_at') or r['filename'], 60)}"
+                for r in rows
+            )
+            or _no_carriers(page)
+        )
+        payload = listing_payload(
+            rows,
+            formatted=(
+                f"{one_line(page.value, 120)}"
+                + (f"  ({page.kind})" if page.kind else "")
+                + f" — {page.total_matching} document(s) carry it\n"
+                "mentions  passage     document\n" + body
+            ),
+        )
+        # Echoed all three: what was asked, what kind it was read as, and the
+        # normalised form actually matched. An analyst who typed a spelling a
+        # document used must be able to see what the store compared against —
+        # a mismatch there is the one way this tool can return an honest empty
+        # answer to a question the caller did not ask.
+        payload["mention"] = one_line(mention, 200)
+        payload["kind"] = page.kind
+        payload["value"] = one_line(page.value, 120)
+        payload["offset"] = page.offset
+        payload["total_matching"] = page.total_matching
+        payload["truncated"] = page.truncated
+        payload["continue_from"] = page.continue_from
+        # The identifier and every filename below were written by whoever wrote
+        # the documents, so the notice belongs here for the same reason it
+        # belongs on the inventory this tool follows from.
+        payload["content_notice"] = NOTICE
+        return payload
 
     @server.tool(
         name="case_mentions",

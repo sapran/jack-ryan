@@ -18,6 +18,7 @@ READONLY_TOOLS = frozenset(
         "case_read_document",
         "case_cite",
         "case_mentions",
+        "case_mention_documents",
     }
 )
 

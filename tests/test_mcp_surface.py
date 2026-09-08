@@ -112,6 +112,10 @@ async def test_every_advertised_tool_still_declares_its_parameters(server):
         ),
         "case_search": ({"casefile", "query", "limit", "mention"}, ["casefile", "query"]),
         "case_mentions": ({"casefile", "kind", "limit"}, ["casefile"]),
+        "case_mention_documents": (
+            {"casefile", "mention", "offset", "limit"},
+            ["casefile", "mention"],
+        ),
         "case_get_passage": ({"casefile", "chunk_id"}, ["casefile", "chunk_id"]),
         "case_read_document": (
             {"casefile", "document", "offset", "limit"},
