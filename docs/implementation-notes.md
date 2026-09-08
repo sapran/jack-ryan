@@ -6,6 +6,50 @@ and why it was parked.
 
 ## Parked
 
+- **An OS metadata sidecar makes a folder ingest, and its casefile, read
+  `incomplete` permanently.** `_initial_work` walks with `rglob("*")`, which
+  matches dotfiles, so a `.DS_Store` that Finder wrote into any folder an
+  operator opened — or an AppleDouble `._name` beside every file on a USB stick
+  or SMB share, which is exactly where dumps arrive — is offered, has no
+  extractor, and now lands in `IngestReport.skipped`. Confirmed by
+  reproduction: a folder of one `lease.md` plus a synthetic `.DS_Store` gives
+  `complete False`, `skipped ['.DS_Store']`, and a casefile verdict of
+  `incomplete` that no later clean run can lift. On macOS this makes
+  `incomplete` close to the default, which drains the verdict of the
+  discriminating power the disclosure exists to give it. Before the
+  `disclose-incomplete-ingestion` change these files were passed over in
+  silence, so this is new behaviour and it is the change working as specified,
+  not a defect in it — the file genuinely was offered and not ingested.
+  **Not fixed here because the obvious fix is not obviously right for this
+  tool.** Excluding a named sidecar list from what a walk offers would restore
+  a silent skip for files that carry real forensic content: a `.DS_Store` holds
+  directory listings, including names of files no longer present, which is
+  occasionally the evidence. The alternatives are to exclude them and say so
+  per document, or to carry the skipped *names* into the record so the agent
+  surface can show what was skipped rather than only how many — both human
+  surfaces already print the names, and only the agent sees a bare count. That
+  is a decision about what counts as evidence, and it wants its own change.
+
+- **The listing-versus-delivery reconciliation never reaches the mail
+  extractors, and one of their silent drops loses an embedded message.**
+  `_expand` reconciles against `Extraction.metadata["entries"]`, and the
+  `isdigit` guard skips any extractor that does not publish it. Today that is
+  every mail extractor: `MboxExtractor` publishes `messages`
+  (`mail.py:119`), and `EmlExtractor`/`MsgExtractor` publish nothing relevant.
+  `test_every_container_extractor_publishes_its_entry_count` now stops a *new*
+  container format losing the reconciliation by omitting the key, and lists the
+  three mail extractors as exempt with their reason — but exempt they remain.
+  The concrete loss behind that exemption predates this change:
+  `MsgExtractor.iter_children` skips any attachment whose `data` is not
+  `bytes` (`mail.py:212-214`), which is precisely an embedded or forwarded
+  message, since `extract_msg` returns an `MSGFile` from
+  `EmbeddedMsgAttachment.data`. So an Outlook message carrying a forwarded
+  message ingests, the forwarded message is never stored, and nothing is
+  reported. The fix is for `MsgExtractor` either to deliver the embedded
+  message as a `.msg` child or to append a refusal naming it, and for the mail
+  extractors to publish a reconcilable count — a change to mail expansion, with
+  its own fixtures, not a rider on a disclosure fix.
+
 - **The per-entry ceiling lives in three copies inside the container
   extractors, and the shortfall it causes is disclosed only as a count.**
   `MAX_ENTRY_BYTES` is applied in each `iter_children` independently —

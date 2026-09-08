@@ -294,11 +294,19 @@ class IngestionService:
             skipped=skipped,
         )
         # Recorded after the loop and never in a `finally`: a run that raised
-        # part way is deliberately left unrecorded, which makes the next
-        # reader's verdict `unknown` — the conservative direction, and the one
-        # an operator can act on. A failure to write this row is not swallowed
-        # either: an eight-integer insert that fails means the store is broken,
-        # and the caller has to hear it.
+        # part way is deliberately left unrecorded, because recording it would
+        # mean deciding what a half-run covered and any answer is a guess. What
+        # makes that absence *detectable* is the pair of document counts either
+        # side of this run — the next run's `documents_before` will exceed this
+        # run's `documents_after`, and `continuity_breaks` reports the gap.
+        # Absence alone was not enough: it made only a *first* unrecorded run
+        # visible, so an abort after any clean run left the casefile reading
+        # `complete` with offered files missing.
+        #
+        # A failure to write this row is not swallowed either: an insert of
+        # eleven values that fails means the store is broken, and the caller has
+        # to hear it. It is also the one failure the gap catches for free — the
+        # next run sees documents this one never accounted for.
         self._store.record_ingest_run(
             IngestRun(
                 id=uuid.uuid4().hex,
@@ -306,6 +314,7 @@ class IngestionService:
                 started_at=started_at,
                 finished_at=_now(),
                 documents_before=documents_before,
+                documents_after=self._store.casefile_statistics(casefile.id).documents,
                 items_ingested=report.ingested,
                 items_failed=report.failed,
                 entries_refused=len(report.refusals),
@@ -413,8 +422,14 @@ class IngestionService:
         # unreadable, a member `extractfile` declines — leaves the container's
         # own text naming a document that will never exist. Reconciled against
         # the count the extractor published rather than re-deciding the ceiling
-        # here: this catches every silent skip in that pass, including ones
-        # added later, without a second definition of what is too large.
+        # here, so there is no second definition of what is too large.
+        #
+        # Its reach is exactly the extractors that publish `entries`: the three
+        # archive formats do, the mail extractors do not and are skipped by the
+        # `isdigit` guard rather than compared against zero. That is a real
+        # limit, not a detail — `test_every_container_extractor_publishes_its_entry_count`
+        # is what stops a new container format losing the reconciliation by
+        # omitting one dictionary key.
         #
         # Not reported when a bound stopped this container or its expansion
         # raised: both already appended a refusal saying so, and a shortfall is
@@ -432,7 +447,16 @@ class IngestionService:
     def _ingest_work(
         self, casefile_id: str, work: _Work
     ) -> tuple[IngestOutcome, Document | None, Extraction | None]:
-        """Ingest one work item, reporting what happened and what was stored."""
+        """Ingest one work item, reporting what happened and what was stored.
+
+        The `Extraction` is bound before the `try` and returned on the failure
+        path too, so a container whose own read succeeded but whose document
+        then failed still hands back the entries its reader refused. Those
+        refusals are then the only record of what the container held, and
+        returning `None` here would have discarded them — which the caller's
+        comment already promised not to do.
+        """
+        extraction: Extraction | None = None
         try:
             self._check_readable(work.path, work.root)
             raw = work.path.read_bytes()
@@ -532,7 +556,7 @@ class IngestionService:
                     containment_path=work.containment_path,
                 ),
                 None,
-                None,
+                extraction,
             )
 
     def _prepare_chunks(

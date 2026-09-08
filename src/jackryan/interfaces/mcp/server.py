@@ -213,13 +213,22 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         elif recorded.runs == 0:
             coverage_line = (
                 "coverage: unknown — no ingest run is recorded for this casefile, "
-                "so nothing about it can be claimed as complete"
+                "so nothing about it can be claimed as complete; an empty search "
+                "may mean missing evidence rather than absence"
+            )
+        elif recorded.continuity_breaks:
+            coverage_line = (
+                f"coverage: unknown — {recorded.continuity_breaks} times the record "
+                "stops accounting for what the casefile holds, so a run happened "
+                "that was never recorded; an empty search may mean missing "
+                "evidence rather than absence"
             )
         else:
             coverage_line = (
                 f"coverage: unknown — {recorded.documents_before_first_run} documents "
                 "predate the first recorded ingest run, so how they arrived is "
-                "unrecorded"
+                "unrecorded; an empty search may mean missing evidence rather than "
+                "absence"
             )
         formatted = (
             f"{one_line(resolved.title, 80)} ({one_line(resolved.slug, 40)})\n"
@@ -243,12 +252,20 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
                 "coverage": coverage.verdict,
                 "runs_recorded": recorded.runs,
                 "runs_with_limitations": recorded.runs_with_limitations,
-                "documents_from_recorded_runs": recorded.items_ingested,
+                # Named for what it counts, not for what a reader would like it
+                # to count. `IngestReport.ingested` counts every stored item —
+                # containers and their expanded children alike — and counts a
+                # reingest again, so two clean ingests of one folder sum to
+                # twice its size. A key called `documents_…` beside
+                # `document_count` invited an agent to compare the two and
+                # explain away a corpus that had apparently lost documents.
+                "items_ingested_by_recorded_runs": recorded.items_ingested,
                 "items_failed": recorded.items_failed,
                 "entries_refused": recorded.entries_refused,
                 "files_without_extractor": recorded.files_without_extractor,
                 "bounds_reached": list(recorded.bounds_reached),
                 "documents_predating_the_record": recorded.documents_before_first_run,
+                "record_stops_accounting": recorded.continuity_breaks,
             },
             "formatted": formatted,
         }

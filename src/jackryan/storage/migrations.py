@@ -206,12 +206,19 @@ _STEPS: tuple[_Step, ...] = (
             " id TEXT PRIMARY KEY,"
             " casefile_id TEXT NOT NULL REFERENCES casefiles(id) ON DELETE CASCADE,"
             " started_at TEXT NOT NULL, finished_at TEXT NOT NULL,"
-            # How many documents the casefile already held when this run began.
-            # The one fact that separates "recorded and clean" from "clean as far
-            # as the record goes": a casefile whose earliest recorded run started
-            # against a non-empty corpus holds evidence no record accounts for,
-            # and can never be claimed complete however clean every later run was.
+            # How many documents the casefile held before and after this run.
+            #
+            # `documents_before` alone answers only "did evidence predate the
+            # *first* record". The pair answers the question that matters: does
+            # the record account for everything now in the corpus. A run that
+            # raises part way is deliberately never recorded, but the documents
+            # it already wrote stay — so the next run's `documents_before`
+            # exceeds the previous run's `documents_after`, and that gap is the
+            # only evidence left that a run happened and was not recorded. It
+            # also catches a killed process and a `record_ingest_run` write that
+            # itself failed, neither of which any marker on a run row could.
             " documents_before INTEGER NOT NULL DEFAULT 0,"
+            " documents_after INTEGER NOT NULL DEFAULT 0,"
             " items_ingested INTEGER NOT NULL DEFAULT 0,"
             " items_failed INTEGER NOT NULL DEFAULT 0,"
             " entries_refused INTEGER NOT NULL DEFAULT 0,"

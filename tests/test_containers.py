@@ -508,3 +508,63 @@ def test_an_empty_tar_is_still_stored_as_a_container(context, casefile, tmp_path
     documents = context.store.list_documents(casefile.id)
     assert [d.filename for d in documents] == ["hollow.tar"]
     assert documents[0].extracted_text == ""
+
+
+def test_every_container_extractor_publishes_its_entry_count(tmp_path):
+    """The reconciliation reaches exactly the extractors that publish `entries`.
+
+    `_expand` compares what a container listed against what its reader
+    delivered, and it finds the listing size in `Extraction.metadata["entries"]`.
+    An extractor that omits that key loses the reconciliation silently — no
+    refusal, no failure, no `unknown`, just a container whose dropped entries
+    are never mentioned. One missing dictionary key, and the only symptom is an
+    answer nobody can tell is wrong.
+
+    Derived from the live registry rather than a written list, so a container
+    format added later is covered the day it is registered. The mail extractors
+    are exempt by name and with a reason: they publish `messages` or nothing,
+    they are knowingly outside the reconciliation, and the parked note in
+    `docs/implementation-notes.md` records what that costs.
+    """
+    import inspect
+
+    from jackryan.ingestion.extractors import default_extractors
+
+    exempt = {
+        # Publishes `messages`, not `entries`; a mailbox's own drops are its
+        # extractor's business and are parked, not reconciled here.
+        "mbox",
+        # Header-only extractions with no listing to reconcile against.
+        "eml",
+        "msg",
+    }
+
+    containers = [
+        extractor
+        for extractor in default_extractors()
+        if hasattr(extractor, "iter_children")
+    ]
+    assert containers, "the registry no longer holds a container extractor"
+
+    unchecked = []
+    for extractor in containers:
+        name = extractor.name
+        if name in exempt:
+            continue
+        source = inspect.getsource(type(extractor))
+        if '"entries"' not in source:
+            unchecked.append(name)
+
+    assert not unchecked, (
+        "these container extractors do not publish an `entries` count, so the "
+        "listing-versus-delivery reconciliation silently does not apply to them: "
+        + ", ".join(sorted(unchecked))
+        + ". Publish the count, or add the name to `exempt` above with the reason."
+    )
+    # And the exempt list is not a place to hide a live format: every name in it
+    # must still be a registered extractor, or it is stale and protecting
+    # nothing.
+    registered = {e.name for e in default_extractors()}
+    assert exempt <= registered, (
+        f"stale exemptions: {sorted(exempt - registered)}"
+    )

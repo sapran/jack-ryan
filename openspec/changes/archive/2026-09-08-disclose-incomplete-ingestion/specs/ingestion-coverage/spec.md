@@ -1,5 +1,4 @@
 ## Purpose
-
 Defines how an ingest run states what it did not cover, how that statement is
 recorded against the casefile, and the three-state verdict a casefile discloses
 about its own contents — so that an empty search result can be told apart from
@@ -88,12 +87,20 @@ result, and a caller offering a folder of mixed content is not failing.
 ### Requirement: A casefile records what each ingest run covered
 
 A completed ingest run SHALL be recorded against its casefile, carrying what it
-covered, what it did not, and how many documents the casefile already held when
-the run began.
+covered, what it did not, and how many documents the casefile held both before
+the run began and after it finished.
 
-A run that raised part way SHALL NOT be recorded. An unrecorded run is what makes
-a later reader's verdict unknown, which is the conservative direction and the one
-an operator can act on.
+A run that raised part way SHALL NOT be recorded, because recording it would
+mean deciding what a half-run covered and any such answer is a guess.
+
+That absence SHALL be detectable rather than merely true. A run that raised, was
+killed, or failed to write its own record leaves the documents it already stored
+behind it, so the counts either side of each recorded run SHALL be compared:
+where a run began against more documents than the previously recorded run left,
+the record has stopped accounting for the corpus and SHALL say so. Absence alone
+is not sufficient — it reveals only an unrecorded *first* run, and leaves a
+casefile whose later run aborted reading as though every document in it were
+accounted for.
 
 The record SHALL outlive the process that wrote it, and SHALL be removed with the
 casefile it describes.
@@ -113,15 +120,26 @@ casefile it describes.
 - **WHEN** a casefile holding recorded ingest runs is deleted
 - **THEN** its records are gone and no other casefile's records are affected
 
+#### Scenario: A run that raised part way is not recorded, and its absence is detectable
+
+- **WHEN** an ingest run raises after storing some of what it was offered, and a later run completes cleanly
+- **THEN** no record exists for the run that raised, and the record reports that it has stopped accounting for what the casefile holds
+
 ### Requirement: A casefile discloses what is recorded about its coverage, and says unknown when nothing is
 
 A casefile SHALL disclose a coverage verdict of one of three values — complete,
 incomplete, or unknown — together with the counts the record holds behind it.
 
-The verdict SHALL be unknown where no run is recorded, and where the casefile
-holds documents that predate its earliest recorded run. Neither state SHALL be
-reported as complete: a casefile whose evidence no record accounts for cannot be
-claimed to hold everything offered to it, however clean every later run was.
+The verdict SHALL be unknown on any of three grounds: no run is recorded; the
+casefile holds documents that predate its earliest recorded run; or the record
+has stopped accounting for what the casefile holds. None SHALL be reported as
+complete — a casefile whose evidence no record accounts for cannot be claimed to
+hold everything offered to it, however clean every later run was.
+
+The third ground is not a variant of the first two. They concern the beginning
+of the record; it concerns the middle, and it is the only one that reaches a run
+which aborted after a clean one. A verdict resting on the first two alone
+reports such a casefile complete while files it was offered are missing.
 
 A recorded limitation SHALL outrank an unaccounted-for corpus in the verdict,
 because a known gap is a fact worth stating while unknown only says the record
@@ -153,3 +171,8 @@ result may mean missing evidence rather than absence.
 
 - **WHEN** every document in a casefile arrived through a recorded run that reported no limitation
 - **THEN** its coverage is complete, and the disclosure says how many runs are recorded
+
+#### Scenario: An aborted run between clean ones keeps the verdict unknown
+
+- **WHEN** a casefile's recorded runs are all clean, but a run between them raised part way and left documents behind
+- **THEN** its coverage is unknown rather than complete, and the disclosure says the record has stopped accounting for what the casefile holds

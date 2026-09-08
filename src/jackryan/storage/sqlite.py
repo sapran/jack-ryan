@@ -605,22 +605,24 @@ class SqliteStore:
     def record_ingest_run(self, run: IngestRun) -> None:
         """Record a completed run.
 
-        Ten named columns rather than a serialised blob: the aggregate below
-        sums four of them and orders on two, which a blob could not be asked to
-        do without unpacking every row.
+        Eleven named columns rather than a serialised blob: the aggregate below
+        sums four of them, orders on two and compares two across consecutive
+        rows, none of which a blob could be asked to do without unpacking every
+        row.
         """
         with self._lock:
             self._db.execute(
                 "INSERT INTO ingest_runs (id, casefile_id, started_at, finished_at,"
-                " documents_before, items_ingested, items_failed, entries_refused,"
-                " files_without_extractor, exhausted_by)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " documents_before, documents_after, items_ingested, items_failed,"
+                " entries_refused, files_without_extractor, exhausted_by)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     run.id,
                     run.casefile_id,
                     _to_iso(run.started_at),
                     _to_iso(run.finished_at),
                     run.documents_before,
+                    run.documents_after,
                     run.items_ingested,
                     run.items_failed,
                     run.entries_refused,
@@ -633,11 +635,11 @@ class SqliteStore:
     def ingestion_coverage(self, casefile_id: str) -> IngestionCoverage:
         """What the recorded runs add up to, counted in the database.
 
-        Three statements in one lock hold, so the totals, the earliest run and
-        the bounds all describe the same instant. The verdict they support is
-        deliberately not computed here: it is a domain rule, and a store that
-        held one could disagree with the service layer about what its own counts
-        mean.
+        Four statements in one lock hold, so the totals, the earliest run, the
+        bounds and the continuity check all describe the same instant. The
+        verdict they support is deliberately not computed here: it is a domain
+        rule, and a store that held one could disagree with the service layer
+        about what its own counts mean.
         """
         with self._lock:
             totals = self._db.execute(
@@ -669,6 +671,20 @@ class SqliteStore:
                 " WHERE casefile_id = ? AND exhausted_by <> '' ORDER BY exhausted_by",
                 (casefile_id,),
             ).fetchall()
+            # Where the record stops accounting for the corpus. A run that
+            # raised part way is never recorded, but the documents it wrote
+            # before raising stay — so the next run finds more documents than
+            # the last recorded run left behind, and this gap is the only trace
+            # of it. `LAG` compares consecutive rows in the same order the
+            # earliest-run read uses, so one ordering decides both.
+            breaks = self._db.execute(
+                "SELECT COUNT(*) AS breaks FROM ("
+                "  SELECT documents_before,"
+                "         LAG(documents_after) OVER (ORDER BY started_at, id) AS previous_after"
+                "    FROM ingest_runs WHERE casefile_id = ?"
+                ") WHERE previous_after IS NOT NULL AND documents_before <> previous_after",
+                (casefile_id,),
+            ).fetchone()
         return IngestionCoverage(
             runs=totals["runs"],
             runs_with_limitations=totals["limited"],
@@ -677,6 +693,7 @@ class SqliteStore:
             entries_refused=totals["refused"],
             files_without_extractor=totals["unroutable"],
             bounds_reached=tuple(row["exhausted_by"] for row in bounds),
+            continuity_breaks=breaks["breaks"],
             documents_before_first_run=first["documents_before"] if first else 0,
         )
 

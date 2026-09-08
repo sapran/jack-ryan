@@ -173,6 +173,7 @@ def test_deleting_a_casefile_deletes_its_ingest_records(tmp_path):
                 IngestRun(
                     id=uuid.uuid4().hex, casefile_id=casefile.id,
                     started_at=now, finished_at=now, documents_before=0,
+                    documents_after=0,
                     items_ingested=1, items_failed=0, entries_refused=0,
                     files_without_extractor=0, exhausted_by="",
                 )

@@ -153,6 +153,7 @@ def test_an_older_store_gains_the_ingest_run_record(tmp_path):
         "started_at",
         "finished_at",
         "documents_before",
+        "documents_after",
         "items_ingested",
         "items_failed",
         "entries_refused",

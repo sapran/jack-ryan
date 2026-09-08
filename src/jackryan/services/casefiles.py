@@ -172,12 +172,26 @@ class CasefileService:
         known gap is a fact worth stating while `unknown` only says the record
         cannot answer. Neither state is hidden by that ordering — every surface
         reports the counts beside the word.
+
+        `unknown` has three grounds, and the third is the one that matters most.
+        No record at all, and evidence predating the first record, are both
+        about the beginning. A **continuity break** is about the middle: a run
+        that raised, was killed, or failed to write its own row left documents
+        behind and no record of itself, and the next run's `documents_before`
+        exceeds the previous run's `documents_after`. Without that third
+        ground, an abort after any clean run left the casefile reading
+        `complete` while offered files were missing — the one answer this whole
+        capability exists to prevent.
         """
         casefile = self.resolve(reference)
         recorded = self._store.ingestion_coverage(casefile.id)
         if recorded.runs_with_limitations:
             verdict = COVERAGE_INCOMPLETE
-        elif recorded.runs == 0 or recorded.documents_before_first_run:
+        elif (
+            recorded.runs == 0
+            or recorded.documents_before_first_run
+            or recorded.continuity_breaks
+        ):
             verdict = COVERAGE_UNKNOWN
         else:
             verdict = COVERAGE_COMPLETE

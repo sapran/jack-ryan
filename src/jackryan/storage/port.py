@@ -305,6 +305,7 @@ class IngestRun:
     started_at: datetime
     finished_at: datetime
     documents_before: int
+    documents_after: int
     items_ingested: int
     items_failed: int
     entries_refused: int
@@ -327,11 +328,16 @@ class IngestionCoverage:
     items_failed: int
     entries_refused: int
     files_without_extractor: int
+    # Runs whose `documents_before` does not match the previous recorded run's
+    # `documents_after` — a gap where documents arrived through a run that was
+    # never recorded, because it raised, was killed, or failed to write its own
+    # row. A count, not a judgement: what it implies about completeness is the
+    # service layer's rule.
+    continuity_breaks: int
     # Every distinct bound that stopped an expansion in this casefile, ordered.
     bounds_reached: tuple[str, ...]
     # Documents the casefile already held when its earliest recorded run began.
     documents_before_first_run: int
-
 
 
 class StorePort(Protocol):
