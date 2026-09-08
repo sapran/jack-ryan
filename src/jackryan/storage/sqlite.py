@@ -69,6 +69,16 @@ def _document_selection(
     document ids differ between stores. Here the requirement is only that one
     unchanged store pages consistently, and `d.id` is reached only when two
     documents are equal on every corpus value before it.
+
+    No test exercises the tie-break, and that is a property of the corpus rather
+    than a gap in the tests: `created_at` is a per-document `datetime.now()` at
+    microsecond resolution, and two siblings cannot share a containment path, so
+    ingestion cannot produce two documents equal on every key before `d.id`.
+    Removing the trailing keys was mutated and left the suite green. They stay
+    because a total order is what `mcp-tool-surface` requires and because
+    uniqueness that rests on clock resolution stops being true quietly — a
+    coarser clock, a restored backup, or a bulk insert sharing one timestamp is
+    all it takes. Do not "simplify" them on the strength of a green suite.
     """
     if parent_id is not None:
         return (
@@ -460,10 +470,21 @@ class SqliteStore:
                 " FROM documents d"
                 " JOIN (SELECT d.id FROM documents d"
                 f"{predicate}{order} LIMIT ? OFFSET ?) chosen ON chosen.id = d.id"
-                # Repeated, and load-bearing: a join does not preserve the
-                # subquery's order, so without this the rows come back in
-                # whatever order the join produced and consecutive pages
-                # overlap.
+                # Repeated deliberately, and it is insurance rather than an
+                # observed necessity — the distinction is worth stating,
+                # because the obvious comment here is an overstatement.
+                # SQL guarantees nothing about the row order a join produces,
+                # so the subquery's ordering is not inherited. Measured on this
+                # SQLite, `EXPLAIN QUERY PLAN` reports `SCAN chosen` driving
+                # the join and probing `d` by primary key, which happens to
+                # emit the subquery's order; a sweep at 6, 20, 60, 200 and 600
+                # children paged correctly with this line removed. It stays
+                # because that plan is a choice SQLite is free to change — an
+                # added index or a future planner would silently reorder pages
+                # — and because `mcp-tool-surface` requires paging to repeat
+                # and omit nothing. Removing it cannot be caught by a test
+                # through the public path, which is the reason to keep it, not
+                # a reason to drop it.
                 f"{order}",
                 (*binds, int(limit), int(offset)),
             ).fetchall()

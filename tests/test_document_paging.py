@@ -17,6 +17,23 @@ point, and the two agree only while nothing outside ASCII is in play.
 `child_count`, so `_row_to_document` defaulted every child to zero children and
 a nested archive was indistinguishable from a leaf. A fixture one level deep
 would pass against the old defect.
+
+**What mutation actually established**, since two of these assertions were
+written believing they covered more than they did:
+
+- Dropping the *subquery's* `ORDER BY` — the one that decides which rows land
+  on a page — reddens three tests. That is the guard that matters.
+- Widening the count's predicate to the whole casefile reddens nine. It first
+  *hung* rather than failing, which is why both sweep loops are bounded.
+- Dropping the *outer* `ORDER BY` leaves all twelve green. Not a gap in these
+  tests: `EXPLAIN QUERY PLAN` shows SQLite driving the join from the ordered
+  subquery and probing by primary key, so the order is currently inherited, and
+  a sweep at 6, 20, 60, 200 and 600 children paged correctly without it. The
+  line stays as insurance against a plan SQLite may change; `sqlite.py` records
+  why at the line itself.
+- Removing the trailing `d.id` tie-breaker also leaves them green, because
+  ingestion cannot produce a tie to break — microsecond `created_at`, unique
+  sibling paths. Same reasoning, recorded at `_document_selection`.
 """
 
 from __future__ import annotations
