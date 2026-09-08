@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 from .ingestion.quality_gate import read_as
+from .services.ingestion import IngestReport
 from .storage.port import Casefile, Document, SearchHit
 
 
@@ -40,6 +41,36 @@ def render_casefile(casefile: Casefile) -> dict[str, Any]:
         "description": casefile.description,
         "created_at": casefile.created_at.isoformat(),
         "updated_at": casefile.updated_at.isoformat(),
+    }
+
+
+def render_report(report: IngestReport) -> dict[str, Any]:
+    """An ingest result, as both human surfaces return it.
+
+    Shared rather than written twice, because the fields added here are the
+    ones a caller decides whether to trust the corpus on, and two copies of
+    that answer is one too many. The agent surface is absent for the same
+    reason it is absent from every other renderer here: it does not ingest.
+    """
+    return {
+        "casefile_id": report.casefile_id,
+        "ingested": report.ingested,
+        "failed": report.failed,
+        "complete": report.complete,
+        "limitations": report.limitations,
+        "exhausted_by": report.exhausted_by,
+        "refusals": report.refusals,
+        "skipped": report.skipped,
+        "outcomes": [
+            {
+                "path": o.path,
+                "status": o.status,
+                "document_id": o.document_id,
+                "chunks": o.chunks,
+                "detail": o.detail,
+            }
+            for o in report.outcomes
+        ],
     }
 
 

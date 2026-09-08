@@ -207,6 +207,7 @@ async def test_the_overview_reports_the_corpus_it_was_asked_about(
         "documents_expanded",
         "total_characters",
         "documents_by_type",
+        "ingestion",
         "formatted",
     }
 
@@ -251,6 +252,114 @@ async def test_the_overview_omits_the_expansion_clause_when_nothing_was_expanded
     assert body["documents_expanded"] == 0
     assert "3 documents" in body["formatted"]
     assert "expanded from containers" not in body["formatted"]
+
+
+@pytest.mark.anyio
+async def test_a_casefile_with_no_recorded_run_reports_unknown_coverage(server, loaded):
+    """No record is `unknown`, never `complete`.
+
+    The distinction the whole disclosure exists for: an agent reading
+    `complete` here would treat an empty search result as absence, and this is
+    the case where that is least safe.
+    """
+    context, _ = loaded
+    empty = context.casefiles.create("Nothing Ingested")
+    body = await call(server, "case_casefile_overview", {"casefile": empty.short_id})
+
+    assert body["ingestion"]["coverage"] == "unknown"
+    assert body["ingestion"]["runs_recorded"] == 0
+    assert "no ingest run is recorded" in body["formatted"]
+
+
+@pytest.mark.anyio
+async def test_documents_predating_the_record_keep_the_verdict_unknown(
+    server, loaded, tmp_path
+):
+    """A corpus filled before the record existed can never read `complete`.
+
+    This is the test the whole design turns on. Deleting the run rows stands in
+    for a casefile filled before this capability shipped — which is every
+    casefile that exists today. Without `documents_before`, the clean second
+    run below would make the casefile claim `complete` while most of its
+    documents arrived by a route no record describes: a confident wrong answer,
+    which is worse than the silence this change removes.
+    """
+    context, casefile = loaded
+
+    # Stand in for a pre-change corpus: the documents are there, the record is
+    # not. Raw SQL because no service method deletes a run record, deliberately
+    # — nothing in the domain may forget that a run happened.
+    context.store._db.execute("DELETE FROM ingest_runs")
+    context.store._db.commit()
+    before = context.casefiles.statistics(casefile.short_id).documents
+    assert before > 0, "the fixture must leave documents behind"
+
+    body_before = await call(
+        server, "case_casefile_overview", {"casefile": casefile.short_id}
+    )
+    assert body_before["ingestion"]["coverage"] == "unknown"
+    assert body_before["ingestion"]["runs_recorded"] == 0
+
+    # Now one clean recorded run on top. The verdict must stay `unknown`.
+    folder = tmp_path / "later"
+    folder.mkdir()
+    (folder / "later.md").write_text("# Later\n\nAdded after the record began.\n", "utf-8")
+    assert context.ingestion.ingest(casefile.short_id, folder).complete
+
+    body = await call(server, "case_casefile_overview", {"casefile": casefile.short_id})
+    assert body["ingestion"]["coverage"] == "unknown", (
+        "a clean run over an unaccounted-for corpus is not completeness"
+    )
+    assert body["ingestion"]["runs_recorded"] == 1
+    assert body["ingestion"]["documents_predating_the_record"] == before
+    assert "predate the first recorded ingest run" in body["formatted"]
+
+
+@pytest.mark.anyio
+async def test_a_recorded_limitation_makes_the_casefile_incomplete(server, loaded, tmp_path):
+    """A known gap is stated as a gap, with the warning an agent needs."""
+    context, _ = loaded
+
+    folder = tmp_path / "mixed"
+    folder.mkdir()
+    (folder / "good.md").write_text("# Good\n\nA readable document.\n", "utf-8")
+    (folder / "activate.bat").write_bytes(b"@echo off\r\nnet use z: \\\\server\\share\r\n")
+
+    partial = context.casefiles.create("Partly Filled")
+    report = context.ingestion.ingest(partial.short_id, folder)
+    assert not report.complete
+
+    body = await call(server, "case_casefile_overview", {"casefile": partial.short_id})
+    assert body["ingestion"]["coverage"] == "incomplete"
+    assert body["ingestion"]["runs_with_limitations"] == 1
+    assert body["ingestion"]["files_without_extractor"] == 1
+    assert "an empty search may mean missing evidence" in body["formatted"]
+
+
+@pytest.mark.anyio
+async def test_a_casefile_filled_only_by_clean_runs_reports_complete(server, loaded, tmp_path):
+    """The one state in which an empty result may be read as absence.
+
+    Separate from the three tests above rather than parametrised, following the
+    convention the expansion-clause pair states: branches asserting opposite
+    things about one string belong in separate tests.
+    """
+    context, _ = loaded
+
+    folder = tmp_path / "clean"
+    folder.mkdir()
+    (folder / "one.md").write_text("# One\n\nThe only document offered.\n", "utf-8")
+
+    fresh = context.casefiles.create("Cleanly Filled")
+    assert context.ingestion.ingest(fresh.short_id, folder).complete
+
+    body = await call(server, "case_casefile_overview", {"casefile": fresh.short_id})
+    assert body["ingestion"]["coverage"] == "complete"
+    assert body["ingestion"]["runs_recorded"] == 1
+    assert body["ingestion"]["documents_predating_the_record"] == 0
+    assert "coverage: complete" in body["formatted"]
+    assert "unknown" not in body["formatted"]
+    assert "incomplete" not in body["formatted"]
 
 
 @pytest.mark.anyio

@@ -17,7 +17,7 @@ from .ingestion.containers import rar_status
 from .ingestion.legacy_office import converter_status
 from .app import build_context
 from .errors import JackRyanError
-from .rendering import render_casefile, render_document, render_hit
+from .rendering import render_casefile, render_document, render_hit, render_report
 from .storage.port import Casefile, Document, SearchHit
 
 
@@ -204,29 +204,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "ingest":
             report = context.ingestion.ingest(args.casefile, args.path)
             if args.json:
-                _print(
-                    {
-                        "ingested": report.ingested,
-                        "failed": report.failed,
-                        "outcomes": [
-                            {
-                                "path": o.path,
-                                "status": o.status,
-                                "document_id": o.document_id,
-                                "chunks": o.chunks,
-                                "detail": o.detail,
-                            }
-                            for o in report.outcomes
-                        ],
-                    },
-                    True,
-                )
+                _print(render_report(report), True)
             else:
                 for outcome in report.outcomes:
                     suffix = f" — {outcome.detail}" if outcome.detail else ""
                     name = outcome.path.rsplit("/", 1)[-1]
                     print(f"{outcome.status:<10} {name} ({outcome.chunks} chunks){suffix}")
                 print(f"\n{report.ingested} ingested, {report.failed} failed")
+                if not report.complete:
+                    print("\nThis run did not cover everything it was offered:")
+                    for line in report.limitations:
+                        print(f"  {line}")
             return 1 if report.failed and not report.ingested else 0
 
         if args.command == "search":

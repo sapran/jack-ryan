@@ -21,12 +21,12 @@ from ..embedding.port import EmbedderPort
 from ..errors import ConfigError, ValidationError
 from ..ingestion.budget import ExpansionBudget
 from ..ingestion.chunker import chunk_text
-from ..ingestion.extractors import ExtractionError
+from ..ingestion.extractors import Extraction, ExtractionError
 from ..ingestion.quality_gate import QualityGate
 from ..ingestion.router import FormatRouter
 from ..mentions import default_extractors
 from ..mentions.port import MentionExtractor
-from ..storage.port import Chunk, Document, Mention, StorePort
+from ..storage.port import Chunk, Document, IngestRun, Mention, StorePort
 from ..summarising.port import SummariserPort, SummaryError
 from .casefiles import CasefileService
 
@@ -55,6 +55,13 @@ class IngestReport:
     refusals: list[str] = field(default_factory=list)
     # Which bound stopped expansion, if one did.
     exhausted_by: str | None = None
+    # Files a folder walk offered that no registered extractor accepts. A
+    # refusal is something handed to us inside something else; this is something
+    # a walk found lying beside the evidence. Counted separately because the two
+    # want different words, and disclosed rather than dropped: an analyst
+    # searching for what one of these files said finds nothing, and silence here
+    # is indistinguishable from the corpus not mentioning it.
+    skipped: list[str] = field(default_factory=list)
 
     @property
     def ingested(self) -> int:
@@ -65,14 +72,36 @@ class IngestReport:
         return sum(1 for o in self.outcomes if o.status == "failed")
 
     @property
-    def complete(self) -> bool:
-        """Whether everything offered was reached.
+    def limitations(self) -> list[str]:
+        """Why this run did not cover what it was offered, in the one vocabulary
+        every surface uses.
 
-        False when a bound stopped expansion or an entry was refused. What was
-        already stored stays stored — a partial ingest is a real result, but
-        reporting it as a whole one is not.
+        Derived rather than accumulated, and `complete` is derived from it rather
+        than computed alongside it: a run reported complete while carrying a
+        reason, or incomplete with none to give, is the failure this shape makes
+        unreachable.
         """
-        return self.exhausted_by is None and not self.refusals
+        lines: list[str] = []
+        if self.exhausted_by is not None:
+            lines.append(f"expansion stopped at a bound: {self.exhausted_by}")
+        if self.failed:
+            lines.append(f"{self.failed} offered items failed to be read")
+        if self.refusals:
+            lines.append(f"{len(self.refusals)} container entries were refused")
+        if self.skipped:
+            lines.append(f"{len(self.skipped)} offered files have no registered extractor")
+        return lines
+
+    @property
+    def complete(self) -> bool:
+        """Whether everything this run was offered is now in the corpus.
+
+        Deliberately stricter than it was. It previously meant "expansion was
+        not cut short", which reported a run where three of five documents
+        failed as complete — and `failed` being counted separately does not
+        help a caller who read `complete` and stopped.
+        """
+        return not self.limitations
 
 
 @dataclass(frozen=True)
@@ -198,6 +227,13 @@ class IngestionService:
         if self._summariser is not None:
             self._summariser.check()
 
+        started_at = _now()
+        # What the casefile already held before this run wrote anything. Read
+        # here and nowhere else: it is the whole basis on which a later reader
+        # can tell "no run has reported a problem" from "no run accounts for
+        # this evidence".
+        documents_before = self._store.casefile_statistics(casefile.id).documents
+
         depth, descendants, extracted = self._limits
         budget = ExpansionBudget(
             max_depth=depth,
@@ -205,6 +241,7 @@ class IngestionService:
             max_extracted_bytes=extracted,
         )
         refusals: list[str] = []
+        skipped: list[str] = []
         outcomes: list[IngestOutcome] = []
         # Everything expanded out of a container is written here and read back
         # through the same path checks a file on disk gets. Removed whatever
@@ -215,32 +252,68 @@ class IngestionService:
             while queue:
                 work = queue.popleft()
                 if self._router.extractor_for(work.path) is None and not work.named_directly:
-                    # Nothing reads this. Where it came from decides whether that
-                    # is worth saying: a folder of mixed content is normal and
-                    # stays quiet, but an entry inside a container is something
-                    # the caller handed us inside something else, and silence
-                    # there would read as "the archive was fully ingested".
+                    # Nothing reads this. Where it came from decides which list
+                    # it lands in: an entry inside a container is something the
+                    # caller handed us inside something else, and is a refusal;
+                    # a file a folder walk found is skipped. Neither is silent
+                    # any more — silence here reads as "everything was
+                    # ingested", which is the claim this whole report exists to
+                    # stop being made by accident.
                     if work.parent_id is not None:
                         refusals.append(
                             f"{work.containment_path}: no extractor accepts this file"
                         )
+                    else:
+                        skipped.append(work.containment_path)
                     continue
-                outcome, document = self._ingest_work(casefile.id, work)
+                outcome, document, extraction = self._ingest_work(casefile.id, work)
                 outcomes.append(outcome)
+                if extraction is not None:
+                    # What the reader itself would not touch. Prefixed with the
+                    # container's own path, so a refusal reads as the chain a
+                    # person would follow, exactly as a child's containment path
+                    # does. Recorded even when the document later failed: those
+                    # entries are then the only record of what the container
+                    # held.
+                    refusals.extend(
+                        f"{work.containment_path}/{reason}" for reason in extraction.refusals
+                    )
                 if document is None:
                     continue
                 queue.extend(
-                    self._expand(document, work, workspace, budget, refusals)
+                    self._expand(document, work, workspace, budget, refusals, extraction)
                 )
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
 
-        return IngestReport(
+        report = IngestReport(
             casefile_id=casefile.id,
             outcomes=outcomes,
             refusals=refusals,
             exhausted_by=budget.exhausted_by,
+            skipped=skipped,
         )
+        # Recorded after the loop and never in a `finally`: a run that raised
+        # part way is deliberately left unrecorded, which makes the next
+        # reader's verdict `unknown` — the conservative direction, and the one
+        # an operator can act on. A failure to write this row is not swallowed
+        # either: an eight-integer insert that fails means the store is broken,
+        # and the caller has to hear it.
+        self._store.record_ingest_run(
+            IngestRun(
+                id=uuid.uuid4().hex,
+                casefile_id=casefile.id,
+                started_at=started_at,
+                finished_at=_now(),
+                documents_before=documents_before,
+                items_ingested=report.ingested,
+                items_failed=report.failed,
+                entries_refused=len(report.refusals),
+                files_without_extractor=len(report.skipped),
+                exhausted_by=report.exhausted_by or "",
+            )
+        )
+        return report
 
     def _initial_work(self, path: Path) -> list[_Work]:
         """What the caller pointed at, as work items.
@@ -280,6 +353,7 @@ class IngestionService:
         workspace: Path,
         budget: ExpansionBudget,
         refusals: list[str],
+        extraction: Extraction,
     ) -> list[_Work]:
         """Materialise what a container holds, as further work.
 
@@ -298,10 +372,13 @@ class IngestionService:
 
         nested_root = workspace / document.id
         produced: list[_Work] = []
+        stopped_by_budget = False
+        expansion_failed: Exception | None = None
         try:
             for index, child in enumerate(self._router.iter_children(work.path)):
                 if not budget.take_child(len(child.data)):
                     refusals.append(f"{work.containment_path}: {budget.exhausted_by}")
+                    stopped_by_budget = True
                     break
                 # The name on disk is generated, never the entry's own. Only the
                 # suffix is taken from it, because the router selects on that —
@@ -325,15 +402,36 @@ class IngestionService:
         except Exception as exc:
             # One unreadable container does not fail the ingest, and does not
             # discard the entries it already yielded.
+            expansion_failed = exc
             refusals.append(
                 f"{work.containment_path}: could not be expanded: "
                 f"{type(exc).__name__}: {exc}"
             )
+
+        # The listing and the delivery are two passes over one archive, and a
+        # reader that drops an entry between them — over the per-entry ceiling,
+        # unreadable, a member `extractfile` declines — leaves the container's
+        # own text naming a document that will never exist. Reconciled against
+        # the count the extractor published rather than re-deciding the ceiling
+        # here: this catches every silent skip in that pass, including ones
+        # added later, without a second definition of what is too large.
+        #
+        # Not reported when a bound stopped this container or its expansion
+        # raised: both already appended a refusal saying so, and a shortfall is
+        # their consequence rather than a second finding.
+        listed = extraction.metadata.get("entries", "")
+        if not stopped_by_budget and expansion_failed is None and listed.isdigit():
+            missing = int(listed) - len(produced)
+            if missing > 0:
+                refusals.append(
+                    f"{work.containment_path}: {missing} of {listed} listed entries "
+                    "were not delivered by the reader"
+                )
         return produced
 
     def _ingest_work(
         self, casefile_id: str, work: _Work
-    ) -> tuple[IngestOutcome, Document | None]:
+    ) -> tuple[IngestOutcome, Document | None, Extraction | None]:
         """Ingest one work item, reporting what happened and what was stored."""
         try:
             self._check_readable(work.path, work.root)
@@ -408,6 +506,7 @@ class IngestionService:
                     containment_path=work.containment_path,
                 ),
                 stored,
+                extraction,
             )
         except ConfigError:
             # A misconfiguration, whichever call raised it — a summariser that is
@@ -432,6 +531,7 @@ class IngestionService:
                     detail=str(exc),
                     containment_path=work.containment_path,
                 ),
+                None,
                 None,
             )
 

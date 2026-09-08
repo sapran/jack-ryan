@@ -6,6 +6,30 @@ and why it was parked.
 
 ## Parked
 
+- **The per-entry ceiling lives in three copies inside the container
+  extractors, and the shortfall it causes is disclosed only as a count.**
+  `MAX_ENTRY_BYTES` is applied in each `iter_children` independently —
+  `containers.py:206,213` (zip), `:335` (rar), `:913,920` (tar) — and each one
+  `continue`s past an over-ceiling entry with no record of which entry or why.
+  `TarExtractor.iter_children` also drops an entry whose `extractfile` returns
+  `None`. The `disclose-incomplete-ingestion` change closes the *silence*: the
+  service now reconciles `len(produced)` against the `entries` count all three
+  extractors publish in `Extraction.metadata`, so a run reports "N of M listed
+  entries were not delivered by the reader" and is no longer complete. What it
+  does **not** report is which entry went missing or on which rule, because the
+  service has no second definition of what is too large and deliberately does
+  not acquire one. A declared-size refusal inside `extract()` was rejected
+  rather than overlooked: `openspec/specs/container-extraction/spec.md:127-131`
+  requires an oversized entry to be judged "by what was read rather than by the
+  size the archive declares", because a declared size is chosen by whoever
+  built the archive. The honest fix is to move the ceiling into
+  `IngestionService._expand`, where `budget.take_child` already measures
+  `len(child.data)` — one decision, in the layer that already reports refusals,
+  able to name the entry. Parked because it changes zip, tar and RAR behaviour
+  in one step and breaks `tests/test_rar_containers.py:438`, which pins the
+  current per-extractor semantics; that wants its own change with its own
+  argument, not a rider on a disclosure fix.
+
 - **"The fold is on" and "the identity says the fold is on" are computed from
   different things.** `app.py` decides `folding` from the summariser *object*
   (`chunk_summaries and chosen_summariser is not None`); `CorpusIdentity.__str__`

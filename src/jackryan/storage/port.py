@@ -287,6 +287,53 @@ class CasefileStatistics:
     by_type: dict[str, int]
 
 
+@dataclass(frozen=True)
+class IngestRun:
+    """One completed ingest run, as it is recorded.
+
+    Written and never read back row by row — the aggregate below is the only
+    read — for the same reason a `Mention` is: the aggregate is what a caller
+    asks for, and an unbounded per-row read has no consumer. Field names are the
+    column names, deliberately: `CasefileStatistics` diverges from its SQL
+    aliases to stay readable, and every value-by-value assertion still passes
+    against silently different keys, so where there is no readability reason to
+    differ they are held identical.
+    """
+
+    id: str
+    casefile_id: str
+    started_at: datetime
+    finished_at: datetime
+    documents_before: int
+    items_ingested: int
+    items_failed: int
+    entries_refused: int
+    files_without_extractor: int
+    exhausted_by: str
+
+
+@dataclass(frozen=True)
+class IngestionCoverage:
+    """What the store records about how a casefile was filled.
+
+    Counted facts only. Whether they add up to a claim of completeness is a
+    domain rule and lives in the service layer, so that the store cannot hold a
+    second opinion about it.
+    """
+
+    runs: int
+    runs_with_limitations: int
+    items_ingested: int
+    items_failed: int
+    entries_refused: int
+    files_without_extractor: int
+    # Every distinct bound that stopped an expansion in this casefile, ordered.
+    bounds_reached: tuple[str, ...]
+    # Documents the casefile already held when its earliest recorded run began.
+    documents_before_first_run: int
+
+
+
 class StorePort(Protocol):
     """What the service layer requires of a store."""
 
@@ -362,6 +409,12 @@ class StorePort(Protocol):
     def find_chunks_by_id_prefix(self, casefile_id: str, prefix: str) -> list[Chunk]: ...
 
     def casefile_statistics(self, casefile_id: str) -> CasefileStatistics: ...
+
+    def record_ingest_run(self, run: IngestRun) -> None:
+        """Record a completed run. Nothing is recorded for a run that raised."""
+        ...
+
+    def ingestion_coverage(self, casefile_id: str) -> IngestionCoverage: ...
 
     def get_document_chunks_around(
         self, document_id: str, ordinal: int, radius: int

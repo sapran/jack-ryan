@@ -10,16 +10,21 @@ from __future__ import annotations
 
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from ..errors import AmbiguousReferenceError, NotFoundError, ValidationError
-from ..storage.port import Casefile, CasefileStatistics, StorePort
+from ..storage.port import Casefile, CasefileStatistics, IngestionCoverage, StorePort
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SHORT_ID_LENGTH = 8
 MAX_TITLE_LENGTH = 200
 MAX_DESCRIPTION_LENGTH = 2000
 MAX_SLUG_LENGTH = 64
+
+COVERAGE_COMPLETE = "complete"
+COVERAGE_INCOMPLETE = "incomplete"
+COVERAGE_UNKNOWN = "unknown"
 
 
 def _now() -> datetime:
@@ -35,6 +40,19 @@ def slugify(title: str) -> str:
     lowered = title.strip().lower()
     slug = re.sub(r"[^a-z0-9]+", "-", lowered).strip("-")
     return slug[:MAX_SLUG_LENGTH].strip("-")
+
+
+@dataclass(frozen=True)
+class CasefileCoverage:
+    """What may be claimed about a casefile's contents, and the record behind it.
+
+    Two fields rather than a flattened copy of `IngestionCoverage`: the counts
+    are the store's, the verdict is this layer's rule, and restating the counts
+    here would be a second place they could drift.
+    """
+
+    verdict: str
+    recorded: IngestionCoverage
 
 
 class CasefileService:
@@ -142,6 +160,28 @@ class CasefileService:
         """
         casefile = self.resolve(reference)
         return self._store.casefile_statistics(casefile.id)
+
+    def coverage(self, reference: str) -> CasefileCoverage:
+        """Whether this casefile can be claimed to hold everything offered to it.
+
+        Here rather than on the ingestion service, and rather than reached for
+        by a surface, for the two reasons `statistics` above gives: it describes
+        a casefile, and `storage-seam` says no adapter reaches a store.
+
+        A recorded limitation wins over an unaccounted-for corpus, because a
+        known gap is a fact worth stating while `unknown` only says the record
+        cannot answer. Neither state is hidden by that ordering — every surface
+        reports the counts beside the word.
+        """
+        casefile = self.resolve(reference)
+        recorded = self._store.ingestion_coverage(casefile.id)
+        if recorded.runs_with_limitations:
+            verdict = COVERAGE_INCOMPLETE
+        elif recorded.runs == 0 or recorded.documents_before_first_run:
+            verdict = COVERAGE_UNKNOWN
+        else:
+            verdict = COVERAGE_COMPLETE
+        return CasefileCoverage(verdict=verdict, recorded=recorded)
 
     def resolve(self, reference: str) -> Casefile:
         """Resolve a casefile from a full id, an 8-char id prefix, or a slug.

@@ -191,6 +191,38 @@ _STEPS: tuple[_Step, ...] = (
             "CREATE INDEX IF NOT EXISTS idx_mentions_chunk ON mentions(chunk_id)",
         ),
     ),
+    # No trigger, for the same reason the mentions step above needs none:
+    # `casefiles.id` is a real foreign-key parent and `PRAGMA foreign_keys=ON`
+    # is set in `initialize`, so deleting a casefile deletes its run records.
+    # `_SIDECAR_TRIGGER` exists only because `chunks_fts` and `chunk_vectors`
+    # are virtual tables, which never observe a cascade at all. This step adds
+    # no column to `chunks_fts`, so that trigger and the FTS column list are
+    # untouched.
+    _Step(
+        to_version=8,
+        reason="each completed ingest run is recorded, so a casefile can say how completely it was filled",
+        statements=(
+            "CREATE TABLE IF NOT EXISTS ingest_runs ("
+            " id TEXT PRIMARY KEY,"
+            " casefile_id TEXT NOT NULL REFERENCES casefiles(id) ON DELETE CASCADE,"
+            " started_at TEXT NOT NULL, finished_at TEXT NOT NULL,"
+            # How many documents the casefile already held when this run began.
+            # The one fact that separates "recorded and clean" from "clean as far
+            # as the record goes": a casefile whose earliest recorded run started
+            # against a non-empty corpus holds evidence no record accounts for,
+            # and can never be claimed complete however clean every later run was.
+            " documents_before INTEGER NOT NULL DEFAULT 0,"
+            " items_ingested INTEGER NOT NULL DEFAULT 0,"
+            " items_failed INTEGER NOT NULL DEFAULT 0,"
+            " entries_refused INTEGER NOT NULL DEFAULT 0,"
+            " files_without_extractor INTEGER NOT NULL DEFAULT 0,"
+            # '' rather than NULL for "no bound was reached", matching
+            # `text_source` and `summary_by`.
+            " exhausted_by TEXT NOT NULL DEFAULT '')",
+            "CREATE INDEX IF NOT EXISTS idx_ingest_runs_casefile"
+            " ON ingest_runs(casefile_id, started_at, id)",
+        ),
+    ),
 )
 """The ladder, in order. Every step may only ADD.
 

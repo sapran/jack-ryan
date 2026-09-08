@@ -25,7 +25,16 @@ import sqlite_vec
 
 from ..errors import ConfigError, ConflictError
 from . import migrations, retrieval
-from .port import Casefile, CasefileStatistics, Chunk, Document, Mention, MentionFacet
+from .port import (
+    Casefile,
+    CasefileStatistics,
+    Chunk,
+    Document,
+    IngestionCoverage,
+    IngestRun,
+    Mention,
+    MentionFacet,
+)
 
 
 def _to_iso(value: datetime) -> str:
@@ -591,6 +600,84 @@ class SqliteStore:
             documents_expanded=totals["expanded"],
             characters=totals["characters"],
             by_type={(r["media_type"] or "unknown"): r["count"] for r in by_type},
+        )
+
+    def record_ingest_run(self, run: IngestRun) -> None:
+        """Record a completed run.
+
+        Ten named columns rather than a serialised blob: the aggregate below
+        sums four of them and orders on two, which a blob could not be asked to
+        do without unpacking every row.
+        """
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO ingest_runs (id, casefile_id, started_at, finished_at,"
+                " documents_before, items_ingested, items_failed, entries_refused,"
+                " files_without_extractor, exhausted_by)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run.id,
+                    run.casefile_id,
+                    _to_iso(run.started_at),
+                    _to_iso(run.finished_at),
+                    run.documents_before,
+                    run.items_ingested,
+                    run.items_failed,
+                    run.entries_refused,
+                    run.files_without_extractor,
+                    run.exhausted_by,
+                ),
+            )
+            self._db.commit()
+
+    def ingestion_coverage(self, casefile_id: str) -> IngestionCoverage:
+        """What the recorded runs add up to, counted in the database.
+
+        Three statements in one lock hold, so the totals, the earliest run and
+        the bounds all describe the same instant. The verdict they support is
+        deliberately not computed here: it is a domain rule, and a store that
+        held one could disagree with the service layer about what its own counts
+        mean.
+        """
+        with self._lock:
+            totals = self._db.execute(
+                "SELECT COUNT(*) AS runs,"
+                "       COALESCE(SUM(items_failed > 0 OR entries_refused > 0"
+                "                    OR files_without_extractor > 0 OR exhausted_by <> ''), 0)"
+                "           AS limited,"
+                "       COALESCE(SUM(items_ingested), 0) AS ingested,"
+                "       COALESCE(SUM(items_failed), 0) AS failed,"
+                "       COALESCE(SUM(entries_refused), 0) AS refused,"
+                "       COALESCE(SUM(files_without_extractor), 0) AS unroutable"
+                " FROM ingest_runs WHERE casefile_id = ?",
+                (casefile_id,),
+            ).fetchone()
+            # An ordered read rather than MIN(documents_before): deleting
+            # documents makes the minimum stop being the earliest run's value,
+            # and it is the earliest run that decides whether anything predates
+            # the record. The tie-break on `id` keeps it deterministic, the same
+            # discipline `retrieval.py` applies to fused ranks — a value that
+            # varies between runs of an unchanged corpus cannot be reasoned
+            # about.
+            first = self._db.execute(
+                "SELECT documents_before FROM ingest_runs WHERE casefile_id = ?"
+                " ORDER BY started_at, id LIMIT 1",
+                (casefile_id,),
+            ).fetchone()
+            bounds = self._db.execute(
+                "SELECT DISTINCT exhausted_by FROM ingest_runs"
+                " WHERE casefile_id = ? AND exhausted_by <> '' ORDER BY exhausted_by",
+                (casefile_id,),
+            ).fetchall()
+        return IngestionCoverage(
+            runs=totals["runs"],
+            runs_with_limitations=totals["limited"],
+            items_ingested=totals["ingested"],
+            items_failed=totals["failed"],
+            entries_refused=totals["refused"],
+            files_without_extractor=totals["unroutable"],
+            bounds_reached=tuple(row["exhausted_by"] for row in bounds),
+            documents_before_first_run=first["documents_before"] if first else 0,
         )
 
     def get_document_chunks_around(

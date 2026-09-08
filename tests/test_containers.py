@@ -112,6 +112,86 @@ def test_a_traversing_entry_is_refused_and_its_siblings_survive(
     assert report.failed == 0
 
 
+def test_an_entry_the_reader_refused_reaches_the_report(context, casefile, tmp_path):
+    """A refusal the extractor made must reach the caller, not die in the reader.
+
+    `ZipExtractor` set `Extraction.refusals` for a traversing entry from the
+    day it was written, and the service never read the field: the only thing
+    that ever saw it was an extractor-level test. So the archive above reported
+    itself clean while one of its entries had been thrown away.
+    """
+    bundle = _zip(
+        tmp_path / "bundle.zip",
+        [("../escape.txt", "outside"), ("inside.txt", "kept")],
+    )
+
+    report = context.ingestion.ingest(casefile.short_id, bundle)
+
+    assert any(
+        "bundle.zip" in refusal and "escape.txt" in refusal for refusal in report.refusals
+    ), f"the traversing entry never reached the report: {report.refusals}"
+    assert not report.complete
+    names = {d.filename for d in context.store.list_documents(casefile.id, include_expanded=True)}
+    assert "inside.txt" in names, "refusing one entry does not abandon the rest"
+
+
+def test_entries_the_reader_never_delivered_are_reported(
+    context, casefile, tmp_path, monkeypatch
+):
+    """The listing and the delivery are two passes, and they can disagree.
+
+    An entry over the per-entry ceiling is skipped by `iter_children` with no
+    record, while `extract()` has already listed it in the container's own
+    searchable text. The container then names a document that will never
+    exist. Reconciled against the count the extractor publishes rather than by
+    re-deciding the ceiling, which a published requirement forbids.
+    """
+    from jackryan.ingestion import containers
+
+    monkeypatch.setattr(containers, "MAX_ENTRY_BYTES", 64)
+    bundle = _zip(
+        tmp_path / "bundle.zip", [("small.txt", "kept"), ("large.txt", "A" * 400)]
+    )
+
+    report = context.ingestion.ingest(casefile.short_id, bundle)
+
+    assert any(
+        "of 2 listed entries were not delivered" in refusal for refusal in report.refusals
+    ), f"the undelivered entry was never reported: {report.refusals}"
+    assert not report.complete
+    children = [
+        d
+        for d in context.store.list_documents(casefile.id, include_expanded=True)
+        if d.parent_id is not None
+    ]
+    assert [d.filename for d in children] == ["small.txt"]
+
+
+def test_a_bound_that_stopped_a_container_is_not_reported_twice(
+    context, casefile, tmp_path
+):
+    """A shortfall a bound caused is that bound's consequence, not a second finding.
+
+    Without the guard, a budget that stopped an expansion halfway reports both
+    the bound and a shortfall against the listing — one event counted twice,
+    reading as two independent problems.
+    """
+    bundle = tmp_path / "wide.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for index in range(8):
+            archive.writestr(f"note-{index}.txt", f"body {index}")
+
+    context.ingestion._limits = (4, 3, 64 * 1024 * 1024)
+    report = context.ingestion.ingest(casefile.short_id, bundle)
+
+    assert report.exhausted_by is not None
+    bound_refusals = [r for r in report.refusals if "expanded documents" in r]
+    assert len(bound_refusals) == 1, f"the bound was reported {len(bound_refusals)} times"
+    assert not any("not delivered" in r for r in report.refusals), (
+        f"the bound's own shortfall was reported as a second finding: {report.refusals}"
+    )
+
+
 @pytest.mark.parametrize("mode,suffix", [("w", ".tar"), ("w:gz", ".tar.gz"), ("w:bz2", ".tar.bz2")])
 def test_tar_archives_expand_whatever_the_compression(
     context, casefile, tmp_path, mode, suffix

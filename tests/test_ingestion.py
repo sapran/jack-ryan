@@ -19,6 +19,54 @@ def test_ingesting_a_folder_reports_each_document(context, casefile, corpus):
     assert all(o.chunks > 0 for o in report.outcomes)
 
 
+def test_a_failed_document_makes_the_run_incomplete(context, casefile, corpus):
+    """`complete` must mean what its name says.
+
+    It previously meant "expansion was not cut short", so a run in which
+    documents failed to be read still reported itself complete. `failed` being
+    counted separately does not help a caller who read `complete` and stopped.
+    """
+    (corpus / "empty.txt").write_text("", encoding="utf-8")
+    report = context.ingestion.ingest(casefile.short_id, corpus)
+
+    assert report.failed == 1
+    assert report.ingested == 3, "the other documents were still stored"
+    assert not report.complete
+    assert any("failed to be read" in line for line in report.limitations)
+
+
+def test_a_file_no_extractor_accepts_is_reported_as_skipped(context, casefile, tmp_path):
+    """A folder walk's unreadable file is disclosed, not passed over in silence.
+
+    Silence here is indistinguishable from having ingested it: an analyst
+    searching for what the file said finds nothing, and reads that as the
+    corpus not mentioning it.
+    """
+    folder = tmp_path / "drop"
+    folder.mkdir()
+    (folder / "lease.md").write_text("# Lease\n\nThe harbour lease was awarded.\n", "utf-8")
+    (folder / "activate.bat").write_bytes(b"@echo off\r\nnet use z: \\\\server\\share\r\n")
+
+    report = context.ingestion.ingest(casefile.short_id, folder)
+
+    assert report.skipped == ["activate.bat"]
+    assert report.refusals == [], "a folder file is skipped, not refused"
+    assert not any("activate.bat" in o.path for o in report.outcomes)
+    assert report.ingested == 1
+    assert not report.complete
+    assert any("no registered extractor" in line for line in report.limitations)
+
+
+def test_a_clean_run_reports_itself_complete(context, casefile, corpus):
+    """The one state in which an empty search result may be read as absence."""
+    report = context.ingestion.ingest(casefile.short_id, corpus)
+
+    assert report.complete
+    assert report.limitations == []
+    assert report.skipped == []
+    assert report.refusals == []
+
+
 def test_a_run_stops_before_reading_anything_when_the_engine_cannot_be_built(config, corpus):
     """A misconfigured recognition engine must stop the run, not degrade it.
 
