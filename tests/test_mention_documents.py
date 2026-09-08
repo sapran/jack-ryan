@@ -285,6 +285,31 @@ def test_an_occurrence_inside_a_chunk_overlap_is_one_occurrence(
     assert found[OVERLAP].mentions == 1
 
 
+def test_a_carrier_addresses_its_earliest_occurrence(context, casefile, carriers):
+    """The passage cited for a carrier is the first mention, not just any of them.
+
+    Asserted through the text the chunk actually holds rather than by comparing
+    chunk ids, which no caller can do: `heavy.txt` writes the identifier three
+    times, far enough apart to land in three different chunks, and only the
+    first is preceded by "First notice". Ordering `_first_passages` by
+    `document_offset DESC` reverses the pick and is otherwise undetectable — it
+    returns a real passage of the right document, so every other assertion in
+    this file stays green while an analyst following the citation lands on the
+    last mention of the identifier instead of the first.
+    """
+    page = context.search.mention_documents(casefile.short_id, CARRIED, limit=1)
+    heaviest = page.carriers[0]
+    assert heaviest.document.filename == HEAVY
+
+    cited = context.store.get_chunks([heaviest.chunk_id])[heaviest.chunk_id]
+    assert cited.document_id == heaviest.document.id
+    assert CARRIED in cited.text, "the cited passage does not carry the identifier"
+    assert "First notice" in cited.text, (
+        f"the carrier cites a later occurrence: {cited.text[:120]!r}"
+    )
+    assert "Third notice" not in cited.text
+
+
 def test_the_heaviest_carrier_leads_the_order(context, casefile, carriers):
     page = context.search.mention_documents(casefile.short_id, CARRIED, limit=5)
 
