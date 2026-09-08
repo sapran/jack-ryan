@@ -860,3 +860,38 @@ def test_a_listing_mark_says_whether_the_count_is_the_whole_story(
     assert fresh.additional_locations == 0
     assert "locations" not in _render_cli_document(fresh)
     assert "locations_recorded" not in _render_cli_document(fresh)
+
+
+def test_the_document_handed_back_by_the_store_does_not_misreport_itself(
+    context, casefile, tmp_path
+):
+    """`store_document` returns the stored document; the value must be truthful.
+
+    Nothing in the ingest reads wholeness off this return value today — it uses
+    the identifier and little else — so the derived aliases on the post-commit
+    read-back are defensive. They are asserted rather than left to a comment
+    because the failure they prevent is silent: a later caller that did read
+    wholeness from it would be told `unknown` for a document whose record is
+    whole, and no test would notice.
+
+    Mutation proving is why this exists. Dropping those aliases changed nothing
+    observable, which makes the safety unfalsifiable — and an unfalsifiable
+    guard is one a later change removes as dead weight.
+    """
+    root = tmp_path / "root"
+    _at(root, "ledger.txt")
+    context.ingestion.ingest(casefile.short_id, root)
+    document = _only(context, casefile)
+
+    # Reingest the same bytes at the same place, through the port directly, so
+    # the value under test is the one `store_document` hands back.
+    stored, was_new = context.store.store_document(
+        document, f"{root.resolve()}/ledger.txt", document.created_at
+    )
+    assert was_new is False, "the place was already recorded"
+    assert stored.locations_are_whole is True, (
+        "the document handed back by the store reported its own record as not "
+        "whole, which would mislead any caller that asked it"
+    )
+    assert stored.location_count == 1
+    assert stored.additional_locations == 0
