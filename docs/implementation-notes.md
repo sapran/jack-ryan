@@ -6,6 +6,33 @@ and why it was parked.
 
 ## Parked
 
+- **A `--mention` argument reaches all four extractors unbounded.**
+  `SearchService.search` caps its `query` at `MAX_QUERY_CHARS = 500`, and
+  neither it nor `mention_documents` caps `mention` — which is the one argument
+  that drives regex work, since `_normalised_like_the_store` runs every shipped
+  extractor's `find()` over the caller's whole string. Found by a security
+  review of `follow-an-identifier-exhaustively`, which also established the
+  severity is low: the 2026-09-01 review already bounded every quantifier in
+  the four patterns at RFC limits, so there is no catastrophic backtracking to
+  provoke. REST bounds it incidentally through URL length; the agent surface
+  and the CLI do not. Parked because `search`'s own `mention` has had the same
+  property since it shipped, so the fix belongs to a change that caps both
+  rather than to the one that noticed.
+
+- **The CLI prints corpus-derived filenames to the terminal unescaped.** Every
+  CLI listing — `document list`, `mentions`, and now `mention-documents` —
+  prints `filename` and `containment_path` raw, so an archive entry name
+  carrying a newline forges a row in the printed table and one carrying an ESC
+  sequence can rewrite what the analyst sees, including the header above it.
+  Pre-existing and CLI-wide: the new command matches the surface it joins
+  rather than lowering its bar. Worth recording beside it is that
+  `interfaces/mcp/shapes.py`'s `one_line` is a whitespace collapse, not a
+  sanitiser — `" ".join(text.split())` stops row forgery, which is what the
+  agent surface needs, but leaves `\x00`, `\x07`, `\x08` and `\x1b` intact, so
+  it must not be mistaken for terminal-safe if it is ever reused there. The fix
+  is the one sanitiser at every corpus-text boundary that the byte-bound note
+  below already argues for, and it wants its own change.
+
 - **A docstring counts the port's methods, and the count is stale.**
   `services/windowing.py:207-210` says the `Windower` asks the store "one
   question out of the nineteen the port declares". `StorePort` declared 31
