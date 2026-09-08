@@ -136,9 +136,11 @@ Because real deltas exist, the `.openspec.yaml` `skip_specs: true` escape is
   `src/jackryan/rendering.py`, `src/jackryan/cli.py`, `src/jackryan/server.py`,
   `src/jackryan/interfaces/mcp/fencing.py`,
   `src/jackryan/interfaces/mcp/server.py`.
-- **Tests:** fourteen added — thirteen in a new
+- **Tests:** eighteen added — seventeen in a new
   `tests/test_document_locations.py`, one in `tests/test_migrations.py` for a
-  document carried forward from a v4 baseline. `BASELINE_DOCUMENT_COLUMNS` and
+  document carried forward from a v4 baseline. Thirteen were written with the
+  implementation; four more came out of the review round, three of them for
+  defects the shipped guards did not catch. `BASELINE_DOCUMENT_COLUMNS` and
   `test_the_frozen_baseline_is_frozen` are not touched. One existing test was
   re-anchored rather than relaxed: `test_an_older_store_gains_the_ingest_run_record`
   derived its store's version from the top of the ladder, so any new rung made
