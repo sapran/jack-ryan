@@ -116,15 +116,28 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-# The two derived values every document-returning query needs, spelled once.
+# The derived values a document needs before a caller may judge its location
+# record, spelled once.
 #
-# They are aliases rather than columns because whether a document's location
-# record is whole is a property of the rows, not a claim stored beside them —
-# the claim that used to be stored could disagree with them, and did. A query
-# that omits these yields a document whose record silently reads as not whole,
-# so every path that returns one for a caller to judge selects them. `ancestors`
-# deliberately does not: it exists to render a containment chain, nothing asks
-# it about locations, and it is a recursive query.
+# They are aliases rather than columns because whether the record is whole is a
+# property of the rows, not a claim stored beside them — the claim that used to
+# be stored could disagree with them, and did. A query that omits these yields a
+# document whose record silently reads as not whole, so the four queries a
+# caller resolves a document through all select them: `get_document`,
+# `find_document_by_hash`, `find_documents_by_id_prefix` and
+# `list_document_page`.
+#
+# Two queries deliberately do not, and both would be wrong to "fix" here:
+#
+# `ancestors` exists to render a containment chain, nothing asks it about
+# locations, and it is recursive.
+#
+# The mention-carrier listing omits the location count, which is a **recorded
+# finding** from PM verification of the previous change and is parked for a
+# separate surface-consistency change. Adding the aliases there would resolve a
+# finding this change was told to leave standing, silently and in passing —
+# which is worse than the gap, because the record would then describe a defect
+# that no longer exists.
 _OBSERVATION_ALIASES = (
     ", ("
     "   SELECT COUNT(*) FROM document_observations o WHERE o.document_id = d.id"
