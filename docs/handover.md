@@ -1494,7 +1494,7 @@ before comparing, `case_cite`'s span reads a little wide exactly as it did, and
 the repair reads the stored text rather than assuming a convention, so it
 corrects a pre-fix corpus and a post-fix one identically.
 
-**Verified, on synthetic data only.** 719 passed, 3 skipped;
+**Verified, on synthetic data only.** 721 passed, 3 skipped;
 `openspec validate --all --strict` 18/18; `gitleaks detect` no leaks. End to end
 against a disposable store on the deterministic embedder: ingest 0 failures,
 inventory `(1, 1)`, two chunks carrying the identifier, positions staled to the
@@ -1503,9 +1503,9 @@ pre-fix values → `(2, 1)`, repair →
 mentions_corrected=1` → `(1, 1)`, second run `mentions_corrected=0` and still
 `(1, 1)`.
 
-**The mutation table, with a GREEN unmutated control.** Run through the uv-safe
-harness — a copied tree keeps importing the original worktree through the
-editable `.pth`, which reports GREEN for everything.
+**The mutation table: nine mutations, all RED, each control GREEN.** Run through
+the uv-safe harness — a copied tree keeps importing the original worktree
+through the editable `.pth`, which reports GREEN for everything.
 
 | Mutation | Verdict |
 |---|---|
@@ -1514,6 +1514,23 @@ editable `.pth`, which reports GREEN for everything.
 | repair uses `chunk.char_start` instead of `+ within` | RED |
 | repair does `within = max(within, 0)` instead of skipping | RED |
 | `recompute_mention_offsets` drops its `<>` predicate | RED |
+| `_slice` refuses by span instead of by text | RED |
+| `list_document_ids` gains `AND parent_id IS NULL` | RED |
+| the repair iterates `for chunk in []` | RED |
+| the CLI payload drops `chunks_examined` | RED |
+
+**Two things the harness itself got wrong, worth knowing before reusing it.**
+One node cannot run in a copied tree at all:
+`test_repair_reports_a_corpus_that_needs_nothing` ingests the shared `corpus`
+fixture, whose `.md` files go to docling, and a copied venv re-initialises that
+native stack — 67 seconds and then **exit -11 after the test had passed**. The
+same node in the worktree takes 2.9 seconds at exit 0, and the worktree runs all
+721 tests in one process at exit 0, so it is an artefact of the harness. The
+last two mutations above are therefore applied to the worktree itself, with the
+original bytes held in memory and their sha256 re-checked after restore —
+`git checkout` would have discarded the uncommitted work. The other seven still
+run in copies, but **one pytest process per node**: nine store-opening tests in
+one copied-venv process crashed at shutdown, while each alone was clean.
 
 **One fixture defect the table caught and reading did not.** The third mutation
 was GREEN on the first run. `_stale_positions` staled only the *mention* rows and
@@ -1523,6 +1540,70 @@ That is not a pre-fix corpus: a real one has wide chunk offsets *and* the
 positions derived from them. The helper now writes both, and `_stale_corpus`
 asserts that at least one chunk's offsets no longer select its own text, so the
 fixture cannot silently stop being pre-fix.
+
+**What review caught that fifteen tests had not: a whitespace-only window.** A
+chunk's span no longer covers the paragraph break after it, so
+`_clip_to_headings` — which cuts at the next heading's line start, two
+characters later — produced a span differing from the chunk's while selecting the
+same words plus `\n\n`. `_slice` asked whether the span differed, so that was
+reported as a window: `is_widened` true, two spans in provenance, nothing
+between them to read. Reproduced before it was believed, on one document with
+one variable: pre-fix offsets → no window; post-fix → `window=(15,85)` adding
+`'\n\n'`. `_slice` now compares `text[start:end].strip()` with the chunk's text,
+which subsumes the span test and holds for rows of either convention.
+
+Two consequences worth knowing. `hybrid-search`'s window requirement asserted
+that "a chunk's stored text has been stripped of the whitespace its offsets
+still describe" — false for new rows, so it moved in the same change; the
+corrected clause says offsets select the stored text *up to surrounding
+whitespace* and that every comparison of the two trims, which is the property
+that lets one rule serve a store holding both conventions. And
+`test_the_response_bound_drops_context_and_never_a_result` was resting on the
+old behaviour: with all four of its passages as results, `_keep_clear` left each
+window nothing to grow into but those blank lines, so it counted four windows
+carrying no context. It now makes three of the four results and asserts that
+something was widened before the bound is applied.
+
+**What the test review caught: five assertions that could not fail, or could
+not be reached.** All are now falsifiable, and each mutation is in the table
+above.
+
+- **The CLI guard did not pin `chunks_examined`.** With the repair iterating
+  `for chunk in []` — never looking at a chunk — the whole suite stayed green,
+  because the test asserted the three fields that are zero or unchanged and not
+  the one that says whether it looked. The `corpus` fixture holds **no mention
+  rows at all**, so `mentions_corrected == 0` was vacuous there. That field is
+  also the spec's own requirement: a run that corrected nothing must be
+  distinguishable from one that did not look.
+- **The repair's walk over expansions was unguarded.** Adding
+  `AND parent_id IS NULL` to `list_document_ids` — one clause, and the default
+  `list_documents` right beside it *does* exclude expansions — left every test
+  green while the pass silently skipped every archived document. Now covered by
+  a zip of one `.txt`.
+- **"No position was guessed" could not fail.** In the unlocatable test the
+  stale offset is by construction `chunk.char_start + mention.char_start`, which
+  is exactly what a guess clamped to zero recomputes — so the rows came out
+  identical and only the counter noticed. The pass now runs once *before* the
+  text is replaced, so the positions are tight and a clamped guess writes 358
+  where 361 is stored. The row comparison is also placed *before* the counters,
+  because pytest stops at the first failure: an assertion that never executes
+  guards nothing, which is the same defect one line further on.
+- **"Two documents count as two" rested on an unstated coincidence.** Its guard
+  against a position-only collapse works only while both documents place the
+  identifier at the same character. That was in the docstring alone; the helper
+  is shared by four tests, and prefixing one file with a covering note makes the
+  test pass under the collapse it exists to catch. Now asserted.
+- **The vector check was replaced rather than kept.** "A search still returns
+  something" cannot fail for any plausible variant of this pass. It is now a
+  before-and-after comparison of `chunk_vectors` itself — which `_chunk_rows`
+  cannot see, because the vectors are a virtual table rather than a column of
+  `chunks`.
+
+One claim in the plan was wrong and is worth correcting: it said `TEXT` in
+`tests/test_chunking.py` could not catch the offset revert. It can, through
+`char_end` — a window ending on a paragraph break carries the trailing blank
+line — and it is the only test that catches a wide `char_end` beside a tight
+`char_start`. Both chunking tests are load-bearing and neither is redundant.
 
 **What it did not check.** No real corpus, no reingest, no retrieval baseline
 re-measurement — the tightened offsets change no chunk boundary and no stored

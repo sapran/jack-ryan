@@ -107,6 +107,42 @@ about a method *reporting counts or sizes describing stored data* returning a
 string-keyed mapping — a different shape from a rowcount. No dataclass, and no
 `storage-seam` delta.
 
+### The window rule refuses by text, not by span
+
+Found by review after the chunker was tightened, and a consequence of it rather
+than a separate wish. `_slice` returned nothing when the widened span *equalled*
+the chunk's own pair. A chunk's span no longer covers the paragraph break that
+follows it, so `_clip_to_headings` — which cuts at the next heading's line start,
+two characters later — produced a span that differs from the chunk's while
+selecting the same words plus `\n\n`. That was reported as a window:
+`is_widened` true, two spans in provenance, and nothing between them to read.
+Reproduced before it was believed, on one document with one variable, the
+recorded pair: pre-fix offsets → no window; post-fix → `window=(15,85)` adding
+`'\n\n'`.
+
+The comparison is therefore `text[start:end].strip() == chunk.text`, which
+subsumes the old span test — the guard above has already established that the
+chunk's own span strips to its text — and holds for rows written under either
+convention. It is a *widening* of the refusal, not the tightening this change
+refuses elsewhere: an exact comparison in that first guard would withdraw the
+window of every row written before this change.
+
+`hybrid-search`'s window requirement had to move with it, and not only for the
+new rule: it asserted that "a chunk's stored text has been stripped of the
+whitespace its offsets still describe", which this change makes false for new
+rows. The corrected clause says the offsets select the stored text *up to
+surrounding whitespace*, and that every comparison of the two trims — which is
+the property that lets one rule serve a store holding both conventions.
+
+One existing test was resting on the old behaviour.
+`test_the_response_bound_drops_context_and_never_a_result` made all four of the
+fixture's passages results, so `_keep_clear` left each window nothing to grow
+into but the blank lines between paragraphs; it counted four windows carrying no
+context, and the bound withdrawing some of them was what it measured. It now
+makes three of the four results, so the gap gives at least one passage something
+real to reach, and it asserts that something was widened before bounding —
+otherwise the comparison says nothing.
+
 ## Risks / Trade-offs
 
 - **An existing corpus stays wrong until somebody runs the pass.** Accepted

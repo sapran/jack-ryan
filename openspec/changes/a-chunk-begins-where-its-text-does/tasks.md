@@ -158,14 +158,86 @@
 ## 10. Gates and mutation proof
 
 - [x] 10.1 `uv run pytest -q`, `openspec validate --all --strict`,
-      `gitleaks detect --no-banner`. *719 passed, 3 skipped; 18/18; no leaks.*
+      `gitleaks detect --no-banner`. *721 passed, 3 skipped; 18/18; no leaks.*
 - [x] 10.2 Mutation-prove each new guard with the uv-safe harness (a copied tree
       keeps importing the original worktree through the editable `.pth`, so
       every mutation reports GREEN); verify one unmutated control is GREEN and
-      treat exit code 4 as a collection error rather than a red test. *Control
-      GREEN, all five mutations RED. The harness also refuses an anchor that
+      treat exit code 4 as a collection error rather than a red test. *All nine
+      mutations RED, each with a GREEN control. Two of them run against the
+      worktree instead of a copy — see 11.10 — with the original bytes restored
+      and their sha256 re-checked. The harness also refuses an anchor that
       matches zero or more than one site.*
 - [x] 10.3 Run the end-to-end repair demonstration against a disposable store on
       the deterministic embedder, and paste its output as evidence. *In
       `docs/handover.md`: `(1, 1)` after ingest, `(2, 1)` staled,
       `mentions_corrected=1`, `(1, 1)`, then `mentions_corrected=0`.*
+
+## 11. What review found
+
+- [x] 11.1 Reproduce the reported whitespace-only window before acting on it;
+      verify with one variable changed and nothing else. *One document, two
+      chunks, the recorded pair the only difference: pre-fix → no window;
+      post-fix → `window=(15,85)` adding `'\n\n'`.*
+- [x] 11.2 Refuse a widening that adds only whitespace, by comparing the text
+      rather than the span; verify the change is a widening of the refusal and
+      not the tightening this change refuses elsewhere. *The first guard in
+      `_slice` still trims, so a pre-fix row's window is not withdrawn; the
+      second now subsumes the old span test for rows of either convention.*
+- [x] 11.3 Add `test_a_widening_that_adds_only_whitespace_is_not_a_window`;
+      verify it asserts its own preconditions — that the section reaches past
+      the matched passage, and that a paragraph break follows it — and that it
+      goes red when the refusal compares spans again. *Both asserted; the sixth
+      mutation is RED on exactly that test.*
+- [x] 11.4 Repair `test_the_response_bound_drops_context_and_never_a_result`,
+      which was counting windows that carried no context; verify it now asserts
+      something was widened before the bound is applied. *Three of the four
+      passages are results, so the gap gives one of them real room.*
+- [x] 11.5 Open the `hybrid-search` delta its window requirement now needs;
+      verify every published scenario of that requirement is reproduced by
+      title. *Four reproduced, one added. `openspec validate --strict` passes.*
+- [x] 11.6 Record what the other two reviewers established rather than only
+      what they found. *Correctness: 3,000-input fuzz over the chunker gave
+      `source[char_start:char_end] == text` for every chunk, `char_start` can
+      now be equal to the previous chunk's but no reader assumes strict
+      monotonicity, and `cursor.rowcount` after `executemany` summed the
+      modified rows on Python 3.12.14 / SQLite 3.53.1. Silent-failure: the diff
+      adds three SQL statements, all parameterised, of which one writes, and it
+      names `mentions` and sets `document_offset` alone — no trigger can widen
+      it, since the only trigger in the schema fires `AFTER DELETE ON chunks`.*
+- [x] 11.7 Pin `chunks_examined` in the CLI guard; verify the field is needed
+      rather than decorative. *Without it, a repair iterating `for chunk in []`
+      leaves the whole suite green, and the `corpus` fixture holds no mention
+      row, so `mentions_corrected == 0` is vacuous there. Both mutations are now
+      RED.*
+- [x] 11.8 Guard that the pass reaches expanded documents; verify the gap was
+      real. *Adding `AND parent_id IS NULL` to `list_document_ids` was green
+      across the suite while the pass skipped every archived document. A zip of
+      one `.txt` now covers it, and that mutation is RED.*
+- [x] 11.9 Make the "no position was guessed" assertion able to fail, and able
+      to be reached; verify by mutation which assertion fires. *The pass now
+      runs once before the text is replaced, so a clamped guess writes 358 where
+      361 is stored; and the row comparison is placed before the counters,
+      because pytest stops at the first failure. Under the clamp the row
+      assertion is the one that fires, naming both values.*
+- [x] 11.10 Establish why the CLI node cannot be mutated in a copied tree, and
+      handle it without `git checkout`. *That node ingests the `corpus`
+      fixture's `.md` files through docling; a copied venv re-initialises that
+      native stack — 67 seconds and exit -11 after the test passed, against 2.9
+      seconds at exit 0 in the worktree, which also runs all 721 tests in one
+      process cleanly. Its two mutations are applied in place with the original
+      bytes held in memory and their sha256 re-checked, since `git checkout`
+      would discard the uncommitted work. The copy-based half now runs one
+      pytest process per node, because nine store-opening tests in one
+      copied-venv process crashed at shutdown while each alone was clean.*
+- [x] 11.11 Assert the shared helper's coincidence rather than describing it,
+      and replace the unfalsifiable vector check. *The two-document test now
+      asserts both documents place the identifier at the same character —
+      prefixing one file with a covering note makes it pass under the collapse
+      it exists to catch. The vector assertion is a before-and-after comparison
+      of `chunk_vectors`, which `_chunk_rows` cannot see.*
+- [x] 11.12 Record the fidelity gaps rather than leaving them implicit.
+      *`_stale_positions` leaves `chunks.char_end` tight, one character narrower
+      than a real pre-fix row, which changes nothing the repair does — the
+      search is inside that span either way; and the helper's asserted boundary
+      is the overlap, which is the chunker's step-back only while
+      `overlap <= max_chars // 2`. Both are now docstring clauses.*

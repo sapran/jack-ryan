@@ -1053,6 +1053,12 @@ def _overlapping_occurrence_document(contract, value: str) -> str:
     unequally and disagree about where this occurrence sits. No blank line
     anywhere — a paragraph break inside the first window's back half would move
     the boundary.
+
+    The step-back is `min(overlap_chars, taken // 2)`, so that opening offset is
+    the overlap's only while `overlap <= max_chars // 2` — true of both the
+    suite's 400/50 and the shipped 2000/200, and not of every contract
+    `config.py` permits. A contract outside that range fails the callers'
+    `len(carriers) == 2` assertion rather than quietly proving something else.
     """
     window, overlap = contract.chunk_max_chars, contract.chunk_overlap_chars
     prose = "The clerk filed the tariff schedule and the annex together. "
@@ -1130,9 +1136,12 @@ def test_one_occurrence_in_each_of_two_documents_counts_as_two(context, tmp_path
     """Catches a collapse keyed on the position alone.
 
     Both files are built by the same helper, so the identifier sits at the same
-    character in each. Counting distinct positions rather than distinct
-    (document, position) pairs would fold the two into one — and the two
-    documents differ only by a trailing line, because identical bytes would
+    character in each — asserted below, because that coincidence is the whole
+    guard: counting distinct positions rather than distinct (document, position)
+    pairs folds the two into one only while the positions agree, and a shared
+    helper could stop making them agree without this test noticing.
+
+    The two documents differ by a trailing line, because identical bytes would
     deduplicate to a single document and there would be nothing to count.
     """
     contract = context.config.contract
@@ -1147,6 +1156,20 @@ def test_one_occurrence_in_each_of_two_documents_counts_as_two(context, tmp_path
 
     casefile = context.casefiles.create("Two Custodians")
     assert not context.ingestion.ingest(casefile.slug, folder).failed
+
+    positions = set()
+    for document in context.store.list_documents(casefile.id):
+        carrier = next(
+            chunk
+            for chunk in context.store.list_document_chunks(document.id)
+            if value in chunk.text
+        )
+        positions.add(carrier.char_start + carrier.text.index(value))
+    assert len(positions) == 1, (
+        f"the two documents place the identifier at {sorted(positions)}, so a "
+        "count keyed on the position alone would already report two and this "
+        "test would pass without guarding anything"
+    )
 
     facet = next(
         f
@@ -1173,6 +1196,12 @@ def _stale_positions(context, document, boundary: int) -> None:
     Written as SQL against the known window starts rather than by reverting the
     chunker, so these tests still describe a pre-fix corpus when the chunker
     changes again.
+
+    `chunks.char_end` is left tight. A real pre-fix row's end is the window's
+    too, one character wider here, and it makes no difference to anything the
+    repair does: the search is for the stored text *inside* that span, and it
+    finds it at the same offset either way. Recorded so the difference is a
+    known one rather than an oversight.
     """
     chunks = context.store.list_document_chunks(document.id)
     assert [c.ordinal for c in chunks] == [0, 1], (
@@ -1196,6 +1225,21 @@ def _chunk_rows(context, document_id: str) -> list[dict]:
         dict(row)
         for row in context.store._db.execute(
             "SELECT * FROM chunks WHERE document_id = ? ORDER BY ordinal", (document_id,)
+        )
+    ]
+
+
+def _vector_rows(context) -> list[tuple]:
+    """Every stored vector, by rowid.
+
+    Read separately from `_chunk_rows` because the vectors are not a column of
+    `chunks`: they live in a virtual table, so `SELECT * FROM chunks` proves
+    nothing about them.
+    """
+    return [
+        tuple(row)
+        for row in context.store._db.execute(
+            "SELECT rowid, embedding FROM chunk_vectors ORDER BY rowid"
         )
     ]
 
@@ -1246,6 +1290,7 @@ def test_the_repair_corrects_positions_an_earlier_ingest_recorded(context, tmp_p
     before_mentions = _mention_rows(context, casefile.id)
     before_chunks = _chunk_rows(context, document.id)
     before_text = context.store.get_document(document.id).extracted_text
+    before_vectors = _vector_rows(context)
 
     report = context.ingestion.repair_mention_offsets(casefile.slug)
 
@@ -1275,9 +1320,11 @@ def test_the_repair_corrects_positions_an_earlier_ingest_recorded(context, tmp_p
     ] == [
         {k: v for k, v in row.items() if k != "document_offset"} for row in before_mentions
     ], "the pass changed a mention field other than the document position"
-    assert context.store.search_vector(
-        casefile.id, context.embedder.embed_query("tariff schedule annex"), 5
-    ), "the vectors no longer answer a search, so the pass disturbed them"
+    assert _vector_rows(context) == before_vectors, (
+        "a vector row changed. `_chunk_rows` cannot see this: the vectors live "
+        "in a virtual table of their own, so `SELECT * FROM chunks` says "
+        "nothing about them"
+    )
 
     again = context.ingestion.repair_mention_offsets(casefile.slug)
     assert again.mentions_corrected == 0, (
@@ -1295,25 +1342,78 @@ def test_the_repair_leaves_a_chunk_whose_text_is_not_at_its_offsets_alone(
     The document's text is replaced with something the chunks cannot be found
     in — a half-completed ingest leaving new text against old offsets. Nothing
     is guessed: the mention rows come out exactly as they went in.
+
+    The pass runs once *before* the text is replaced, and that ordering is the
+    assertion's whole falsifiability. Left at the stale positions, a guess
+    clamped to zero recomputes `chunk.char_start + mention.char_start` — which
+    is exactly what the stale write recorded — so the rows come out identical
+    and only the counter notices. Repaired first, the positions are tight, and
+    a clamped guess writes the window's start back into them.
+
+    The rows are compared before the counters are, deliberately: pytest stops
+    at the first failure, so a row comparison placed after the counters can
+    never be seen to fail, which is the same defect one assertion further on.
     """
     casefile, document, _ = _stale_corpus(context, tmp_path, "Inconsistent Offsets")
+    assert context.ingestion.repair_mention_offsets(casefile.slug).mentions_corrected == 1
     context.store._db.execute(
         "UPDATE documents SET extracted_text = ? WHERE id = ?",
         ("Replaced by a later ingest.", document.id),
     )
     context.store._db.commit()
-    stale_rows = _mention_rows(context, casefile.id)
+    before_rows = _mention_rows(context, casefile.id)
 
     report = context.ingestion.repair_mention_offsets(casefile.slug)
 
+    assert _mention_rows(context, casefile.id) == before_rows, (
+        "a position was guessed for a chunk that could not be located"
+    )
     assert (report.chunks_examined, report.chunks_unlocatable) == (2, 2), (
         f"the pass reported {report}; both chunks' stored text is absent from "
         "the span their offsets name"
     )
     assert report.mentions_corrected == 0
-    assert _mention_rows(context, casefile.id) == stale_rows, (
-        "a position was guessed for a chunk that could not be located"
+
+
+def test_the_repair_reaches_documents_expanded_out_of_a_container(context, tmp_path):
+    """A casefile's documents include what came out of its archives.
+
+    `list_documents` defaults to *excluding* expansions, and the pass walks
+    `list_document_ids`, which is one clause away from the same default. An
+    identifier inside an archived file would then be left stale for ever, with
+    the pass reporting a clean run over the container alone.
+    """
+    import zipfile
+
+    contract = context.config.contract
+    value = "duplicated@acme.example"
+    text = _overlapping_occurrence_document(contract, value)
+    bundle = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("remittance.txt", text)
+
+    casefile = context.casefiles.create("Archived Remittance")
+    assert not context.ingestion.ingest(casefile.slug, bundle).failed
+    inner = next(
+        d
+        for d in context.store.list_documents(casefile.id, include_expanded=True)
+        if d.filename == "remittance.txt"
     )
+    _stale_positions(
+        context, inner, contract.chunk_max_chars - contract.chunk_overlap_chars
+    )
+    assert _email_facet(context, casefile.id, value) == (2, 1), (
+        "the expanded document's positions were not staled, so the pass below "
+        "has nothing to reach"
+    )
+
+    report = context.ingestion.repair_mention_offsets(casefile.slug)
+
+    assert report.mentions_corrected == 1, (
+        f"the pass reported {report}; the identifier lives in an expanded "
+        "document, so a walk that excluded expansions would report a clean run"
+    )
+    assert _email_facet(context, casefile.id, value) == (1, 1)
 
 
 def test_a_mention_cannot_name_a_casefile_other_than_its_chunks(context, stored):

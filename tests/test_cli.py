@@ -119,7 +119,14 @@ def test_ingesting_into_an_unknown_casefile_exits_nonzero(capsys, corpus):
 
 
 def test_repair_reports_a_corpus_that_needs_nothing(capsys, corpus):
-    """The pass is safe to run on current data, and says it changed nothing."""
+    """The pass is safe to run on current data, and says it changed nothing.
+
+    `chunks_examined` is asserted, not just the two zeros. This corpus holds no
+    identifier at all, so `mentions_corrected == 0` is true of a pass that never
+    looked — the spec asks for a run that corrected nothing to be
+    distinguishable from one that did not look, and this is the field that
+    distinguishes them.
+    """
     run(["--json", "casefile", "create", "Harbour Inquiry"], capsys)
     run(["--json", "ingest", "harbour-inquiry", str(corpus)], capsys)
 
@@ -127,5 +134,6 @@ def test_repair_reports_a_corpus_that_needs_nothing(capsys, corpus):
     assert code == 0
     report = json.loads(out)
     assert report["documents_examined"] == 3
+    assert report["chunks_examined"] == 3
     assert report["chunks_unlocatable"] == 0
     assert report["mentions_corrected"] == 0

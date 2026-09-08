@@ -281,6 +281,16 @@ and sharing code with what it checks would defeat that.
   occurrence near a chunk boundary twice; `jackryan repair mention-offsets
   <casefile>` recomputes it from the stored text, writes nothing else, and is
   idempotent.
+- **A window is refused by comparing text, never by comparing spans.** A chunk's
+  span no longer covers the paragraph break after it, so clipping at the next
+  heading yields a span two characters wider than the chunk's while selecting
+  the same words plus `\n\n`. `_slice` asked whether the span differed and
+  reported that as widened — `is_widened` true, two spans in provenance, nothing
+  between them to read. It now asks whether `text[start:end].strip()` differs
+  from the chunk's text, which subsumes the span test and holds for rows written
+  under either convention. A fixture whose every passage is also a result cannot
+  see this: `_keep_clear` leaves each window nothing to grow into but those
+  blank lines, which is exactly what one bound test was counting.
 - **Widening what is read never widens what is cited.** The matched passage
   stays the unit that identifiers address and `case_cite` quotes. A payload that
   returns more than it declares cannot be followed back, which is why provenance

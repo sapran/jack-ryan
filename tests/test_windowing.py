@@ -319,16 +319,32 @@ def test_no_text_is_returned_twice_across_one_response(one_section):
 
 
 def test_the_response_bound_drops_context_and_never_a_result(one_section, monkeypatch):
-    """Bounded text, unbounded evidence: nothing is withheld to meet the bound."""
+    """Bounded text, unbounded evidence: nothing is withheld to meet the bound.
+
+    Three of the four passages are results, deliberately. With all four, every
+    result's neighbour is also a result, so `_keep_clear` leaves each window
+    nothing to grow into but the blank lines between paragraphs — and a window
+    whose whole content is `\\n\\n` is no window at all. The gap where the second
+    passage is not a result is what gives the first one something real to reach,
+    so the count below is a count of windows carrying context.
+    """
     import jackryan.services.windowing as windowing_module
 
     document, chunks = one_section
     windower = Windower(_neighbours_of(chunks), budget=4000)
+    results = [chunks[0], chunks[2], chunks[3]]
 
-    generous = windower.for_results([_hit(chunk, document, n + 1) for n, chunk in enumerate(chunks)])
+    generous = windower.for_results(
+        [_hit(chunk, document, n + 1) for n, chunk in enumerate(results)]
+    )
+    assert sum(hit.is_widened for hit in generous), (
+        "no result was widened without a bound, so the bound has nothing to "
+        "withdraw and the rest of this test says nothing about it"
+    )
     monkeypatch.setattr(windowing_module, "MAX_RESPONSE_CHARS", 120)
-    bounded = windower.for_results([_hit(chunk, document, n + 1) for n, chunk in enumerate(chunks)])
-
+    bounded = windower.for_results(
+        [_hit(chunk, document, n + 1) for n, chunk in enumerate(results)]
+    )
     assert [hit.chunk.id for hit in bounded] == [hit.chunk.id for hit in generous]
     # Deliberately not `any(hit.narrowed ...)`. That reads like a guard and is
     # not one: `narrowed` is also set when a neighbouring result trims a window,
@@ -347,6 +363,42 @@ def test_the_response_bound_drops_context_and_never_a_result(one_section, monkey
     # the passage itself is still carried, because the bound governs the context
     # added and never the evidence found.
     assert all(hit.chunk.text in hit.text for hit in bounded)
+
+
+def test_a_widening_that_adds_only_whitespace_is_not_a_window():
+    """Catches "was this widened" answering yes for a blank line.
+
+    A chunk's offsets select its stored text exactly, so the paragraph break
+    after a section's last passage lies outside its span. Clipping at the next
+    heading then leaves a span two characters wider than the chunk's own, and a
+    rule that asked whether the span differed reported a window whose entire
+    content is `\\n\\n` — `is_widened` true, provenance naming two spans, and
+    nothing to read between them.
+
+    The second passage carries the same heading trail while running past the
+    heading, which is what makes the section reach beyond the first passage;
+    without it there is nothing to widen towards and the assertion would hold
+    for the wrong reason.
+    """
+    text, spans = _laid_out([PARAGRAPHS[0], "## Tariffs", PARAGRAPHS[1]])
+    document = _document(text)
+    matched = _chunk(text, 0, spans[0])
+    straddler = _chunk(text, 1, (spans[1][0], spans[2][1]))
+    windower = Windower(_neighbours_of([matched, straddler]), budget=4000)
+
+    assert straddler.char_end > matched.char_end, (
+        "the section does not reach past the matched passage, so nothing could "
+        "have widened it either way"
+    )
+    assert text[matched.char_end : matched.char_end + 2] == "\n\n", (
+        "the matched passage is not followed by the paragraph break this test "
+        "is about"
+    )
+
+    assert windower.for_passage(matched, document) is None, (
+        "a span reaching only into the blank line after the passage was "
+        "reported as a window"
+    )
 
 
 def test_a_stale_offset_is_not_widened(one_section):
