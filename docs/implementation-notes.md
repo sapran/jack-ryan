@@ -1233,8 +1233,11 @@ and why it was parked.
   Collapsing only the two new sites would give this one surface two conventions.
   If the CLI is ever hardened, all three sites move together.
 
-- **`test_the_expansion_workspace_is_removed_afterwards` is machine-wide, so a
-  second jackryan process makes it fail.** Pre-existing; found while gating
+- **Two cleanup tests snapshot the machine-wide temp directory, so a second
+  jackryan process makes them fail.**
+  `test_the_expansion_workspace_is_removed_afterwards` (`jackryan-expand-*`) and
+  the retrieval-evaluation workspace test (`jackryan-evaluate-*`) share the
+  defect and the fix. Pre-existing; found while gating
   `preserve-duplicate-locations` (2026-09-08) and deliberately not fixed there,
   since that change never touches the workspace lifecycle. The test snapshots
   `tempfile.gettempdir()` — the shared system temp directory — before and after
@@ -1248,6 +1251,11 @@ and why it was parked.
   ingest's. Running a loop that merely creates and deletes `jackryan-expand-*`
   directories in the shared temp dir alongside the suite reproduces the failure
   on demand, with two leaked paths instead of one.
+  Both are green when nothing else runs: 777 passed on `940e0d3` twice in
+  succession, and five clean full runs in the instrumented copy. They failed
+  only while parallel verification jobs of my own were running, and each such
+  job leaves its directories behind for the *next* run to trip over, so a stale
+  sweep is part of reproducing a clean result.
   The fix belongs to the test, not the service: have it learn the workspace path
   the ingest actually used — the service takes it from `tempfile.mkdtemp`, which
   a fixture can capture — and assert that one path is gone, rather than that no
