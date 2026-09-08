@@ -6,6 +6,62 @@ and why it was parked.
 
 ## Parked
 
+- **A bounded document page still materialises every returned document's full
+  `extracted_text`.** The page query selects `d.*` and `_row_to_document` builds
+  a whole `Document` per row, but nothing returns that text: the agent row and
+  both human surfaces use only `len(document.extracted_text)`, as `characters`.
+  Measured on 220 synthetic documents of distinct content, a page of 200 loaded
+  9,506,920 characters (9.5 MB) to report 200 integers; the unbounded listing it
+  replaces loaded 10,431,190. On the real corpus a page of five carried 2.9 M
+  characters, so the 200-row ceiling is order 10**8 characters — hundreds of
+  megabytes of Python strings — reachable in one model-issued
+  `case_list_documents(casefile, expanded=true, limit=200)` or one
+  `GET /api/casefiles/<ref>/documents?expanded=true&limit=200`, with no rate
+  limit above either surface. The repository has already decided this question
+  the other way once: `CasefileStatistics` sums characters in SQL precisely
+  because loading every document's text to measure it costs the whole corpus in
+  memory for one integer. **Parked because the fix needs a new domain field, not
+  a new query.** Projecting `LENGTH(d.extracted_text) AS characters` requires
+  `Document` to carry an optional `character_count` populated only when a query
+  aliases it — the `child_count` precedent — plus both renderers reading it
+  instead of `len(...)`. That touches the port's domain object and every surface
+  that shows a document, which is a change that should be argued on its own
+  rather than folded into a paging change. The interim `MAX_DOCUMENT_PAGE` is
+  200 and is a row bound, not a byte bound. Note the in-code comment at the
+  query claims only that the narrow id subquery keeps `extracted_text` out of
+  the *sorter*, which is true and a different claim.
+
+- **`one_line` strips whitespace only, so control characters and Unicode bidi
+  overrides reach the agent's index and the analyst's terminal intact.** It
+  collapses with `" ".join(text.split())`, and `str.split()` removes only
+  whitespace: ESC, BEL and U+202E RIGHT-TO-LEFT OVERRIDE are not whitespace.
+  Archive entry names are attacker-controlled in a real dump. Measured with an
+  entry named `invoice\x1b[31m\u202egpj.exe\x07.txt`, all three survive into
+  `formatted`, into a row's `filename`, and into `found_at` — so a crafted name
+  can recolour or rewrite the terminal of the analyst reading the index, and the
+  bidi override is the classic extension-spoofing trick that makes
+  `…\u202egpj.exe.txt` render as though it ended in `.txt`. **Pre-existing**:
+  `one_line`, `_render_document` and `formatted` all predate the paged listing,
+  which only widened the surface slightly by echoing a resolved container's
+  filename and containment path through the same helper. Parked rather than
+  fixed here because the right fix is one sanitiser applied at every corpus-text
+  boundary — the fence, the citation, the human renderers — and choosing between
+  stripping and escaping is a change of its own. It is the finding worth landing
+  next after the byte bound above.
+
+- **A document reached by listing cannot be cited without a search.**
+  `case_cite` needs a `chunk_id`, and no tool hands one back for a document
+  reached through `case_list_documents`: `case_read_document` returns text and
+  provenance but no chunk identifiers. So the container-navigation journey —
+  list the intake, enter a container, read a child — has to fall back to
+  `case_search` to obtain an id before it can cite what it just read. That
+  partly defeats the point of the capability, whose premise is that a container
+  is exactly where retrieval is least likely to surface the evidence. Parked
+  because closing it means adding chunk identifiers to a read payload, which is
+  a `mcp-tool-surface` contract change and needs its own delta. The journey test
+  is named and documented for what it actually proves — reaching and *reading*
+  without a search — after an earlier version claimed more.
+
 - **"The fold is on" and "the identity says the fold is on" are computed from
   different things.** `app.py` decides `folding` from the summariser *object*
   (`chunk_summaries and chosen_summariser is not None`); `CorpusIdentity.__str__`
