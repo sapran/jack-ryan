@@ -764,6 +764,22 @@ def test_a_new_documents_record_begins_when_the_document_does(
     assert record.verdict == "complete"
     assert document.locations_are_whole is True
 
+    # And through `resolve_document`, not only through the listing. The two
+    # reach the store by different queries, and the rule needs values a query
+    # has to select: one that omitted them would yield a document reading as
+    # not whole, silently, on the path every single-document surface uses.
+    resolved = context.ingestion.resolve_document(casefile.short_id, document.short_id)
+    assert resolved.locations_are_whole is True, (
+        "a freshly ingested document did not read as whole when resolved by "
+        "reference, so a query on that path is missing what the rule needs"
+    )
+    assert resolved.location_count == 1
+    assert resolved.additional_locations == 0
+    # The same for the full identifier, which takes the other branch of
+    # `resolve_document`, and for a prefix, which takes the third.
+    by_id = context.ingestion.resolve_document(casefile.short_id, document.id)
+    assert by_id.locations_are_whole is True
+
 
 def test_the_port_cannot_store_a_document_without_saying_where(context):
     """A seam that can be used in the wrong order eventually is.

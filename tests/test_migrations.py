@@ -507,7 +507,21 @@ def test_a_store_that_cannot_be_backed_up_is_not_migrated(tmp_path):
 # a finding, not a derived convenience that could be rebuilt. `chunks` can be
 # recomputed from a document; an observation cannot be recomputed from
 # anything.
-EVIDENCE_TABLES = ("documents", "casefiles", "chunks", "document_observations")
+#
+# `document_locations` is here too, and it is the one that needs the guard most.
+# Rung 10 stopped writing it and says in a comment that it is kept deliberately,
+# because it holds which root each place was reached through and dropping it
+# would destroy provenance to tidy a representation. This module's own docstring
+# argues that a rule only a comment states is a rule a later change breaks
+# without noticing, and an unwritten table is exactly what a later change tidies
+# up.
+EVIDENCE_TABLES = (
+    "documents",
+    "casefiles",
+    "chunks",
+    "document_observations",
+    "document_locations",
+)
 
 
 def test_no_step_is_destructive():

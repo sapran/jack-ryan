@@ -1076,19 +1076,15 @@ class IngestionService:
         to report the one place a later ingest happened to find as its whole
         history.
 
-        The earliest observation comes from the set just fetched rather than
-        from an aliased column, so this holds for a document resolved by any
-        route. `Document.locations_are_whole` states the same rule for a listing
-        row, which has the column and not the set.
+        The rule itself lives on the document, as `locations_are_whole`, and is
+        asked rather than restated here. Spelling it in both places is the
+        two-copies-can-disagree defect that retiring the stored claim was meant
+        to end, one level up — so every query that returns a document for a
+        caller to judge selects what the rule needs.
         """
         document = self.resolve_document(casefile_reference, reference)
         recorded = self._store.document_locations(document.id, MAX_DOCUMENT_LOCATIONS)
-        began = recorded.locations[0].first_seen_at if recorded.locations else None
-        verdict = (
-            LOCATIONS_COMPLETE
-            if began is not None and began <= document.created_at
-            else LOCATIONS_UNKNOWN
-        )
+        verdict = LOCATIONS_COMPLETE if document.locations_are_whole else LOCATIONS_UNKNOWN
         return DocumentLocationRecord(
             verdict=verdict, document=document, recorded=recorded
         )

@@ -116,6 +116,25 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# The two derived values every document-returning query needs, spelled once.
+#
+# They are aliases rather than columns because whether a document's location
+# record is whole is a property of the rows, not a claim stored beside them —
+# the claim that used to be stored could disagree with them, and did. A query
+# that omits these yields a document whose record silently reads as not whole,
+# so every path that returns one for a caller to judge selects them. `ancestors`
+# deliberately does not: it exists to render a containment chain, nothing asks
+# it about locations, and it is a recursive query.
+_OBSERVATION_ALIASES = (
+    ", ("
+    "   SELECT COUNT(*) FROM document_observations o WHERE o.document_id = d.id"
+    " ) AS location_count, ("
+    "   SELECT MIN(first_seen_at) FROM document_observations o"
+    "   WHERE o.document_id = d.id"
+    " ) AS first_observed_at"
+)
+
+
 def _row_to_document(row: sqlite3.Row) -> Document:
     return Document(
         id=row["id"],
@@ -418,7 +437,8 @@ class SqliteStore:
     def get_document(self, document_id: str) -> Document | None:
         with self._lock:
             row = self._db.execute(
-                "SELECT * FROM documents WHERE id = ?", (document_id,)
+                f"SELECT d.*{_OBSERVATION_ALIASES} FROM documents d WHERE d.id = ?",
+                (document_id,),
             ).fetchone()
         return _row_to_document(row) if row else None
 
@@ -439,13 +459,7 @@ class SqliteStore:
         """
         with self._lock:
             row = self._db.execute(
-                "SELECT d.*, ("
-                "   SELECT COUNT(*) FROM document_observations o WHERE o.document_id = d.id"
-                " ) AS location_count, ("
-                "   SELECT MIN(first_seen_at) FROM document_observations o"
-                "   WHERE o.document_id = d.id"
-                " ) AS first_observed_at"
-                " FROM documents d"
+                f"SELECT d.*{_OBSERVATION_ALIASES} FROM documents d"
                 " WHERE d.casefile_id = ? AND d.content_hash = ? AND d.identity_path = ?",
                 (casefile_id, content_hash, identity_path),
             ).fetchone()
@@ -540,8 +554,9 @@ class SqliteStore:
         pattern = _escape_like(prefix) + "%"
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM documents WHERE casefile_id = ? AND id LIKE ? ESCAPE '\\'"
-                " ORDER BY created_at",
+                f"SELECT d.*{_OBSERVATION_ALIASES} FROM documents d"
+                " WHERE d.casefile_id = ? AND d.id LIKE ? ESCAPE '\\'"
+                " ORDER BY d.created_at",
                 (casefile_id, pattern),
             ).fetchall()
         return [_row_to_document(r) for r in rows]
@@ -593,20 +608,11 @@ class SqliteStore:
             rows = self._db.execute(
                 "SELECT d.*, ("
                 "   SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id"
-                " ) AS child_count, ("
                 # Same shape and the same order of cost as the child count
                 # already paid, and it is what makes "which documents were
                 # found in several places" answerable by scanning a listing
                 # rather than by opening every document in turn.
-                "   SELECT COUNT(*) FROM document_observations o WHERE o.document_id = d.id"
-                " ) AS location_count, ("
-                # The earliest observation, so wholeness is derived per row by
-                # the same rule the verdict uses. Without it a listing would
-                # need a threshold of its own, and a rule spelled twice is a
-                # rule that drifts.
-                "   SELECT MIN(first_seen_at) FROM document_observations o"
-                "   WHERE o.document_id = d.id"
-                " ) AS first_observed_at"
+                f" ) AS child_count{_OBSERVATION_ALIASES}"
                 " FROM documents d"
                 " JOIN (SELECT d.id FROM documents d"
                 f"{predicate}{order} LIMIT ? OFFSET ?) chosen ON chosen.id = d.id"
