@@ -143,6 +143,15 @@ inside a tie and repeat or skip an entry. An ordering that leaves two entries
 interchangeable is not wrong within one page and is silently wrong across two,
 and the caller cannot detect it: every page is individually well-formed.
 
+A document's recorded source locations SHALL be a bounded disclosure rather than
+a paged listing. The payload SHALL carry how many locations the record holds and
+SHALL say when the disclosure was cut, and it SHALL NOT offer a position to
+continue from. This is the deliberate exception to the one continuation contract
+above, and the reason it is not a listing: a document observed at more locations
+than the bound is characterised by the count, which the payload already carries,
+and not by its next path. Offering a continuation no caller has a use for would
+teach an agent to page toward an answer it already has.
+
 #### Scenario: A long document reports truncation and where to continue
 
 - **WHEN** a document longer than the read bound is read
@@ -172,6 +181,11 @@ and the caller cannot detect it: every page is individually well-formed.
 
 - **WHEN** a selection is paged to its end and the corpus has not changed
 - **THEN** the pages together carry each matching entry exactly once
+
+#### Scenario: A document's locations are bounded and say when they were cut
+
+- **WHEN** a document's recorded source locations exceed the disclosure bound
+- **THEN** the payload carries how many the record holds and marks the disclosure cut, and offers no position to continue from
 
 ### Requirement: A failing tool returns a typed payload rather than raising
 

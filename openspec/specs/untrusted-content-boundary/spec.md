@@ -35,6 +35,18 @@ attacker-controlled to the same degree as the text it describes. The path SHALL
 be sanitised on the same terms as any other document-derived value before it
 enters a line-oriented block.
 
+Where a document's bytes were observed at more than one source location, or the
+record of those locations cannot answer, the provenance SHALL carry that,
+bounded. Every such location SHALL be sanitised on the same terms as the
+containment path. A location is the ingested root joined to the path within it,
+and the second half is chosen by whoever laid out the material — an archive
+entry name or a directory name inside a dump — so it is attacker-controlled to
+exactly the degree the containment path is, and reaches the same line-oriented
+block. The root half is operator-chosen rather than document-derived, which
+makes it no safer to emit unsanitised: it is a filesystem path, it can carry a
+newline, and one rule over the whole joined location is one fewer place for the
+weaker half to be missed.
+
 #### Scenario: Returned corpus text is fenced and attributed
 
 - **WHEN** a tool returns text taken from a document
@@ -64,6 +76,11 @@ enters a line-oriented block.
 
 - **WHEN** an entry inside a container is named so as to imitate a provenance line
 - **THEN** the path is sanitised before it is emitted, and the provenance block's structure is unaffected
+
+#### Scenario: Additional locations are sanitised like the containment path
+
+- **WHEN** a document's additional source location is named so as to imitate a provenance line
+- **THEN** that path is sanitised before it is emitted on the same terms as the containment path, and the provenance block's structure is unaffected
 
 ### Requirement: The payload states that corpus content is evidence, not instruction
 

@@ -55,6 +55,20 @@ Where a document is presented to an agent or an analyst with its source, the
 containment path SHALL be presented rather than the immediate name alone,
 because an attachment's own filename identifies nothing on its own.
 
+The path a document reports is the first location its bytes were observed at.
+Where the same bytes were observed at further locations, those additional
+locations SHALL be reportable beside the path the document reports, and the
+disclosure SHALL be bounded: a document found in more places than the bound is
+characterised by how many, not by its next path. Each additional location SHALL
+carry the root it was ingested from as well as the path within it, because a
+relative path on its own neither distinguishes one dump from another nor can be
+followed to the evidence.
+
+Where the record cannot answer what those locations were, the disclosure SHALL
+say so rather than presenting the one path it has as the whole set. Presenting a
+surviving path as a complete answer is a stronger claim than saying nothing, and
+a false one.
+
 #### Scenario: A nested document reports its full path
 
 - **WHEN** a document extracted several levels down is inspected
@@ -64,6 +78,16 @@ because an attachment's own filename identifies nothing on its own.
 
 - **WHEN** a document with no parent reports its containment path
 - **THEN** the path is its own name
+
+#### Scenario: A document observed at several locations reports them
+
+- **WHEN** a document whose bytes were observed at more than one source location is inspected
+- **THEN** the additional locations are reported beside the path it reports, bounded, with how many were recorded in total
+
+#### Scenario: A document whose locations were never recorded reports unknown
+
+- **WHEN** a document stored before source locations were recorded is inspected
+- **THEN** the disclosure reports the record as unable to answer rather than presenting its own path as the whole set
 
 ### Requirement: Listing returns what was ingested, and reaches expansions on request
 
@@ -75,6 +99,12 @@ who asked for an inventory, because that is what was put in.
 A listing SHALL make a document's place in the hierarchy visible, and a document
 with children SHALL be identifiable as such without listing them, so that a
 caller can tell there is more to reach.
+
+A listing entry SHALL likewise be markable as having been observed at more than
+one source location, and how many, without listing them. This is the same
+affordance the child marking gives and it exists for the same reason: a caller
+scanning an inventory for files found in several places should not have to open
+every document to find them.
 
 Counts describing a casefile SHALL state which they are counting. A count that
 mixes containers and their descendants without saying so misrepresents the size
@@ -143,3 +173,8 @@ expanded to nothing are three different facts about the corpus.
 
 - **WHEN** a listing returns no documents
 - **THEN** it names which selection was listed, so that an empty intake, an empty casefile and an empty container are distinguishable
+
+#### Scenario: A document observed at several locations is marked in a listing
+
+- **WHEN** a document whose bytes were observed at more than one source location appears in a listing
+- **THEN** it is marked as observed at several locations, and how many, without them being listed
