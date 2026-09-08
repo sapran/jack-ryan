@@ -6,6 +6,21 @@ and why it was parked.
 
 ## Parked
 
+- **A test asserts against a glob of the shared temporary directory, so it
+  fails under concurrency.**
+  `tests/test_evaluate_retrieval.py:467`
+  (`test_the_workspace_is_kept_when_asked`) records
+  `glob("$TMPDIR/jackryan-evaluate-*")`, runs the harness with `--keep`, and
+  asserts exactly one new directory appeared. The path is process-global, so
+  anything else creating a matching directory in that window makes `kept` hold
+  two and the assertion fail. Observed once during the mutation-proving of
+  `follow-an-identifier-exhaustively`, in a run whose mutation was confined to
+  `interfaces/mcp/server.py` and could not affect it; it passed 3/3 in
+  isolation afterwards and the control run of the same harness was green.
+  Pre-existing and unrelated to that change, so parked rather than fixed. The
+  fix is to point the harness at a `tmp_path` subdirectory and assert on that,
+  rather than to retry or loosen the count.
+
 - **A `--mention` argument reaches all four extractors unbounded.**
   `SearchService.search` caps its `query` at `MAX_QUERY_CHARS = 500`, and
   neither it nor `mention_documents` caps `mention` — which is the one argument
