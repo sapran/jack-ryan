@@ -108,8 +108,18 @@
       `case_search` removed from the server. No `TestClient` in this module.
 - [x] 9.4 Four cross-surface tests in `tests/test_result_shape.py`, with exact
       key sets for the row and the payload.
-- [x] 9.5 All 15 mutations red against a green control, sources restored and
-      re-checksummed.
+- [x] 9.5 All mutations red against a green control. *Ran as 22 rather than the
+      15 planned: review added guards for the casefile joins, the store's limit
+      floor, the page's own past-the-end predicate, the CLI branch and the alias
+      check, and round one found the earliest-occurrence rule unguarded — which
+      is what the second commit adds. 22/22 red, each naming its own symptom. A
+      23rd is GREEN by design and was measured rather than assumed: the passage
+      pick's casefile guard is unreachable behind the page query's, so it is a
+      proven redundancy, not a gap. Sources were restored with `git checkout`
+      and the tree asserted clean after every mutation, which is a stronger
+      oracle than the checksum this line originally planned — it compares
+      against the committed bytes rather than against a number the harness
+      computed itself.*
 
 ## 10. Gates and landing
 
@@ -120,5 +130,8 @@
       directory, plus REST parity; the real corpus is read-only.
 - [x] 10.3 Grep the diff for `sk-`, `hf_`, `AKIA`, `ghp_`, `-----BEGIN`,
       `.ts.net`, `/Users/`, `/home/`.
-- [x] 10.4 `openspec sync-specs`, `openspec archive`, review the diff with two
-      reviewers, merge, remove the worktree.
+- [x] 10.4 `openspec archive` — there is no `sync-specs` subcommand in OpenSpec
+      1.12.0; `archive` updates the main specs itself. Review the diff with two
+      reviewers, merge, remove the worktree. *Reviewed by `reviewer` and
+      `security-reviewer`; seven in-scope defects fixed, two parked. Merged as
+      `7644809` via PR #35 after all three CI gates passed.*
