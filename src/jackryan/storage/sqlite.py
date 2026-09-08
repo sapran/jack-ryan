@@ -135,12 +135,17 @@ def _row_to_document(row: sqlite3.Row) -> Document:
         containment_path=row["containment_path"],
         identity_path=row["identity_path"],
         child_count=row["child_count"] if "child_count" in row.keys() else 0,
-        # A real column, so it is read directly: every query feeding this
-        # function selects `*` or `d.*`, and a guard would only mask one that
-        # forgot it. `location_count` is aliased by the listing query alone,
-        # so it takes the same guard `child_count` above does.
-        locations_recorded=bool(row["locations_recorded"]),
+        # Both aliased rather than stored, so they take the guard `child_count`
+        # above does. `locations_recorded` is deliberately not read: it was a
+        # stored claim about these rows, written in a different transaction from
+        # them, and the two could disagree. Wholeness is derived from
+        # `first_observed_at` against `created_at` on the domain object.
         location_count=row["location_count"] if "location_count" in row.keys() else 0,
+        first_observed_at=(
+            _from_iso(row["first_observed_at"])
+            if "first_observed_at" in row.keys() and row["first_observed_at"] is not None
+            else None
+        ),
     )
 
 
@@ -307,14 +312,20 @@ class SqliteStore:
 
     # -- documents ---------------------------------------------------------
 
-    def upsert_document(self, document: Document) -> Document:
+    def store_document(
+        self, document: Document, location_path: str, observed_at: datetime
+    ) -> tuple[Document, bool]:
+        # One lock, one transaction, one commit. The document row and the
+        # observation that opens its record are written together because the
+        # record is what answers whether the document's history is whole: a
+        # document committed without it asserts a history it does not have, and
+        # the next observation from somewhere else becomes the whole story.
         with self._lock:
             self._db.execute(
                 "INSERT INTO documents (id, casefile_id, content_hash, filename, media_type,"
                 " byte_size, extracted_text, extractor, text_source, summary, summary_by,"
-                " created_at, updated_at, parent_id, containment_path, identity_path,"
-                " locations_recorded)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " created_at, updated_at, parent_id, containment_path, identity_path)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(casefile_id, content_hash, identity_path) DO UPDATE SET"
                 "   media_type = excluded.media_type,"
                 "   byte_size = excluded.byte_size,"
@@ -336,15 +347,9 @@ class SqliteStore:
                 # this list, like `created_at` above: they are the *first*
                 # location this document's bytes were observed at, and a later
                 # copy found elsewhere must not overwrite them. Every observed
-                # location is kept in `document_locations`; this column is the
+                # place is kept in `document_observations`; this column is the
                 # one a citation names, so it has to be stable or a citation
                 # written yesterday points somewhere else today.
-                #
-                # `locations_recorded` is absent for a different reason: only an
-                # insert can honestly claim that the location record is whole
-                # from the start. A document migrated in from an older schema
-                # must keep saying it predates the record however often it is
-                # reingested.
                 "   parent_id = excluded.parent_id",
                 (
                     document.id,
@@ -363,15 +368,32 @@ class SqliteStore:
                     document.parent_id,
                     document.containment_path,
                     document.identity_path,
-                    int(document.locations_recorded),
                 ),
             )
+            # Read back inside the transaction: on a reingest the surviving row
+            # keeps the identifier this document is about to be observed under.
+            row = self._db.execute(
+                "SELECT * FROM documents"
+                " WHERE casefile_id = ? AND content_hash = ? AND identity_path = ?",
+                (document.casefile_id, document.content_hash, document.identity_path),
+            ).fetchone()
+            assert row is not None
+            stored_id = row["id"]
+            # INSERT OR IGNORE, never OR REPLACE: the first sighting's timestamp
+            # is what the wholeness of the record is judged against, and the
+            # return value is how the caller tells a newly discovered place from
+            # an ordinary reingest of a known one. OR REPLACE would move the
+            # timestamp forward and report every reingest as a discovery.
+            cursor = self._db.execute(
+                "INSERT OR IGNORE INTO document_observations"
+                " (document_id, location_path, first_seen_at) VALUES (?, ?, ?)",
+                (stored_id, location_path, _to_iso(observed_at)),
+            )
+            location_is_new = cursor.rowcount > 0
             self._db.commit()
-        stored = self.find_document_by_hash(
-            document.casefile_id, document.content_hash, document.identity_path
-        )
+        stored = self.get_document(stored_id)
         assert stored is not None
-        return stored
+        return stored, location_is_new
 
     def get_document(self, document_id: str) -> Document | None:
         with self._lock:
@@ -389,64 +411,53 @@ class SqliteStore:
         one folder are one document. For an expansion it is the containment
         path, so the same bytes reached through two containers resolve to two
         documents and each keeps the link to what carried it.
+
+        The observation counts are aliased here because the ingest that calls
+        this decides, from whether the record was already whole, whether a place
+        it is about to record counts as a discovery. Asking afterwards would ask
+        about the record this write has just changed.
         """
         with self._lock:
             row = self._db.execute(
-                "SELECT * FROM documents"
-                " WHERE casefile_id = ? AND content_hash = ? AND identity_path = ?",
+                "SELECT d.*, ("
+                "   SELECT COUNT(*) FROM document_observations o WHERE o.document_id = d.id"
+                " ) AS location_count, ("
+                "   SELECT MIN(first_seen_at) FROM document_observations o"
+                "   WHERE o.document_id = d.id"
+                " ) AS first_observed_at"
+                " FROM documents d"
+                " WHERE d.casefile_id = ? AND d.content_hash = ? AND d.identity_path = ?",
                 (casefile_id, content_hash, identity_path),
             ).fetchone()
         return _row_to_document(row) if row else None
 
-    def record_document_location(
-        self,
-        document_id: str,
-        source_root: str,
-        containment_path: str,
-        first_seen_at: datetime,
-    ) -> bool:
-        # INSERT OR IGNORE, never OR REPLACE: the first observation's timestamp
-        # is the fact worth keeping, and the return value is how the caller
-        # tells a newly discovered copy from an ordinary reingest of a known
-        # one. OR REPLACE would report every reingest as a discovery.
-        with self._lock:
-            cursor = self._db.execute(
-                "INSERT OR IGNORE INTO document_locations"
-                " (document_id, source_root, containment_path, first_seen_at)"
-                " VALUES (?, ?, ?, ?)",
-                (document_id, source_root, containment_path, _to_iso(first_seen_at)),
-            )
-            self._db.commit()
-            return cursor.rowcount > 0
-
     def document_locations(self, document_id: str, limit: int) -> DocumentLocationSet:
-        """One document's recorded locations, bounded, and how many there are.
+        """One document's recorded places, bounded, and how many there are.
 
-        Ordered by when each was first observed and then by the location itself,
-        so the ordering is total: two locations recorded inside one ingest run
-        can share a timestamp, and a bound falling inside a tie would return a
+        Ordered by when each was first observed and then by the path itself, so
+        the ordering is total: two places recorded inside one ingest run can
+        share a timestamp, and a bound falling inside a tie would return a
         different subset between two calls on an unchanged corpus.
 
-        The earliest is returned first, which is what lets a caller identify the
-        one the document itself reports without comparing strings against it.
+        The earliest is returned first, which is what the wholeness of the
+        record is judged against.
         """
         with self._lock:
             total = self._db.execute(
-                "SELECT COUNT(*) AS total FROM document_locations WHERE document_id = ?",
+                "SELECT COUNT(*) AS total FROM document_observations WHERE document_id = ?",
                 (document_id,),
             ).fetchone()["total"]
             rows = self._db.execute(
-                "SELECT source_root, containment_path, first_seen_at"
-                " FROM document_locations WHERE document_id = ?"
-                " ORDER BY first_seen_at, source_root, containment_path"
+                "SELECT location_path, first_seen_at"
+                " FROM document_observations WHERE document_id = ?"
+                " ORDER BY first_seen_at, location_path"
                 " LIMIT ?",
                 (document_id, int(limit)),
             ).fetchall()
         return DocumentLocationSet(
             locations=[
                 DocumentLocation(
-                    source_root=r["source_root"],
-                    containment_path=r["containment_path"],
+                    path=r["location_path"],
                     first_seen_at=_from_iso(r["first_seen_at"]),
                 )
                 for r in rows
@@ -567,8 +578,15 @@ class SqliteStore:
                 # already paid, and it is what makes "which documents were
                 # found in several places" answerable by scanning a listing
                 # rather than by opening every document in turn.
-                "   SELECT COUNT(*) FROM document_locations l WHERE l.document_id = d.id"
-                " ) AS location_count"
+                "   SELECT COUNT(*) FROM document_observations o WHERE o.document_id = d.id"
+                " ) AS location_count, ("
+                # The earliest observation, so wholeness is derived per row by
+                # the same rule the verdict uses. Without it a listing would
+                # need a threshold of its own, and a rule spelled twice is a
+                # rule that drifts.
+                "   SELECT MIN(first_seen_at) FROM document_observations o"
+                "   WHERE o.document_id = d.id"
+                " ) AS first_observed_at"
                 " FROM documents d"
                 " JOIN (SELECT d.id FROM documents d"
                 f"{predicate}{order} LIMIT ? OFFSET ?) chosen ON chosen.id = d.id"

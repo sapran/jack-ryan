@@ -211,10 +211,10 @@ def test_a_document_carried_forward_reports_its_locations_as_unknown(tmp_path):
     """A document that predates the location record must never claim otherwise.
 
     Its source locations were overwritten by whichever copy was ingested last,
-    and nothing can recover them. The column defaults to 0 so every such row
-    says so without the migration writing anything — and recording a location
-    for it afterwards must not raise the flag, because one observation is not
-    the whole set.
+    and nothing can recover them. Nothing is written for such a document, so it
+    has no observation, so no earliest observation can be no later than its
+    creation — and one recorded afterwards is later than it, which is why a
+    further sighting cannot turn missing history into a whole record.
     """
     path = build_baseline_store(tmp_path / "old.db")
     store = SqliteStore(path)
@@ -223,21 +223,79 @@ def test_a_document_carried_forward_reports_its_locations_as_unknown(tmp_path):
 
         document = store.get_document("d1")
         assert document is not None
-        assert document.locations_recorded is False, (
-            "a document carried forward claimed its locations were recorded"
-        )
-        # No location is invented for it either: the only timestamp available
-        # is `created_at`, which is when the document was first ingested and
-        # not when any particular copy was observed.
+        # No location is invented for it: the only timestamp available is
+        # `created_at`, which is when the document was first ingested and not
+        # when any particular copy was observed.
         assert store.document_locations("d1", 20).total == 0
 
-        recorded = store.record_document_location(
-            "d1", "/dumps/alpha", "lease.md", datetime.now(timezone.utc)
+        # A later sighting is recorded, and is later than the document. The
+        # store writes it through the one call that also stores the document,
+        # which on a reingest keeps the row it already has.
+        later = datetime.now(timezone.utc)
+        assert later > document.created_at
+        stored, was_new = store.store_document(document, "/dumps/alpha/lease.md", later)
+        assert was_new is True
+
+        recorded = store.document_locations("d1", 20)
+        assert recorded.total == 1
+        assert recorded.locations[0].first_seen_at > stored.created_at, (
+            "an observation recorded after the document was created must stay later "
+            "than it, or the record would read as whole"
         )
-        assert recorded is True
-        assert store.get_document("d1").locations_recorded is False, (
-            "recording one location raised the flag on a document that predates it"
+    finally:
+        store.close()
+
+
+def test_existing_location_records_are_carried_into_observations(tmp_path):
+    """Rung 10 keeps what was recorded, and collapses one place recorded twice.
+
+    The prior key was the ingest root paired with the path within it, so a
+    folder walk and then that folder's nested file named directly wrote two
+    rows for one file. Carrying them across joins each pair into its path,
+    which makes the duplicate a duplicate — and the earliest sighting is the
+    one kept, because that is what the wholeness of the record is judged
+    against.
+    """
+    path = build_baseline_store(tmp_path / "old.db", version=9)
+    conn = sqlite3.connect(path)
+    try:
+        # The shape rung 9 left: a pair-keyed table, holding one place twice
+        # and one place once.
+        conn.execute(
+            "CREATE TABLE document_locations ("
+            " document_id TEXT NOT NULL, source_root TEXT NOT NULL,"
+            " containment_path TEXT NOT NULL, first_seen_at TEXT NOT NULL,"
+            " PRIMARY KEY (document_id, source_root, containment_path))"
         )
+        conn.execute("ALTER TABLE documents ADD COLUMN locations_recorded INTEGER NOT NULL DEFAULT 0")
+        conn.executemany(
+            "INSERT INTO document_locations VALUES (?, ?, ?, ?)",
+            [
+                ("d1", "/dump", "sub/lease.md", "2026-01-02T00:00:00+00:00"),
+                ("d1", "/dump/sub", "lease.md", "2026-01-03T00:00:00+00:00"),
+                ("d1", "/elsewhere", "lease.md", "2026-01-04T00:00:00+00:00"),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = SqliteStore(path)
+    try:
+        store.initialize(IDENTITY, DIMENSIONS)
+        recorded = store.document_locations("d1", 20)
+        assert [location.path for location in recorded.locations] == [
+            "/dump/sub/lease.md",
+            "/elsewhere/lease.md",
+        ], "the two rows for one place did not collapse into it"
+        assert recorded.total == 2
+        # The earliest of the two sightings of that place is the one kept.
+        assert recorded.locations[0].first_seen_at.isoformat() == "2026-01-02T00:00:00+00:00"
+        # And the prior record is still there, unrewritten.
+        surviving = store._db.execute(
+            "SELECT COUNT(*) AS n FROM document_locations"
+        ).fetchone()["n"]
+        assert surviving == 3, "the prior record was rewritten rather than kept"
     finally:
         store.close()
 
@@ -435,7 +493,12 @@ def test_a_store_that_cannot_be_backed_up_is_not_migrated(tmp_path):
 
 # --- Mechanical rules ---------------------------------------------------------
 
-EVIDENCE_TABLES = ("documents", "casefiles", "chunks")
+# `document_observations` is here beside the three obvious ones because a
+# location is evidence of custody in its own right: where a file was found is
+# a finding, not a derived convenience that could be rebuilt. `chunks` can be
+# recomputed from a document; an observation cannot be recomputed from
+# anything.
+EVIDENCE_TABLES = ("documents", "casefiles", "chunks", "document_observations")
 
 
 def test_no_step_is_destructive():

@@ -148,7 +148,9 @@ def test_reingest_overwrites_the_record_rather_than_keeping_the_old_one(
 
     context.ingestion.ingest(casefile.short_id, corpus)
     document = context.store.list_documents(casefile.id)[0]
-    context.store.upsert_document(replace(document, text_source=OCR))
+    context.store.store_document(
+        replace(document, text_source=OCR), f"/dump/{document.containment_path}", document.created_at
+    )
     assert context.store.get_document(document.id).text_source == OCR
 
 

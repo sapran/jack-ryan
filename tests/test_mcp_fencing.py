@@ -120,9 +120,12 @@ def _store_summary(context, casefile, filename, summary, summary_by=_SUMMARY_BY)
     target = next(
         d for d in context.ingestion.list_documents(casefile) if d.filename == filename
     )
-    return context.store.upsert_document(
-        replace(target, summary=summary, summary_by=summary_by)
+    stored, _ = context.store.store_document(
+        replace(target, summary=summary, summary_by=summary_by),
+        f"/dump/{filename}",
+        target.created_at,
     )
+    return stored
 
 
 def _inside(fenced, nonce):
