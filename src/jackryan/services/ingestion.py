@@ -26,11 +26,29 @@ from ..ingestion.quality_gate import QualityGate
 from ..ingestion.router import FormatRouter
 from ..mentions import default_extractors
 from ..mentions.port import MentionExtractor
-from ..storage.port import Chunk, Document, Mention, StorePort
+from ..storage.port import Chunk, Document, DocumentPage, Mention, StorePort
 from ..summarising.port import SummariserPort, SummaryError
 from .casefiles import CasefileService
 
 MAX_FILE_BYTES = 512 * 1024 * 1024
+
+# One definition each, imported by both adapters. Deliberately unlike
+# `MAX_SEARCH_RESULTS`, which the agent surface sets below the service's own
+# bound: a search result carries prose, a listing row carries metadata, so
+# there is nothing for a second, tighter adapter bound to protect.
+DEFAULT_DOCUMENT_PAGE = 50
+MAX_DOCUMENT_PAGE = 200
+
+# The largest value SQLite accepts as an INTEGER bind. An offset is floored at
+# zero and capped here rather than left unbounded: anything larger reaches the
+# driver and raises `OverflowError`, which is not a `JackRyanError` and so
+# escapes the agent surface's one error translation, making the tool raise
+# instead of answering. Both published rules forbid that — an out-of-range
+# argument is clamped rather than refused, and a tool returns a payload rather
+# than raising. Clamping costs nothing: every offset a caller could act on is
+# many orders of magnitude below this, and one this large returns an empty page
+# that still reports the selection's true size.
+MAX_DOCUMENT_OFFSET = 2**63 - 1
 
 
 @dataclass(frozen=True)
@@ -557,14 +575,69 @@ class IngestionService:
         it: three archives holding forty thousand documents are three things an
         analyst added. Every adapter reaches the rule here, so none of them has
         to know it.
+
+        Adapters use `list_document_page`; this returns the whole casefile, and
+        loads every document's text to do it.
         """
         casefile = self._casefiles.resolve(casefile_reference)
         return self._store.list_documents(casefile.id, include_expanded=include_expanded)
 
-    def list_children(self, casefile_reference: str, reference: str) -> list[Document]:
-        """What was expanded directly out of one document."""
-        document = self.resolve_document(casefile_reference, reference)
-        return self._store.list_children(document.id)
+    def list_document_page(
+        self,
+        casefile_reference: str,
+        parent_reference: str = "",
+        include_expanded: bool = False,
+        offset: int = 0,
+        limit: int = DEFAULT_DOCUMENT_PAGE,
+    ) -> DocumentPage:
+        """A bounded page of a casefile's documents, or of one container's contents.
+
+        An empty `parent_reference` lists what an analyst put in, or everything
+        in the casefile when `include_expanded` is set. A reference lists what
+        was expanded directly out of that document, and takes precedence:
+        children are expansions, so the two selections cannot contradict each
+        other, and the returned page names which one it is rather than leaving
+        an agent to infer it.
+
+        Clamped rather than refused, as every other bound on this surface is:
+        the agent surface has no request-validation layer above it and an
+        over-large limit is a harmless mistake.
+
+        **The second parameter is a reference, not `include_expanded`** — unlike
+        `list_documents`, whose flag sits second. The order is the one the agent
+        surface forwards positionally through `anyio.to_thread.run_sync`, which
+        passes no keywords, so it must not be rearranged. Migrating a
+        `list_documents(cf, True)` call by changing the method name alone passes
+        `True` as `parent_reference` and raises `AttributeError` on `.strip()`,
+        which is not a `JackRyanError` and so escapes both adapters'
+        translations. Pass `include_expanded=` by keyword.
+        """
+        casefile = self._casefiles.resolve(casefile_reference)
+        bounded = max(1, min(int(limit), MAX_DOCUMENT_PAGE))
+        start = min(max(0, int(offset)), MAX_DOCUMENT_OFFSET)
+
+        # Checked before resolving, because `resolve_document` refuses an empty
+        # reference — and an omitted parent is the default, not a mistake.
+        candidate = (parent_reference or "").strip()
+        parent = (
+            self.resolve_document(casefile_reference, candidate) if candidate else None
+        )
+        page = self._store.list_document_page(
+            casefile.id,
+            include_expanded=include_expanded,
+            parent_id=parent.id if parent else None,
+            offset=start,
+            limit=bounded,
+        )
+        if parent is None:
+            return page
+        # `resolve_document`'s queries select `*` and alias no `child_count`, so
+        # the resolved parent reports zero children while the page's own
+        # `total_matching` — counted under exactly the parent's direct-child
+        # predicate — says otherwise. Nothing renders it today, but handing back
+        # an object that contradicts itself is the very defect this change fixes
+        # for rows: a container reported as a leaf.
+        return replace(page, parent=replace(parent, child_count=page.total_matching))
 
     def containment_chain(self, casefile_reference: str, reference: str) -> list[Document]:
         """The documents from the ingested file down to this one, inclusive.

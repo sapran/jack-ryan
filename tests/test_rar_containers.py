@@ -340,7 +340,9 @@ def test_the_rar_container_is_a_document_and_its_entries_are_its_children(
     top = context.store.list_documents(casefile.id)
     assert [d.filename for d in top] == ["bundle.rar"]
     assert top[0].child_count == 2
-    children = context.store.list_children(top[0].id)
+    children = context.store.list_document_page(
+        casefile.id, parent_id=top[0].id
+    ).documents
     assert {c.filename for c in children} == {"a.txt", "b.txt"}
     assert all(c.parent_id == top[0].id for c in children)
 

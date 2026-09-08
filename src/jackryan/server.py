@@ -19,6 +19,7 @@ from . import __version__
 from .ingestion.containers import rar_status
 from .ingestion.legacy_office import converter_status
 from .app import Context, build_context
+from .services.ingestion import DEFAULT_DOCUMENT_PAGE
 from .rendering import render_casefile, render_document, render_hit
 from .errors import (
     AmbiguousReferenceError,
@@ -213,10 +214,37 @@ def create_app(context: Context | None = None) -> FastAPI:
         }
 
     @app.get("/api/casefiles/{reference}/documents")
-    async def list_documents(request: Request, reference: str) -> dict[str, Any]:
+    async def list_documents(
+        request: Request,
+        reference: str,
+        parent: str = "",
+        expanded: bool = False,
+        offset: int = 0,
+        limit: int = DEFAULT_DOCUMENT_PAGE,
+    ) -> dict[str, Any]:
         ctx: Context = request.app.state.context
-        documents = ctx.ingestion.list_documents(reference)
-        return {"total": len(documents), "documents": [serialize_document(d) for d in documents]}
+        # Off the event loop, like the search and mention routes beside it: this
+        # reads rows and their extracted text. Keyword arguments are safe here
+        # and are a TypeError on the agent surface — `run_in_threadpool`
+        # forwards keywords and `anyio.to_thread.run_sync` does not.
+        page = await run_in_threadpool(
+            ctx.ingestion.list_document_page,
+            reference,
+            parent_reference=parent,
+            include_expanded=expanded,
+            offset=offset,
+            limit=limit,
+        )
+        return {
+            "total": len(page.documents),
+            "offset": page.offset,
+            "total_matching": page.total_matching,
+            "truncated": page.truncated,
+            "continue_from": page.continue_from,
+            "selection": page.selection,
+            "parent_id": page.parent.id if page.parent else None,
+            "documents": [serialize_document(d) for d in page.documents],
+        }
 
     @app.get("/api/casefiles/{reference}/documents/{document_reference}")
     async def get_document(
