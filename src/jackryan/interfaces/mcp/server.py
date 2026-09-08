@@ -161,8 +161,12 @@ def _no_carriers(page: MentionDocumentPage) -> str:
     The same rule `_nothing_listed` states: "no document carries this" said of
     a page past the end is the same class of false negative as an empty result
     standing in for an unknown facet kind.
+
+    The decision is `page.beyond_the_end`, which is the page's own, so this
+    surface and the CLI cannot come to answer one question differently. Only
+    the wording is this adapter's.
     """
-    if page.offset and page.total_matching:
+    if page.beyond_the_end:
         return (
             f"No documents at offset {page.offset}; "
             f"{page.total_matching} carry this identifier."

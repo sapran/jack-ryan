@@ -547,18 +547,39 @@ class SqliteStore:
         `containment_path` is the corpus-derived key, as it is for the children
         selection above, and is set for every document — a folder walk records
         each file's relative path, a single file its name.
+
+        **Every join to `documents` and `chunks` re-checks the casefile.** The
+        shared predicate constrains `mentions` only, so without those the
+        confinement would rest entirely on the denormalised
+        `mentions.casefile_id`. A row whose `casefile_id` named one casefile
+        while its `document_id` pointed into another would disclose that other
+        casefile's document metadata and a citable passage id inside a read
+        scoped to this one. `replace_chunks` cannot currently write such a row —
+        it derives both columns from the chunk being stored — but a security
+        review of `mentions-and-facets` planted exactly that row and found
+        `mention_facets` advertising it, while both retrievers survived because
+        they constrain the casefile twice. This query has the retrievers' shape
+        rather than the facet's, and the indexes for it already exist.
         """
         body, binds = retrieval.mention_predicate(
             "m", casefile_id, mention_kind, mention_value
         )
-        # Floored here as well as in the service, for the reason
-        # `list_document_page` gives: the reported `offset` must be the one
-        # SQLite applied, because `continue_from` is computed from it and the
-        # tests reach this method directly.
+        # Both bounds floored here as well as in the service, for the reason
+        # `list_document_page` gives: the reported values must be the ones
+        # SQLite applied, because `continue_from` is computed from them and the
+        # tests reach this method directly. A `limit` of 0 is the quiet one — it
+        # returns no rows while the count still reports the whole carrier set,
+        # so `truncated` stays true and a caller following `continue_from` never
+        # advances. Unlike `list_document_page`, this method offers no unbounded
+        # form, so there is no deliberate negative to preserve.
         start = max(0, int(offset))
+        page = max(1, int(limit))
         with self._lock:
             total = self._db.execute(
-                f"SELECT COUNT(DISTINCT m.document_id) AS total FROM mentions m WHERE {body}",
+                "SELECT COUNT(DISTINCT m.document_id) AS total FROM mentions m"
+                " JOIN documents td ON td.id = m.document_id"
+                "    AND td.casefile_id = m.casefile_id"
+                f" WHERE {body}",
                 binds,
             ).fetchone()["total"]
             rows = self._db.execute(
@@ -570,6 +591,7 @@ class SqliteStore:
                 "              COUNT(DISTINCT m.document_offset) AS mentions"
                 "         FROM mentions m"
                 "         JOIN documents dd ON dd.id = m.document_id"
+                "            AND dd.casefile_id = m.casefile_id"
                 f"        WHERE {body}"
                 "         GROUP BY m.document_id, dd.containment_path, dd.created_at"
                 "         ORDER BY mentions DESC, dd.containment_path, dd.created_at,"
@@ -579,7 +601,7 @@ class SqliteStore:
                 # order a join produces, so the subquery's ordering is not
                 # inherited. The same insurance `list_document_page` keeps.
                 " ORDER BY chosen.mentions DESC, d.containment_path, d.created_at, d.id",
-                (*binds, int(limit), start),
+                (*binds, page, start),
             ).fetchall()
             documents = [_row_to_document(row) for row in rows]
             counts = {row["id"]: row["mentions"] for row in rows}
@@ -595,7 +617,7 @@ class SqliteStore:
             ],
             total_matching=total,
             offset=start,
-            limit=int(limit),
+            limit=page,
             kind=mention_kind,
             value=mention_value,
         )
@@ -615,22 +637,41 @@ class SqliteStore:
         `m.chunk_id` decides only between two candidates indistinguishable on
         both, where there is nothing left to decide.
 
+        **The pick is made in SQL, so this returns one row per document rather
+        than one per occurrence.** Reducing an unbounded result set in Python
+        instead is the shape the page query above exists to avoid, and here it
+        is worse than a merely wasteful read: the number of rows is the number
+        of times the corpus writes the identifier in those documents, which
+        nothing bounds, and the page's `mentions DESC` ordering guarantees the
+        document holding the most occurrences is on the first page at every
+        limit, including one. Measured on a synthetic corpus whose heaviest
+        document held 2,000 occurrences, the unbounded form fetched 2,194 rows
+        to use one — inside the store lock, so every other operation waited.
+
+        The window function is the whole reason this is bounded: `MIN` over
+        `document_offset` would leave the two chunks of an overlap
+        indistinguishable, which is the tie the ordering below exists to break.
+
         Called inside the caller's lock, so it takes none of its own.
         """
         if not document_ids:
             return {}
         placeholders = ",".join("?" for _ in document_ids)
         rows = self._db.execute(
-            "SELECT m.document_id AS document_id, m.chunk_id AS chunk_id"
-            " FROM mentions m JOIN chunks c ON c.id = m.chunk_id"
-            f" WHERE {body} AND m.document_id IN ({placeholders})"
-            " ORDER BY m.document_id, m.document_offset, c.ordinal, m.chunk_id",
+            "SELECT document_id, chunk_id FROM ("
+            "  SELECT m.document_id AS document_id, m.chunk_id AS chunk_id,"
+            "         ROW_NUMBER() OVER ("
+            "           PARTITION BY m.document_id"
+            "           ORDER BY m.document_offset, c.ordinal, m.chunk_id"
+            "         ) AS rank"
+            "    FROM mentions m"
+            "    JOIN chunks c ON c.id = m.chunk_id"
+            "       AND c.casefile_id = m.casefile_id"
+            f"   WHERE {body} AND m.document_id IN ({placeholders})"
+            ") WHERE rank = 1",
             (*binds, *document_ids),
         ).fetchall()
-        first: dict[str, str] = {}
-        for row in rows:
-            first.setdefault(row["document_id"], row["chunk_id"])
-        return first
+        return {row["document_id"]: row["chunk_id"] for row in rows}
 
     def list_documents(
         self, casefile_id: str, include_expanded: bool = False

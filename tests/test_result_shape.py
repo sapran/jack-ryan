@@ -895,6 +895,69 @@ def test_every_surface_enumerates_the_same_carriers(identified, monkeypatch, cap
         assert payload["kind"] == "", surface
 
 
+def test_no_surface_denies_the_carriers_on_a_page_past_the_end(
+    identified, monkeypatch, capsys
+):
+    """An empty page past the end must never read as an absence of carriers.
+
+    The precise false negative the exhaustive path exists to remove, and the
+    one the CLI shipped: `elif not page.carriers` printed "No document in this
+    casefile carries <value>" for any offset past the set, while the same call
+    with `--json` reported `total_matching: 2`. The agent surface guarded it and
+    the CLI did not, which is why the decision now lives on the page and both
+    surfaces read it from there.
+
+    Asserted on the human-readable output of both, because that is where the
+    claim is made — the JSON envelope always carried the scalars that
+    contradict it.
+    """
+    context, casefile = identified
+    past = len(EXPECTED_CARRIER_ROWS) + 5
+
+    agent = anyio.run(
+        call,
+        build_mcp_server(context),
+        "case_mention_documents",
+        {"casefile": casefile.short_id, "mention": PIVOT_VALUE, "offset": past},
+    )
+    monkeypatch.setattr(cli, "build_context", lambda: context)
+    monkeypatch.setattr(context, "close", lambda: None)
+    assert (
+        cli.main(
+            [
+                "mention-documents",
+                casefile.short_id,
+                PIVOT_VALUE,
+                "--offset",
+                str(past),
+            ]
+        )
+        == 0
+    )
+    printed = capsys.readouterr().out
+
+    # Both pages really are empty, so the messages below are the empty-set
+    # wording rather than a table of rows.
+    assert agent["results"] == []
+    assert agent["total_matching"] == len(EXPECTED_CARRIER_ROWS)
+    assert agent["offset"] == past
+
+    for surface, text in (
+        ("the agent payload", agent["formatted"]),
+        ("the CLI", printed),
+    ):
+        assert "No document in this casefile carries" not in text, (
+            f"{surface} denies the carriers on a page past the end: {text!r}"
+        )
+        # And it says how many there really are, so the caller can recover.
+        assert str(len(EXPECTED_CARRIER_ROWS)) in text, (
+            f"{surface} does not report the real total: {text!r}"
+        )
+        assert str(past) in text, (
+            f"{surface} does not say which offset was empty: {text!r}"
+        )
+
+
 def test_a_carrier_entry_carries_what_reads_and_cites_it(identified):
     """The row's and the payload's key sets, asserted exactly.
 

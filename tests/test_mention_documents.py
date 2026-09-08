@@ -17,10 +17,16 @@ counted under a wider predicate than the page keeps `truncated` true past the
 last entry, so an unbounded follow of `continue_from` never terminates. A guard
 that hangs is not a red test, so the bound is part of the assertion.
 
-**The carrier files are written out of alphabetical order.** They all hold one
-occurrence, so they are separated only by containment path; a fixture written in
-sorted order makes insertion order and path order coincide, and then the
-ordering under test cannot be distinguished from no ordering at all.
+**The carrier files are ingested one at a time, out of alphabetical order.**
+They all hold one occurrence, so they are separated only by containment path,
+and an ordering keyed on that path is only distinguishable from one keyed on the
+creation time or the rowid if the two orders differ. Writing the files out of
+order is not enough: a folder walk ingests `sorted(path.rglob("*"))`, so handing
+over the folder re-sorts them and makes all three orders the same. That was
+established by running it — with one folder ingest, swapping
+`containment_path` for `created_at` in both `ORDER BY` clauses left every test
+here green. The fixture ingests file by file and asserts, against the store,
+that creation order and path order genuinely differ.
 
 The counts here are literals, hand-derived from the fixture and asserted on both
 sides. The inventory-agreement test could compare `mention_facets` with
@@ -87,6 +93,32 @@ def _carrier_names() -> list[str]:
     return scrambled
 
 
+def _ingest_order() -> list[str]:
+    """Every fixture file, in the order the fixture ingests them one by one.
+
+    The heavy carrier goes in the middle rather than first or last, so its
+    leading position in the enumeration cannot come from having been ingested
+    first, and the non-carriers are interleaved rather than appended.
+    """
+    plain = _carrier_names()
+    order = [
+        *plain[:20],
+        SILENT,
+        *plain[20:40],
+        HEAVY,
+        NEAR_MISSES[0],
+        *plain[40:],
+        OVERLAP,
+        NEAR_MISSES[1],
+        SHOUTING,
+    ]
+    expected = PLAIN_CARRIERS + 2 + len(NEAR_MISSES) + 2
+    assert len(order) == len(set(order)) == expected, (
+        f"the ingest order must name each of the {expected} files exactly once"
+    )
+    return order
+
+
 def _overlapping_occurrence_text(contract, value: str) -> str:
     """Text placing one occurrence of `value` inside two overlapping windows.
 
@@ -122,7 +154,18 @@ def casefile(context):
 def carriers(context, casefile, tmp_path):
     """A folder whose documents carry the identifier, or nearly, or not at all.
 
-    Ingested once through the real pipeline. Returns the folder.
+    **Ingested one file at a time, in an order that is not their sorted order.**
+    A folder walk ingests `sorted(path.rglob("*"))` — `services/ingestion.py:408`
+    — so handing the whole folder over makes insertion order, `created_at` order
+    and `containment_path` order all the same thing, and an ordering keyed on
+    the containment path becomes indistinguishable from one keyed on the
+    creation time or the rowid. A reviewer established that by running it: with
+    a single folder ingest, replacing `containment_path` with `created_at` in
+    both `ORDER BY` clauses left every test in this file green. Ingesting file
+    by file is what makes the two orders differ, and the fixture asserts below
+    that they do.
+
+    Returns the folder.
     """
     folder = tmp_path / "carrier-sweep"
     folder.mkdir()
@@ -177,8 +220,10 @@ def carriers(context, casefile, tmp_path):
         encoding="utf-8",
     )
 
-    report = context.ingestion.ingest(casefile.short_id, folder)
-    assert report.failed == 0, "the fixture must ingest cleanly or it proves nothing"
+    for name in _ingest_order():
+        report = context.ingestion.ingest(casefile.short_id, folder / name)
+        assert report.failed == 0, f"the fixture failed to ingest {name}"
+
     stored = context.ingestion.list_document_page(
         casefile.short_id, offset=0, limit=MAX_CARRIER_PAGE
     )
@@ -190,6 +235,18 @@ def carriers(context, casefile, tmp_path):
         f"the fixture must hold {expected_documents} documents, "
         f"not {stored.total_matching}"
     )
+    # The premise, asserted against the store rather than against the write
+    # order: creation order and containment-path order must genuinely differ, or
+    # the ordering under test is not distinguishable from no ordering at all.
+    by_creation = [
+        d.containment_path
+        for d in sorted(stored.documents, key=lambda d: (d.created_at, d.id))
+    ]
+    assert by_creation != sorted(by_creation), (
+        "the store holds these documents in containment-path order, so an "
+        "ordering keyed on the path cannot be told from one keyed on the "
+        "creation time"
+    )
     return folder
 
 
@@ -199,11 +256,18 @@ def expected_order() -> list[str]:
 
     The heavy carrier leads because the ordering leads with the occurrence
     count. Everything below it holds one occurrence, so it is separated only by
-    containment path — which, for a flat folder, is the filename.
+    containment path — which, for a file ingested by name, is the filename.
     """
     ones = sorted([*_carrier_names(), OVERLAP, SHOUTING])
     order = [HEAVY, *ones]
-    assert order[0] == HEAVY, "the heaviest carrier must lead, or no order is under test"
+    # A guard that can fail, unlike asserting `order[0] == HEAVY` on a list
+    # just built as `[HEAVY, *ones]`: the heavy carrier must sort *after* the
+    # first one-occurrence carrier, so leading with it is a claim about the
+    # occurrence count rather than about the path.
+    assert HEAVY > ones[0], (
+        f"{HEAVY!r} sorts before {ones[0]!r}, so count-first and path-first "
+        "orderings agree and the leading position proves nothing"
+    )
     assert len(order) == EXPECTED_CARRIERS
     return order
 
@@ -278,11 +342,32 @@ def test_the_enumeration_agrees_with_the_inventory_it_follows_from(
 def test_an_occurrence_inside_a_chunk_overlap_is_one_occurrence(
     context, casefile, carriers
 ):
-    """Extracted into two rows by two chunks, and one occurrence."""
+    """Extracted into two rows by two chunks, and one occurrence.
+
+    The premise is asserted against the store, not inferred from the text: the
+    fixture only establishes that the identifier sits at the boundary, which is
+    a claim about the chunker. Without this, a chunker change that moved the
+    occurrence out of the overlap would leave `mentions == 1` true for the
+    uninteresting reason — extracted once — and the test would prove nothing
+    while staying green. The sibling in `tests/test_mentions.py` asserts the
+    same premise for the same reason; this file's copy had dropped it.
+    """
     pages = _sweep(context, casefile, CARRIED, MAX_CARRIER_PAGE)
     found = {c.document.filename: c for page in pages for c in page.carriers}
+    overlap = found[OVERLAP]
 
-    assert found[OVERLAP].mentions == 1
+    holding = [
+        chunk
+        for chunk in context.store.list_document_chunks(overlap.document.id)
+        if CARRIED in chunk.text
+    ]
+    assert len(holding) == 2, (
+        f"{OVERLAP} has {len(holding)} chunk(s) carrying the identifier, not 2 "
+        "— the occurrence is not inside an overlap, so this test would pass for "
+        "the wrong reason"
+    )
+
+    assert overlap.mentions == 1
 
 
 def test_a_carrier_addresses_its_earliest_occurrence(context, casefile, carriers):
@@ -420,14 +505,77 @@ def test_the_enumeration_is_confined_to_its_casefile(context, casefile, carriers
     assert not set(_names(mine)) & set(_names(theirs))
 
 
+def test_a_mention_naming_another_casefiles_document_is_not_a_carrier(
+    context, casefile, carriers, tmp_path
+):
+    """The confinement holds on every table read, not on `mentions` alone.
+
+    `mentions.casefile_id` is a denormalised copy of the chunk's casefile.
+    Confining the read by that column alone makes the compartment depend on the
+    copy being right, and a security review of `mentions-and-facets` planted
+    exactly this row and found `mention_facets` advertising another casefile's
+    identifier. The disclosure here would be larger — a document id, filename,
+    containment path, sizes, and a citable passage id.
+
+    The row is written by raw SQL because `replace_chunks` cannot produce it: it
+    derives both columns from the chunk being stored. That is the point. This
+    asserts the read refuses it anyway, so the guarantee does not rest on one
+    writer staying correct.
+    """
+    other = context.casefiles.create("Other Compartment")
+    intruder = tmp_path / "intruder.txt"
+    intruder.write_text(
+        "A document of the other compartment, naming nobody.\n", encoding="utf-8"
+    )
+    assert not context.ingestion.ingest(other.short_id, intruder).failed
+
+    hidden = context.store.list_documents(
+        context.casefiles.resolve(other.short_id).id
+    )[0]
+    chunk = context.store.list_document_chunks(hidden.id)[0]
+    mine = context.casefiles.resolve(casefile.short_id).id
+
+    # The forged row: it claims this casefile while pointing at the other's
+    # document and chunk.
+    context.store._db.execute(
+        "INSERT INTO mentions (chunk_id, document_id, casefile_id, kind, value,"
+        " normalised, char_start, char_end, extractor, confidence, document_offset)"
+        " VALUES (?, ?, ?, 'email', ?, ?, 0, 1, 'planted', 1.0, 0)",
+        (chunk.id, hidden.id, mine, CARRIED, CARRIED),
+    )
+    context.store._db.commit()
+
+    page = context.search.mention_documents(
+        casefile.short_id, CARRIED, limit=MAX_CARRIER_PAGE
+    )
+
+    assert hidden.filename not in _names(page), (
+        "the enumeration disclosed a document of another casefile"
+    )
+    assert chunk.id not in [c.chunk_id for c in page.carriers], (
+        "the enumeration handed back a passage id from another casefile"
+    )
+    assert page.total_matching == EXPECTED_CARRIERS, (
+        f"the count admitted the planted row: {page.total_matching} against "
+        f"{EXPECTED_CARRIERS}"
+    )
+
+
 # -- bounds are clamped, never refused -------------------------------------
 
 
 def test_an_over_large_limit_is_clamped_rather_than_refused(context, casefile, carriers):
+    """The reported bound is the one applied, and it is the ceiling.
+
+    Asserted on `page.limit` rather than on the row count: the fixture holds
+    fewer carriers than `MAX_CARRIER_PAGE`, so a row count of
+    `min(EXPECTED_CARRIERS, MAX_CARRIER_PAGE)` is just `EXPECTED_CARRIERS` and
+    holds with no clamp at all.
+    """
     page = context.search.mention_documents(casefile.short_id, CARRIED, limit=10_000)
 
     assert page.limit == MAX_CARRIER_PAGE
-    assert len(page.carriers) == min(EXPECTED_CARRIERS, MAX_CARRIER_PAGE)
+    assert len(page.carriers) == EXPECTED_CARRIERS
 
 
 def test_an_offset_beyond_sqlite_is_clamped_rather_than_raising(
@@ -452,6 +600,35 @@ def test_the_store_reports_the_offset_it_applied(context, casefile, carriers):
 
     assert page.offset == 0
     assert page.continue_from == 5
+
+
+def test_the_store_refuses_to_be_unbounded_or_to_stall(context, casefile, carriers):
+    """The store floors its own `limit`, as it floors its own offset.
+
+    Reached directly, because the service is the only caller that clamps and
+    the hole is one positional argument away — the same argument the offset
+    floor is there for. Two values, and each fails differently without the
+    floor: SQLite reads a negative `LIMIT` as unbounded, so `-1` returns the
+    whole carrier set from a method whose port contract says no unbounded form
+    is offered; and `0` returns no rows while the count still reports the whole
+    set, so `truncated` stays true and a caller following `continue_from` never
+    advances.
+    """
+    casefile_id = context.casefiles.resolve(casefile.short_id).id
+
+    unbounded = context.store.documents_with_mention(casefile_id, "", CARRIED, 0, -1)
+    assert unbounded.limit == 1
+    assert len(unbounded.carriers) == 1, (
+        f"a negative limit returned {len(unbounded.carriers)} carriers, so the "
+        "store offers the unbounded form its contract denies"
+    )
+
+    stalled = context.store.documents_with_mention(casefile_id, "", CARRIED, 0, 0)
+    assert stalled.limit == 1
+    assert stalled.continue_from == 1, (
+        "a limit of 0 returned a page that does not advance, so a caller "
+        "following continue_from never terminates"
+    )
 
 
 # -- the agent surface -----------------------------------------------------

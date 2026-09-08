@@ -315,6 +315,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # paging counts are the point of a paged command, and a list
                 # drops them.
                 _print(envelope, True, "")
+            elif page.beyond_the_end:
+                # Never the absence claim below: this page is empty because it
+                # began past the carrier set, and saying "no document carries
+                # this" of it is a false negative — the one this command exists
+                # to remove. The decision is the page's own, so this and the
+                # agent surface cannot diverge again.
+                print(
+                    f"No documents at offset {page.offset}; "
+                    f"{page.total_matching} carry {page.value}."
+                )
             elif not page.carriers:
                 print(
                     f"No document in this casefile carries {page.value}. The "

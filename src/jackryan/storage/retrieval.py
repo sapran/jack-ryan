@@ -24,6 +24,13 @@ from .port import MentionFacet
 
 _FTS_TOKEN = re.compile(r"[\w\u0400-\u04FF]+", re.UNICODE)
 
+# The table aliases `mention_predicate` will splice into SQL: unaliased, as the
+# search filter's subquery needs, and `m`, as the exhaustive enumeration's joins
+# need. A closed set rather than a syntax check, because the point is not that
+# an alias looks like an identifier — it is that this module decides which ones
+# exist.
+MENTION_ALIASES = frozenset({"", "m"})
+
 
 def mention_predicate(
     alias: str, casefile_id: str, mention_kind: str, mention_value: str
@@ -38,10 +45,13 @@ def mention_predicate(
     about what carries an identifier, and neither would error.
 
     `alias` is the table's alias in the query being assembled, or empty where
-    `mentions` is unaliased. It is a literal from this module or from
-    `sqlite.py` and never comes from a caller; the identifier itself reaches
-    SQLite as a bound parameter, so a value carrying a quote is matched rather
-    than parsed.
+    `mentions` is unaliased. The identifier itself reaches SQLite as a bound
+    parameter, so a value carrying a quote is matched rather than parsed — but
+    `alias` is interpolated, and this function is public, so the property that
+    it only ever holds a literal from this module or from `sqlite.py` is
+    *checked* rather than remembered. A docstring saying "never comes from a
+    caller" is a claim about every caller that will ever exist, and the whole
+    point of extracting this was to invite a third one.
 
     The casefile is repeated wherever this is spliced although the query around
     it may already be confined to one. It leads both mention indexes, and
@@ -51,6 +61,13 @@ def mention_predicate(
     `normalised`, which it groups by rather than filters on, so it is a
     different question about the same table.
     """
+    if alias not in MENTION_ALIASES:
+        raise ConfigError(
+            f"mention_predicate got table alias {alias!r}, which is not one of "
+            f"{sorted(MENTION_ALIASES)!r}. The alias is spliced into SQL, so it "
+            "must be a literal chosen here rather than a value from a caller; "
+            "add the new alias to MENTION_ALIASES deliberately."
+        )
     prefix = f"{alias}." if alias else ""
     clause = f"{prefix}casefile_id = ? AND {prefix}normalised = ?"
     parameters: tuple[str, ...] = (casefile_id, mention_value)

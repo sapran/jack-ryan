@@ -317,6 +317,19 @@ class MentionDocumentPage:
         """The offset that resumes this listing, or `None` when it ended."""
         return self.offset + len(self.carriers) if self.truncated else None
 
+    @property
+    def beyond_the_end(self) -> bool:
+        """Whether this page is empty because it began past the carrier set.
+
+        A property of the page rather than of any surface, because every
+        surface has to answer the same question and must not answer it
+        differently: "no document carries this" said of a page past the end is
+        a false claim of absence, which is the failure the exhaustive
+        enumeration exists to remove. The agent surface guarded it and the CLI
+        did not, which is exactly the divergence one definition prevents.
+        """
+        return not self.carriers and bool(self.offset) and bool(self.total_matching)
+
 
 @dataclass(frozen=True)
 class CasefileStatistics:
@@ -628,9 +641,21 @@ class StorePort(Protocol):
         `truncated` true past the last entry, so a caller following
         `continue_from` never terminates.
 
-        No unbounded form is offered. `list_document_page` takes a negative
-        `limit` because the unbounded listing above it needs one; nothing needs
-        every carrier at once.
+        No unbounded form is offered, and an implementation SHALL enforce that
+        rather than trusting its caller: `list_document_page` honours a negative
+        `limit` because the unbounded listing above it needs one, so a future
+        caller copying the neighbouring signature would otherwise get the whole
+        carrier set without noticing. A `limit` of 0 is the quieter half of the
+        same requirement — it returns no rows while the count still reports the
+        whole set, so `truncated` stays true and `continue_from` never advances.
+        Both are floored to at least one.
+
+        Confinement to the casefile SHALL be enforced on every table the
+        implementation reads, not on the one carrying the identifier alone. The
+        casefile is the compartment, and a mention's casefile is a denormalised
+        copy; a read that trusts that copy alone discloses another casefile's
+        document metadata, and a citable passage id, the moment the copy is
+        wrong.
         """
         ...
 

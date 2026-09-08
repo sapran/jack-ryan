@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from jackryan.errors import ValidationError
+from jackryan.errors import ConfigError, ValidationError
 from jackryan.mentions import MENTION_KINDS
 from jackryan.services.search import RRF_K, _parsed_mention
+from jackryan.storage.retrieval import MENTION_ALIASES, mention_predicate
 
 
 @pytest.fixture
@@ -618,3 +619,45 @@ def test_a_mention_filter_is_scoped_to_its_casefile(context, tmp_path):
     assert [h.document.filename for h in theirs_hits] == ["theirs.md"], (
         "filtered search in casefile 'theirs' returned the wrong documents"
     )
+
+
+# -- the predicate both readers share ---------------------------------------
+
+
+def test_the_shared_predicate_binds_the_identifier_and_splices_only_the_alias():
+    """What varies is the shape; the identifier is always a bound parameter.
+
+    `mention_predicate` is public so that the ranked-search filter and the
+    exhaustive enumeration cannot drift into disagreeing about what carries an
+    identifier. That makes it a SQL-assembling seam with callers outside its own
+    module, so the two properties it rests on are asserted here rather than
+    only described: a value carrying SQL syntax is bound, and the one
+    interpolated argument is refused unless this module chose it.
+    """
+    hostile = "'; DROP TABLE mentions; --"
+    clause, parameters = mention_predicate("m", "cf", "email", hostile)
+
+    assert hostile not in clause, "the identifier was interpolated into the SQL"
+    assert parameters == ("cf", hostile, "email")
+    assert clause.count("?") == 3
+    assert clause == "m.casefile_id = ? AND m.normalised = ? AND m.kind = ?"
+
+    bare, bare_parameters = mention_predicate("", "cf", "", hostile)
+    assert bare == "casefile_id = ? AND normalised = ?"
+    assert bare_parameters == ("cf", hostile)
+
+
+def test_an_unknown_table_alias_is_refused_rather_than_spliced():
+    """The alias is interpolated, so the closed set is enforced, not remembered.
+
+    A docstring saying the argument "never comes from a caller" is a claim about
+    every caller that will ever exist, and extracting this function was an
+    invitation to write a third one.
+    """
+    with pytest.raises(ConfigError) as excinfo:
+        mention_predicate("m JOIN sqlite_master --", "cf", "", "a@b.test")
+
+    message = str(excinfo.value)
+    assert "MENTION_ALIASES" in message
+    for allowed in MENTION_ALIASES:
+        assert repr(allowed) in message, f"the refusal did not name {allowed!r}"
