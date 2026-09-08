@@ -157,6 +157,15 @@ def build_parser() -> argparse.ArgumentParser:
     doc_show.add_argument("casefile")
     doc_show.add_argument("reference")
 
+    repair = sub.add_parser(
+        "repair", help="recompute derived data an earlier ingest recorded wrongly"
+    ).add_subparsers(dest="repair_command", required=True)
+    offsets = repair.add_parser(
+        "mention-offsets",
+        help="recompute where each identifier sits in its document",
+    )
+    offsets.add_argument("casefile")
+
     return parser
 
 
@@ -293,6 +302,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             else:
                 _print(_render_document(context.ingestion.resolve_document(args.casefile, args.reference)), args.json)
+            return 0
+
+        if args.command == "repair":
+            report = context.ingestion.repair_mention_offsets(args.casefile)
+            _print(
+                {
+                    "documents_examined": report.documents_examined,
+                    "chunks_examined": report.chunks_examined,
+                    "chunks_unlocatable": report.chunks_unlocatable,
+                    "mentions_corrected": report.mentions_corrected,
+                },
+                args.json,
+            )
             return 0
 
         service = context.casefiles

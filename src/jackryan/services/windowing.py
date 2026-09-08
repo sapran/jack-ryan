@@ -171,9 +171,14 @@ def _avoid(
 def _slice(document: Document, chunk: Chunk, span: tuple[int, int]) -> Window | None:
     """One contiguous slice of the document's own text, or nothing.
 
-    Nothing when the span is the chunk's own: a window identical to the
-    passage is not a window, and saying so keeps "was this widened" a
-    question with an answer.
+    Nothing when the span adds nothing but whitespace to the passage: a window
+    identical to the passage is not a window, and saying so keeps "was this
+    widened" a question with an answer. Compared by text rather than by span,
+    because the two are not the same test. A chunk's offsets now select its
+    stored text exactly, so a section's last passage is followed by the
+    paragraph break its own span no longer covers, and clipping at the next
+    heading leaves a span two characters wider than the chunk's own — a window
+    whose whole content is `\\n\\n`. Comparing spans reported that as widened.
 
     Nothing, too, when the stored offsets no longer select the stored
     passage. Ingestion writes a document and its chunks in two transactions
@@ -182,13 +187,16 @@ def _slice(document: Document, chunk: Chunk, span: tuple[int, int]) -> Window | 
     return a passage from elsewhere in the document as the result's body,
     fenced as evidence, under provenance naming a span it never occupied.
     The chunk's own text is still right, so the result falls back to it.
+
+    Both comparisons trim before comparing, which is also what lets one rule
+    serve a corpus holding rows written under either convention.
     """
     text = document.extracted_text
     if text[chunk.char_start : chunk.char_end].strip() != chunk.text:
         return None
     start = max(0, span[0])
     end = min(len(text), span[1])
-    if start >= end or (start, end) == (chunk.char_start, chunk.char_end):
+    if start >= end or text[start:end].strip() == chunk.text:
         return None
     return Window(text=text[start:end], char_start=start, char_end=end)
 

@@ -24,7 +24,13 @@ MAX_HEADING_PATH_CHARS = 512
 
 @dataclass(frozen=True)
 class TextChunk:
-    """A span of text with its position in the source and the headings above it."""
+    """A span of text with its position in the source and the headings above it.
+
+    The offsets select `text` exactly: `source[char_start:char_end] == text`.
+    They name the trimmed span rather than the window it came from, because a
+    document position derived from them plus an offset inside `text` is
+    otherwise wrong by the whitespace that was trimmed.
+    """
 
     ordinal: int
     text: str
@@ -106,13 +112,26 @@ def chunk_text(text: str, *, max_chars: int, overlap_chars: int) -> list[TextChu
                 window_end = candidates[-1]
 
         piece = text[position:window_end]
-        if piece.strip():
+        # The stored text is the window trimmed, so what is recorded must be the
+        # trimmed span and not the window. A start naming the window is wrong by
+        # the leading whitespace, and anything that adds an in-chunk offset to it
+        # — a mention's document position — lands before the characters it claims
+        # to address. Two overlapping windows that trimmed unequal whitespace
+        # then disagree about where one occurrence sits, and the identifier
+        # inventory counts it twice.
+        body = piece.strip()
+        if body:
+            start = position + (len(piece) - len(piece.lstrip()))
             chunks.append(
                 TextChunk(
                     ordinal=ordinal,
-                    text=piece.strip(),
-                    char_start=position,
-                    char_end=window_end,
+                    text=body,
+                    char_start=start,
+                    char_end=start + len(body),
+                    # Resolved from the window's own start, deliberately not from
+                    # `start`: a trimmed start can sit past a heading its window
+                    # opened on, which would move the heading path recorded for
+                    # chunks this change is not about.
                     heading_path=_trail_at(offsets, trails, _line_start(text, position)),
                 )
             )
