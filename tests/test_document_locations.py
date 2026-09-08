@@ -99,15 +99,23 @@ def _lose_the_observation(context, document_id):
 
 
 def _make_the_observation_write_fail(context):
-    """Remove the observations table, so the second write of the pair really fails.
+    """Fail the observation insert, and only it, with a real sqlite abort.
 
-    A genuine sqlite failure rather than a patched method: the document insert
-    in the same transaction runs first and must be rolled back with it. Patching
-    was tried and cannot be — `sqlite3.Connection.execute` is read-only — and
-    wrapping the connection would have proved the wrapper rather than the
-    transaction.
+    A trigger rather than a patched method — `sqlite3.Connection.execute` is
+    read-only, and wrapping the connection would prove the wrapper rather than
+    the transaction.
+
+    Dropping the table was tried first and is the wrong injection: the identity
+    lookup reads the observations in a correlated subquery, so a missing table
+    fails *before* the document is ever inserted. That version of this test
+    passed while the write it names was never reached, and mutation proving is
+    what caught it. The trigger leaves every read working, so the document
+    insert genuinely runs and genuinely has to be rolled back.
     """
-    context.store._db.execute("DROP TABLE document_observations")
+    context.store._db.execute(
+        "CREATE TRIGGER refuse_observations BEFORE INSERT ON document_observations"
+        " BEGIN SELECT RAISE(ABORT, 'observation write failed'); END"
+    )
     context.store._db.commit()
 
 
@@ -714,7 +722,7 @@ def test_a_document_is_not_stored_without_its_observation(context, casefile, tmp
     _at(root, "ledger.txt")
 
     _make_the_observation_write_fail(context)
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(sqlite3.IntegrityError, match="observation write failed"):
         context.ingestion.ingest(casefile.short_id, root)
 
     surviving = context.store._db.execute(
@@ -723,6 +731,12 @@ def test_a_document_is_not_stored_without_its_observation(context, casefile, tmp
     assert surviving == 0, (
         "a document survived the failure of the write that opens its record, so "
         "the interrupted state is reachable by an ordinary failure"
+    )
+    assert (
+        context.store._db.execute(
+            "SELECT COUNT(*) AS n FROM document_observations"
+        ).fetchone()["n"]
+        == 0
     )
 
 

@@ -268,11 +268,17 @@ def test_existing_location_records_are_carried_into_observations(tmp_path):
             " PRIMARY KEY (document_id, source_root, containment_path))"
         )
         conn.execute("ALTER TABLE documents ADD COLUMN locations_recorded INTEGER NOT NULL DEFAULT 0")
+        # The two rows for one place are ordered so that the pair ordering and
+        # the timestamp ordering *disagree*: by (source_root, containment_path)
+        # `/dump` sorts first, and it carries the later sighting. Without that,
+        # grouping by the pair instead of by the path still happens to keep the
+        # earliest, and this test passes while proving nothing — measured, not
+        # supposed.
         conn.executemany(
             "INSERT INTO document_locations VALUES (?, ?, ?, ?)",
             [
-                ("d1", "/dump", "sub/lease.md", "2026-01-02T00:00:00+00:00"),
-                ("d1", "/dump/sub", "lease.md", "2026-01-03T00:00:00+00:00"),
+                ("d1", "/dump", "sub/lease.md", "2026-01-03T00:00:00+00:00"),
+                ("d1", "/dump/sub", "lease.md", "2026-01-02T00:00:00+00:00"),
                 ("d1", "/elsewhere", "lease.md", "2026-01-04T00:00:00+00:00"),
             ],
         )
@@ -289,8 +295,11 @@ def test_existing_location_records_are_carried_into_observations(tmp_path):
             "/elsewhere/lease.md",
         ], "the two rows for one place did not collapse into it"
         assert recorded.total == 2
-        # The earliest of the two sightings of that place is the one kept.
-        assert recorded.locations[0].first_seen_at.isoformat() == "2026-01-02T00:00:00+00:00"
+        # The earliest of the two sightings of that place is the one kept, not
+        # whichever the prior key happened to order first.
+        assert recorded.locations[0].first_seen_at.isoformat() == "2026-01-02T00:00:00+00:00", (
+            "the later sighting of a place recorded twice was kept"
+        )
         # And the prior record is still there, unrewritten.
         surviving = store._db.execute(
             "SELECT COUNT(*) AS n FROM document_locations"

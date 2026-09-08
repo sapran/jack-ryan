@@ -320,77 +320,97 @@ class SqliteStore:
         # record is what answers whether the document's history is whole: a
         # document committed without it asserts a history it does not have, and
         # the next observation from somewhere else becomes the whole story.
+        #
+        # `BEGIN` and the rollback are explicit, following `replace_chunks`.
+        # Without them the failing observation leaves the document's insert
+        # pending in an open transaction on this connection, which the next
+        # successful write would commit — the interrupted state, reached by an
+        # ordinary failure instead of a process death. Mutation proving caught
+        # this: the first version of the guard for it dropped the observations
+        # table, which fails the identity lookup before the document is ever
+        # inserted, so it passed while never reaching the write it names.
         with self._lock:
-            self._db.execute(
-                "INSERT INTO documents (id, casefile_id, content_hash, filename, media_type,"
-                " byte_size, extracted_text, extractor, text_source, summary, summary_by,"
-                " created_at, updated_at, parent_id, containment_path, identity_path)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                " ON CONFLICT(casefile_id, content_hash, identity_path) DO UPDATE SET"
-                "   media_type = excluded.media_type,"
-                "   byte_size = excluded.byte_size,"
-                "   extracted_text = excluded.extracted_text,"
-                "   extractor = excluded.extractor,"
-                # Overwritten on reingest, not preserved: the value has to
-                # describe the text now stored beside it. A document reingested
-                # after the recognition engine changed was read by the new one.
-                "   text_source = excluded.text_source,"
-                # Overwritten on reingest for the same reason, one step further
-                # out: the summary has to describe the text now stored beside
-                # it. A document reingested after the summariser changed was
-                # summarised by the new one, and `summary_by` has to say so or
-                # it credits the wrong author for text it did not write.
-                "   summary = excluded.summary,"
-                "   summary_by = excluded.summary_by,"
-                "   updated_at = excluded.updated_at,"
-                # `filename` and `containment_path` are deliberately absent from
-                # this list, like `created_at` above: they are the *first*
-                # location this document's bytes were observed at, and a later
-                # copy found elsewhere must not overwrite them. Every observed
-                # place is kept in `document_observations`; this column is the
-                # one a citation names, so it has to be stable or a citation
-                # written yesterday points somewhere else today.
-                "   parent_id = excluded.parent_id",
-                (
-                    document.id,
-                    document.casefile_id,
-                    document.content_hash,
-                    document.filename,
-                    document.media_type,
-                    document.byte_size,
-                    document.extracted_text,
-                    document.extractor,
-                    document.text_source,
-                    document.summary,
-                    document.summary_by,
-                    _to_iso(document.created_at),
-                    _to_iso(document.updated_at),
-                    document.parent_id,
-                    document.containment_path,
-                    document.identity_path,
-                ),
-            )
-            # Read back inside the transaction: on a reingest the surviving row
-            # keeps the identifier this document is about to be observed under.
-            row = self._db.execute(
-                "SELECT * FROM documents"
-                " WHERE casefile_id = ? AND content_hash = ? AND identity_path = ?",
-                (document.casefile_id, document.content_hash, document.identity_path),
-            ).fetchone()
-            assert row is not None
-            stored_id = row["id"]
-            # INSERT OR IGNORE, never OR REPLACE: the first sighting's timestamp
-            # is what the wholeness of the record is judged against, and the
-            # return value is how the caller tells a newly discovered place from
-            # an ordinary reingest of a known one. OR REPLACE would move the
-            # timestamp forward and report every reingest as a discovery.
-            cursor = self._db.execute(
-                "INSERT OR IGNORE INTO document_observations"
-                " (document_id, location_path, first_seen_at) VALUES (?, ?, ?)",
-                (stored_id, location_path, _to_iso(observed_at)),
-            )
-            location_is_new = cursor.rowcount > 0
-            self._db.commit()
+            try:
+                self._db.execute("BEGIN")
+                self._db.execute(
+                    "INSERT INTO documents (id, casefile_id, content_hash, filename,"
+                    " media_type, byte_size, extracted_text, extractor, text_source,"
+                    " summary, summary_by, created_at, updated_at, parent_id,"
+                    " containment_path, identity_path)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT(casefile_id, content_hash, identity_path) DO UPDATE SET"
+                    "   media_type = excluded.media_type,"
+                    "   byte_size = excluded.byte_size,"
+                    "   extracted_text = excluded.extracted_text,"
+                    "   extractor = excluded.extractor,"
+                    # Overwritten on reingest, not preserved: the value has to
+                    # describe the text now stored beside it. A document
+                    # reingested after the recognition engine changed was read
+                    # by the new one.
+                    "   text_source = excluded.text_source,"
+                    # Overwritten on reingest for the same reason, one step
+                    # further out: the summary has to describe the text now
+                    # stored beside it. A document reingested after the
+                    # summariser changed was summarised by the new one, and
+                    # `summary_by` has to say so or it credits the wrong author
+                    # for text it did not write.
+                    "   summary = excluded.summary,"
+                    "   summary_by = excluded.summary_by,"
+                    "   updated_at = excluded.updated_at,"
+                    # `filename` and `containment_path` are deliberately absent
+                    # from this list, like `created_at` above: they are the
+                    # *first* place this document's bytes were observed at, and
+                    # a later copy found elsewhere must not overwrite them.
+                    # Every observed place is kept in `document_observations`;
+                    # this column is the one a citation names, so it has to be
+                    # stable or a citation written yesterday points somewhere
+                    # else today.
+                    "   parent_id = excluded.parent_id",
+                    (
+                        document.id,
+                        document.casefile_id,
+                        document.content_hash,
+                        document.filename,
+                        document.media_type,
+                        document.byte_size,
+                        document.extracted_text,
+                        document.extractor,
+                        document.text_source,
+                        document.summary,
+                        document.summary_by,
+                        _to_iso(document.created_at),
+                        _to_iso(document.updated_at),
+                        document.parent_id,
+                        document.containment_path,
+                        document.identity_path,
+                    ),
+                )
+                # Read back inside the transaction: on a reingest the surviving
+                # row keeps the identifier this document is about to be observed
+                # under.
+                row = self._db.execute(
+                    "SELECT * FROM documents"
+                    " WHERE casefile_id = ? AND content_hash = ? AND identity_path = ?",
+                    (document.casefile_id, document.content_hash, document.identity_path),
+                ).fetchone()
+                assert row is not None
+                stored_id = row["id"]
+                # INSERT OR IGNORE, never OR REPLACE: the first sighting's
+                # timestamp is what the wholeness of the record is judged
+                # against, and the return value is how the caller tells a newly
+                # discovered place from an ordinary reingest of a known one.
+                # OR REPLACE would move the timestamp forward and report every
+                # reingest as a discovery.
+                cursor = self._db.execute(
+                    "INSERT OR IGNORE INTO document_observations"
+                    " (document_id, location_path, first_seen_at) VALUES (?, ?, ?)",
+                    (stored_id, location_path, _to_iso(observed_at)),
+                )
+                location_is_new = cursor.rowcount > 0
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
         stored = self.get_document(stored_id)
         assert stored is not None
         return stored, location_is_new
