@@ -659,9 +659,15 @@ class IngestionService:
         other, and the returned page names which one it is rather than leaving
         an agent to infer it.
 
-        Clamped rather than refused, as every other bound on this surface is:
-        the agent surface has no request-validation layer above it and an
-        over-large limit is a harmless mistake.
+        **Both bounds are clamped, not just the limit**, and both ends of each:
+        `limit` to between 1 and `MAX_DOCUMENT_PAGE`, `offset` to between 0 and
+        `MAX_DOCUMENT_OFFSET`. Clamped rather than refused, as every other bound
+        on this surface is — the agent surface has no request-validation layer
+        above it and an over-large argument is a harmless mistake. The offset's
+        upper bound is the one that is easy to assume unnecessary: it was
+        missing, and a value above SQLite's integer range reached the driver and
+        raised `OverflowError`, which is not a `JackRyanError`, so the tool
+        raised instead of answering.
 
         **The second parameter is a reference, not `include_expanded`** — unlike
         `list_documents`, whose flag sits second. The order is the one the agent
