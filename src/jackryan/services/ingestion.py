@@ -225,17 +225,29 @@ class DocumentLocationRecord:
     recorded: DocumentLocationSet
 
     @property
-    def also_found_at(self) -> list[DocumentLocation]:
-        """Every recorded location except the one the document itself reports.
+    def observed_at(self) -> list[DocumentLocation]:
+        """Every recorded location, earliest first, each carrying its root.
 
-        Identified by position rather than by comparing paths: the store returns
-        the earliest observation first, and the earliest is by definition the
-        one the document's own filename and containment path were taken from.
-        Comparing `containment_path` instead would drop both of two locations
-        that share a relative path under different roots — which is the case
-        this record exists for.
+        The whole set rather than "the ones other than the document's own", and
+        the difference matters twice.
+
+        A partial list has to identify the document's own location to exclude
+        it, and there is no sound way to. By position it is wrong for every
+        migrated document: its `containment_path` was written before any row
+        existed, so the earliest row is whatever the next ingest observed, and
+        dropping it hides the only copy the record holds while every surface
+        still prints a count that includes it. By comparing `containment_path`
+        it is wrong for the cross-root case: two dumps sharing a relative path
+        would both be discarded.
+
+        And a partial list cannot be rendered symmetrically. The document's own
+        `containment_path` is relative to a root no column records, so a surface
+        showing it beside root-qualified additional locations reports a
+        different visible set depending on which dump was ingested first. The
+        complete list is the same set either way, which is what the identity
+        rule promises.
         """
-        return self.recorded.locations[1:]
+        return list(self.recorded.locations)
 
     @property
     def truncated(self) -> bool:
@@ -702,6 +714,14 @@ class IngestionService:
             # Recorded after the row exists, so the foreign key resolves, and
             # before the chunks, so a document that reached this point has its
             # location whatever happens next.
+            #
+            # Do not reorder this below `replace_chunks` to close the window
+            # below: that opens the worse one, a document with chunks and no
+            # location. The window this leaves is that a run aborting between
+            # here and the end loses the one-time "recorded at a location it
+            # had not been seen at" banner — the retry sees the row already
+            # present and reports `known`. The row itself is on every read
+            # surface, so what is lost is the notification, not the evidence.
             location_is_new = self._store.record_document_location(
                 stored.id, work.source_root, work.containment_path, now
             )
@@ -1044,10 +1064,21 @@ class IngestionService:
         those counts may be claimed to mean is domain reasoning. Resolution goes
         through `resolve_document`, so casefile scoping and 8-character prefixes
         are inherited rather than restated.
+
+        A whole record needs both the flag and at least one row. The two writes
+        are separate commits, so a process death between them leaves the flag
+        raised over an empty table — and a `complete` verdict with nothing in it
+        renders exactly like a document found in one place, which is the one
+        reading that is certainly wrong. Calling it unanswerable makes the
+        contradiction visible and gives it the caveat it needs.
         """
         document = self.resolve_document(casefile_reference, reference)
         recorded = self._store.document_locations(document.id, MAX_DOCUMENT_LOCATIONS)
-        verdict = LOCATIONS_COMPLETE if document.locations_recorded else LOCATIONS_UNKNOWN
+        verdict = (
+            LOCATIONS_COMPLETE
+            if document.locations_recorded and recorded.total
+            else LOCATIONS_UNKNOWN
+        )
         return DocumentLocationRecord(
             verdict=verdict, document=document, recorded=recorded
         )

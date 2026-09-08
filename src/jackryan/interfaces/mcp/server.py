@@ -123,10 +123,14 @@ def _render_document(document: Document) -> dict[str, Any]:
         # Marked, not expanded: a listing says there is more to reach without
         # returning the forty thousand documents an archive might hold.
         row["children"] = document.child_count
-    if document.location_count > 1:
-        # Marked for the same reason the children are: identical bytes found in
-        # more than one place is shared custody or distribution, which is a
-        # finding rather than a duplicate to be passed over.
+    # Marked for the same reason the children are: it is a finding rather than
+    # a duplicate to be passed over. What the count means is the analyst's to
+    # decide, so the description states the count and not a conclusion.
+    # A pre-record document has no row for its own location, so `> 1` would
+    # mark it one location too late: its first recorded location is already an
+    # additional one. The flag is on every listing row because the query
+    # selects `d.*`, so this costs no extra read.
+    if document.location_count > (1 if document.locations_recorded else 0):
         row["locations"] = document.location_count
     return row
 
@@ -312,9 +316,10 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             "hierarchy and lists every document in the casefile. `total` counts "
             "the rows in this page and `total_matching` the whole selection; "
             "when `truncated` is true, call again with `offset` set to "
-            "`continue_from`. A row's `locations` count marks a document whose "
-            "identical bytes were found in more than one place, which is shared "
-            "custody or distribution rather than a duplicate to be ignored."
+            "`continue_from`. A row's `locations` count is how many distinct "
+            "ingest locations this instance recorded the same bytes at. It may be "
+            "shared custody or distribution, or the same material ingested twice "
+            "from different paths; the count does not decide which."
         ),
         annotations=_annotations_for("case_list_documents"),
     )
@@ -532,7 +537,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         description=(
             "A document's extracted text, bounded. Read late: it is the most expensive call "
             "here and rarely the fastest route to an answer. Continue with the returned offset. "
-            "The provenance block carries every other location the same bytes were found at, "
+            "The provenance block carries the locations recorded for the document, "
             "bounded, and says `unknown` where the document was ingested before locations "
             "were recorded."
         ),
@@ -575,9 +580,9 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
                 containment_path=one_line(found.containment_path, 200),
                 text_source=found.text_source,
                 locations_recorded=record.verdict,
-                also_found_at=tuple(
+                observed_at=tuple(
                     one_line(location.full_path, 200)
-                    for location in record.also_found_at
+                    for location in record.observed_at
                 ),
                 locations_total=record.recorded.total,
                 locations_truncated=record.truncated,

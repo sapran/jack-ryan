@@ -26,10 +26,19 @@ attacker-controlled to the same degree as the text it describes. The path SHALL
 be sanitised on the same terms as any other document-derived value before it
 enters a line-oriented block.
 
-Where a document's bytes were observed at more than one source location, or the
-record of those locations cannot answer, the provenance SHALL carry that,
-bounded. Every such location SHALL be sanitised on the same terms as the
-containment path. A location is the ingested root joined to the path within it,
+Where a tool returns a document's own text and that document's bytes were
+observed at more than one source location, or the record of those locations
+cannot answer, the provenance SHALL carry that, bounded. Every such location
+SHALL be sanitised on the same terms as the containment path.
+
+The obligation is on a tool returning a whole document deliberately, and not on
+every tool that quotes from one. A tool returning many passages bounds its text
+across the response as a whole, so a per-result list of locations is the payload
+that bound exists to prevent; a citation must name one path a person can follow
+by hand, which a list cannot. Those tools carry the containment path alone, as
+they did before locations were recorded. The cost is that an agent reading a
+quotation is not told the same bytes sit elsewhere, and the disclosure is one
+call away on the document itself. A location is the ingested root joined to the path within it,
 and the second half is chosen by whoever laid out the material — an archive
 entry name or a directory name inside a dump — so it is attacker-controlled to
 exactly the degree the containment path is, and reaches the same line-oriented

@@ -487,11 +487,19 @@ class StorePort(Protocol):
     ) -> bool:
         """Record where a document's bytes were observed. True when it was new.
 
-        Recorded for every document, including one produced by expansion, whose
-        path is part of its identity and therefore always yields exactly one
-        location. Uniform on purpose: a caller asking where a document was found
-        gets one answer shape, and no surface has to branch on how the document
-        came to exist.
+        Recorded for every document, including one produced by expansion.
+
+        An expansion has one location per root its container was ingested from
+        — not one location full stop. Its containment path counts toward
+        identity but carries no root, so the same archive ingested from two
+        dumps expands to one document with two locations. Synthesising an
+        expansion's single location from its containment path instead of
+        recording it would therefore lose the second custodian for every
+        archived file, silently.
+
+        Uniform on purpose: a caller asking where a document was found gets one
+        answer shape, and no surface has to branch on how the document came to
+        exist.
         """
         ...
 

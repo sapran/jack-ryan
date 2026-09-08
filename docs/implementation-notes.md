@@ -1201,3 +1201,54 @@ and why it was parked.
   closed. The noted downside of the chosen fix was dealt with rather than
   accepted: `/health` and `jackryan status` now report the enforced identity, so
   the value an operator sees is the value that refused them.
+
+- **A first-observed name can describe a later reading.** Surfaced by review of
+  `preserve-duplicate-locations` (2026-09-08) and accepted rather than fixed.
+  Now that `filename` and `containment_path` are first-wins while `media_type`,
+  `extractor`, `extracted_text` and the chunks stay last-wins, one row can carry
+  two readings: identical bytes ingested as `report.docx` and later as
+  `report.zip` — a DOCX *is* a zip — leave a row named `report.docx` whose media
+  type is `application/zip` and whose text is an archive listing, so `case_cite`
+  names a `.docx` for a passage a person opening it in Word will never find. The
+  milder everyday shape is `.txt` then `.md`, which route to different
+  extractors.
+  Neither half can simply switch sides. The name must be stable or a citation
+  moves, which is the defect that change exists to close; the text and its media
+  type must describe what is stored beside them, which is the rule
+  `storage-seam:190-192` states for derived values. So the row is legitimately
+  mixed, and the honest fix is disclosure rather than reconciliation: report on
+  the reingest that produced it, e.g. a `detail` reading "read as
+  application/zip; first observed as report.docx". Parked because it needs its
+  own change — `detail` is currently empty for every successful outcome and both
+  human surfaces render it — and because it is orthogonal to preserving the
+  locations.
+
+- **CLI human output prints location paths raw.** Also from that review, and
+  deliberately left alone. The ingest banner and `document show` interpolate a
+  path whose second half is chosen by whoever laid out the dump, so a directory
+  name containing a newline forges lines in the terminal. It is consistent with
+  the surface as it already stands — `found_at` in `_render_document` and every
+  `limitations` line are printed raw, and `one_line` is imported nowhere in
+  `cli.py` — it never reaches a model, and the `--json` form is JSON-encoded.
+  Collapsing only the two new sites would give this one surface two conventions.
+  If the CLI is ever hardened, all three sites move together.
+
+- **`test_the_expansion_workspace_is_removed_afterwards` is machine-wide, so a
+  second jackryan process makes it fail.** Pre-existing; found while gating
+  `preserve-duplicate-locations` (2026-09-08) and deliberately not fixed there,
+  since that change never touches the workspace lifecycle. The test snapshots
+  `tempfile.gettempdir()` — the shared system temp directory — before and after
+  its own ingest and fails on any `jackryan-expand-*` that appeared in between.
+  Any other jackryan process on the same machine therefore fails it: a second
+  test run, a dev instance, or a verification script running alongside.
+  Established rather than guessed. Making the swallowed error loud
+  (`shutil.rmtree(workspace, ignore_errors=False)` in
+  `services/ingestion.py:461`) produced no failure across five full suite runs,
+  so the removal itself is reliable and the surviving directory was never this
+  ingest's. Running a loop that merely creates and deletes `jackryan-expand-*`
+  directories in the shared temp dir alongside the suite reproduces the failure
+  on demand, with two leaked paths instead of one.
+  The fix belongs to the test, not the service: have it learn the workspace path
+  the ingest actually used — the service takes it from `tempfile.mkdtemp`, which
+  a fixture can capture — and assert that one path is gone, rather than that no
+  such directory appeared anywhere on the machine.

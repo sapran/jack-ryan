@@ -39,10 +39,14 @@ def _render_document(document: Document) -> dict[str, Any]:
         row["found_at"] = document.containment_path
     if document.child_count:
         row["children"] = document.child_count
-    if document.location_count > 1:
-        # Only when it says something, like `children` above: a document found
-        # in one place is the ordinary case and adding a column of ones would
-        # widen every table for nothing.
+    # Only when it says something, like `children` above: a document found in
+    # one place is the ordinary case and adding a column of ones would widen
+    # every table for nothing.
+    # A pre-record document has no row for its own location, so `> 1` would
+    # mark it one location too late: its first recorded location is already an
+    # additional one. The flag is on every listing row because the query
+    # selects `d.*`, so this costs no extra read.
+    if document.location_count > (1 if document.locations_recorded else 0):
         row["locations"] = document.location_count
     if document.summary:
         # Added only when present, so a table for a corpus ingested without a
@@ -315,8 +319,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # key.
                 row["locations"] = record.recorded.total
                 if args.json:
-                    row["also_found_at"] = [
-                        location.full_path for location in record.also_found_at
+                    row["observed_at"] = [
+                        location.full_path for location in record.observed_at
                     ]
                     row["locations_truncated"] = record.truncated
                     if record.note:
@@ -324,8 +328,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     _print(row, True)
                 else:
                     _print(row, False)
-                    for location in record.also_found_at:
-                        print(f"also found at {location.full_path}")
+                    # Every recorded location, each with its root, rather
+                    # than "the others": the document's own path above is
+                    # relative to a root no column holds, so listing only the
+                    # rest would show a different set depending on which copy
+                    # was ingested first.
+                    for location in record.observed_at:
+                        print(f"observed at {location.full_path}")
                     if record.truncated:
                         print(f"… {record.recorded.total} locations recorded in total")
                     # The wording comes from the record, never written out here:

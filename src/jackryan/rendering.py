@@ -73,6 +73,13 @@ def render_report(report: IngestReport) -> dict[str, Any]:
                 # `ingestion-coverage` requires both human surfaces to return
                 # the same fields under the same names.
                 "location": o.location,
+                # The followable path, because `path` above is where the file
+                # was read from — and for a document produced by expansion that
+                # is a scratch file already deleted by the time a caller reads
+                # the response. Without this a JSON or REST caller cannot
+                # recover the location the run reported, while the CLI's text
+                # prints it.
+                "location_path": o.location_path,
             }
             for o in report.outcomes
         ],

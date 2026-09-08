@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import json
 import zipfile
+from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
 
+from jackryan.cli import _render_document as _render_cli_document
 from jackryan.interfaces.mcp.server import build_mcp_server
+from jackryan.rendering import render_report
 from jackryan.server import create_app
 
 LEDGER = "# Ledger\n\nThe tariff was deferred until the following quarter.\n"
@@ -139,11 +142,12 @@ def test_the_same_bytes_under_two_ingest_roots_keep_both_locations(
         f"{beta.resolve()}/ledger.txt",
     }
     assert report.new_locations == [f"{beta.resolve()}/ledger.txt"]
-    assert [location.full_path for location in record.also_found_at] == [
-        f"{beta.resolve()}/ledger.txt"
+    assert [location.full_path for location in record.observed_at] == [
+        f"{alpha.resolve()}/ledger.txt",
+        f"{beta.resolve()}/ledger.txt",
     ], (
-        "the second custodian's copy was not offered as an additional location: "
-        f"{[location.full_path for location in record.also_found_at]}"
+        "the disclosure did not name both custodians, earliest first: "
+        f"{[location.full_path for location in record.observed_at]}"
     )
 
 
@@ -177,8 +181,9 @@ def test_a_copy_found_later_does_not_overwrite_the_first_location(
 
     record = _located(context, casefile, after)
     assert record.recorded.total == 2
-    assert [location.full_path for location in record.also_found_at] == [
-        f"{second.resolve()}/custodian-b/ledger-copy.txt"
+    assert [location.full_path for location in record.observed_at] == [
+        f"{first.resolve()}/ledger.txt",
+        f"{second.resolve()}/custodian-b/ledger-copy.txt",
     ]
 
 
@@ -336,6 +341,140 @@ def test_a_document_that_predates_the_record_stays_unknown_across_a_reingest(
     assert record.note != "", "the unknown verdict was offered with no caveat"
 
 
+def test_a_migrated_document_hides_no_recorded_location(context, casefile, tmp_path):
+    """Every recorded location must reach a surface, verdict notwithstanding.
+
+    For a migrated document the document's own path was written before any
+    location row existed, so the earliest row is whatever the *next* ingest
+    observed — not the one `containment_path` came from. Dropping it by
+    position therefore hides the only copy the record holds, on the exact
+    corpus this change exists to serve, while every surface still prints a
+    count that includes it.
+    """
+    root = tmp_path / "custodian-a"
+    _at(root, "ledger.txt")
+    context.ingestion.ingest(casefile.short_id, root)
+    document = _only(context, casefile)
+
+    # Exactly what the migration leaves behind for an existing document.
+    context.store._db.execute(
+        "UPDATE documents SET locations_recorded = 0 WHERE id = ?", (document.id,)
+    )
+    context.store._db.execute(
+        "DELETE FROM document_locations WHERE document_id = ?", (document.id,)
+    )
+    context.store._db.commit()
+
+    second = tmp_path / "custodian-b"
+    _at(second, "archive/ledger-copy.txt")
+    context.ingestion.ingest(casefile.short_id, second)
+
+    record = _located(context, casefile, _only(context, casefile))
+    assert record.verdict == "unknown"
+    assert record.recorded.total == 1
+    shown = [location.full_path for location in record.observed_at]
+    assert shown == [f"{second.resolve()}/archive/ledger-copy.txt"], (
+        "the only recorded location reached no surface, while the count still "
+        f"included it: {shown}"
+    )
+
+
+def test_a_migrated_document_is_marked_in_a_listing_at_its_first_location(
+    context, casefile, tmp_path
+):
+    """The listing threshold has to account for the missing own-location row.
+
+    A document created by the new code holds a row for its own location, so a
+    second place means two rows. A migrated document holds none, so its *first*
+    recorded row is already an additional place — and a bare `> 1` marks it one
+    location too late, leaving the row a scan of the inventory cannot find.
+    """
+    root = tmp_path / "custodian-a"
+    _at(root, "ledger.txt")
+    context.ingestion.ingest(casefile.short_id, root)
+    document = _only(context, casefile)
+
+    context.store._db.execute(
+        "UPDATE documents SET locations_recorded = 0 WHERE id = ?", (document.id,)
+    )
+    context.store._db.execute(
+        "DELETE FROM document_locations WHERE document_id = ?", (document.id,)
+    )
+    context.store._db.commit()
+
+    second = tmp_path / "custodian-b"
+    _at(second, "archive/ledger-copy.txt")
+    context.ingestion.ingest(casefile.short_id, second)
+
+    row = _render_cli_document(_only(context, casefile))
+    assert row.get("locations") == 1, (
+        f"a migrated document's recorded location went unmarked: {row.get('locations')}"
+    )
+
+
+def test_a_flag_without_rows_is_unanswerable_rather_than_one_place(
+    context, casefile, tmp_path
+):
+    """`complete` with an empty record must not render as "found in one place".
+
+    The row and its location are two separate commits, so a death between them
+    leaves the flag raised over an empty table. Read as complete, that produces
+    a payload identical to a healthy single-location document — the one reading
+    that is certainly wrong, and the only one with no caveat attached.
+    """
+    root = tmp_path / "root"
+    _at(root, "ledger.txt")
+    context.ingestion.ingest(casefile.short_id, root)
+    document = _only(context, casefile)
+
+    # The flag stays raised; only the rows are lost.
+    context.store._db.execute(
+        "DELETE FROM document_locations WHERE document_id = ?", (document.id,)
+    )
+    context.store._db.commit()
+
+    record = _located(context, casefile, document)
+    assert record.verdict == "unknown", (
+        "a raised flag over an empty record was read as a whole one"
+    )
+    assert record.note != "", "the contradiction was offered with no caveat"
+
+
+def test_the_shared_report_names_the_location_it_recorded(context, casefile, tmp_path):
+    """A JSON or REST caller must be able to recover the location a run reported.
+
+    `path` is where the bytes were read from, and for a document produced by
+    expansion that is a scratch file deleted before the response is returned —
+    asserted below, because it is the whole reason this field exists. Both human
+    surfaces render this one function, so without it the CLI's text prints a
+    location the JSON form cannot express.
+    """
+    first = tmp_path / "custodian-a"
+    second = tmp_path / "custodian-b"
+    first.mkdir()
+    second.mkdir()
+    _zip(first / "dump.zip", [("ledger.txt", LEDGER)])
+    _zip(second / "dump.zip", [("ledger.txt", LEDGER)])
+
+    context.ingestion.ingest(casefile.short_id, first)
+    rendered = render_report(context.ingestion.ingest(casefile.short_id, second))
+
+    discovered = [o for o in rendered["outcomes"] if o["location"] == "new"]
+    assert discovered, f"no new location was reported: {rendered['outcomes']}"
+    expanded = [o for o in discovered if o["location_path"].endswith("dump.zip/ledger.txt")]
+    assert expanded, (
+        "the expansion's new location was not named in the shared report: "
+        f"{[o['location_path'] for o in discovered]}"
+    )
+    for outcome in expanded:
+        assert outcome["location_path"] == f"{second.resolve()}/dump.zip/ledger.txt"
+        assert not Path(outcome["path"]).exists(), (
+            "the scratch path still resolves, so this test no longer proves why "
+            "`location_path` is needed"
+        )
+
+
+
 def test_deleting_a_document_deletes_its_locations(context, casefile, tmp_path):
     root = tmp_path / "root"
     _at(root, "ledger.txt")
@@ -397,8 +536,9 @@ async def test_a_document_found_in_two_places_says_so_in_its_provenance(
     assert locations["recorded"] == "complete"
     assert locations["total"] == 2
     assert locations["truncated"] is False
-    assert locations["also_found_at"] == [
-        f"{dump.resolve()}/custodian-b/ledger.txt"
+    assert locations["observed_at"] == [
+        f"{dump.resolve()}/custodian-a/ledger.txt",
+        f"{dump.resolve()}/custodian-b/ledger.txt",
     ]
     # The document still reports one path, and it is the one a citation names.
     assert payload["provenance"]["found_at"] == "custodian-a/ledger.txt"
@@ -415,7 +555,7 @@ async def test_every_surface_reports_the_same_locations_verdict(
     document = _only(context, casefile)
 
     record = _located(context, casefile, document)
-    service_paths = [location.full_path for location in record.also_found_at]
+    service_paths = [location.full_path for location in record.observed_at]
 
     server = build_mcp_server(context, "analyst")
     payload = await call(
@@ -432,5 +572,5 @@ async def test_every_surface_reports_the_same_locations_verdict(
         ).json()
 
     assert record.verdict == agent["recorded"] == rest["locations_recorded"]
-    assert service_paths == agent["also_found_at"] == rest["also_found_at"]
+    assert service_paths == agent["observed_at"] == rest["observed_at"]
     assert record.recorded.total == agent["total"] == rest["locations"]

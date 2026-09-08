@@ -105,16 +105,21 @@ as whole.
 ## Decision 5: record locations for expansions too, uniformly
 
 An expansion's `identity_path` is part of its identity, so identical bytes on two
-messages are two documents and each will ever have exactly one location. Writing
-a row for it is therefore redundant.
+messages are two documents. That does **not** make its location single, and an
+earlier draft of this section said it did. The identity path carries no root, so
+one archive ingested from two dumps expands to one document with **two**
+locations, and the record is the only thing that distinguishes them.
+Synthesising an expansion's location from its containment path instead of
+recording it — the contingency the plan offered — would therefore lose the second
+custodian for every archived file, silently.
 
-It is done anyway, because the alternative is worse. If only directly ingested
-documents had rows, then `document_locations` would answer "no locations
-recorded" for an expansion, and every surface would have to branch on how the
-document came to exist before it could interpret the answer. Uniformity costs
-roughly 80 bytes per document — under 0.1% of a 435 MB store — and buys one
-answer shape. `location_count` also stops needing a second derivation for the
-expanded case, which the contingency in the plan spells out as the trap.
+Recording uniformly is what makes that correct, and it also avoids a branch: if
+only directly ingested documents had rows, `document_locations` would answer "no
+locations recorded" for an expansion and every surface would have to know how
+the document came to exist before it could interpret the answer. Uniformity
+costs roughly 80 bytes per document — under 0.1% of a 435 MB store — and buys
+one answer shape, and `location_count` needs no second derivation for the
+expanded case.
 
 ## Decision 6: bounded at 20, with no continuation
 
