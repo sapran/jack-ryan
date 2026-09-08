@@ -6,6 +6,10 @@ and why it was parked.
 
 ## Parked
 
+- **The unbounded listing docstring overstates adapter migration.** `storage/sqlite.py:521` says every adapter uses `list_document_page`, but `cli.py:284` still calls `list_documents`, loading full extracted text for the selection. MCP and REST are paged; CLI is not. Parked because CLI pagination was not part of task 2's MCP/REST handoff; correct the claim or scope a CLI paging change separately.
+
+- **Task 2 PM verification hit a converter-test setup failure outside the paging diff.** On `6b7f872`, `uv run --no-sync pytest -q` returned 758 passed, 3 skipped and one failure: `tests/test_legacy_office.py::test_a_timeout_kills_the_whole_converter_tree_not_just_the_launcher` could not read the stub's `grandchild.pid`, before reaching its process-tree assertions. The exact test passed when run alone (1 passed, exit 0); the full run remains failed and no root cause or regression attribution is established. Parked because converter behavior is outside task 2. The focused paging suite passed all 16 tests.
+
 - **An OS metadata sidecar makes a folder ingest, and its casefile, read
   `incomplete` permanently.** `_initial_work` walks with `rglob("*")`, which
   matches dotfiles, so a `.DS_Store` that Finder wrote into any folder an
