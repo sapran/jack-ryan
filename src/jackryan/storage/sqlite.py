@@ -425,7 +425,14 @@ class SqliteStore:
                     " WHERE casefile_id = ? AND content_hash = ? AND identity_path = ?",
                     (document.casefile_id, document.content_hash, document.identity_path),
                 ).fetchone()
-                assert row is not None
+                if row is None:
+                    # Raised rather than asserted: an assert is stripped under
+                    # `-O`, and this one is control flow — the next line would
+                    # subscript None.
+                    raise RuntimeError(
+                        f"document {document.id} vanished between its own insert "
+                        "and the read-back in the same transaction"
+                    )
                 stored_id = row["id"]
                 # INSERT OR IGNORE, never OR REPLACE: the first sighting's
                 # timestamp is what the wholeness of the record is judged
@@ -443,9 +450,28 @@ class SqliteStore:
             except Exception:
                 self._db.rollback()
                 raise
-        stored = self.get_document(stored_id)
-        assert stored is not None
-        return stored, location_is_new
+            # Read back under the same lock the write held. Releasing it first
+            # leaves a window in which another thread deletes the row — the
+            # server runs ingestion in a thread pool beside the REST delete
+            # routes — and the re-read then fails an assertion inside the
+            # storage seam. That is not a `JackRyanError`, so the per-document
+            # handler in `_ingest_work` does not catch it and the whole run
+            # aborts with no record. Under `-O` it is worse: the assert is
+            # stripped and the caller dereferences `None`.
+            #
+            # The aliases are selected here because the caller receives this
+            # document, and a document handed back without them reads as though
+            # its location record were not whole.
+            stored_row = self._db.execute(
+                f"SELECT d.*{_OBSERVATION_ALIASES} FROM documents d WHERE d.id = ?",
+                (stored_id,),
+            ).fetchone()
+            if stored_row is None:
+                raise RuntimeError(
+                    f"document {stored_id} vanished between its commit and the "
+                    "read-back under the same lock"
+                )
+        return _row_to_document(stored_row), location_is_new
 
     def get_document(self, document_id: str) -> Document | None:
         with self._lock:

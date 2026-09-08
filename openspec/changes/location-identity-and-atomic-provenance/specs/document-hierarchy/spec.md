@@ -25,6 +25,15 @@ that reported it as two would tell an analyst a file was duplicated across the
 material when it was not — a false finding, which is worse than an absent one on
 this surface.
 
+Where a listing marks a document as observed at more than one place, it SHALL
+also say whether that count is the whole story. Where the record began after the
+document was stored, nothing identifies which of its rows is the place the
+document itself reports, so a count of one may be that place rather than a
+second — and a listing carries no other qualifier, because it never builds the
+record a single document's disclosure is drawn from. Marking without the
+qualifier states a second place that may not exist; suppressing the mark
+instead would hide a place that does.
+
 Where the record cannot answer what those locations were, the disclosure SHALL
 say so rather than presenting the one path it has as the whole set. Presenting a
 surviving path as a complete answer is a stronger claim than saying nothing, and
@@ -54,3 +63,8 @@ a false one.
 
 - **WHEN** a document's bytes were offered twice at one path, reached through two different ingest roots
 - **THEN** it reports one location, and a listing does not mark it as found in several places
+
+#### Scenario: A listing says whether its location count is the whole story
+
+- **WHEN** a document whose record began after it was stored is marked in a listing as observed at more than one place
+- **THEN** the entry also carries whether that count may be read as whole

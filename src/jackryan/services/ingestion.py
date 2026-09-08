@@ -79,6 +79,18 @@ LOCATIONS_COMPLETE = "complete"
 LOCATIONS_UNKNOWN = "unknown"
 
 
+def locations_verdict(document: Document) -> str:
+    """The word every surface uses for whether a document's places are all recorded.
+
+    The rule is the document's own `locations_are_whole`; this is only the
+    vocabulary, and it lives here because the vocabulary is this layer's. Both
+    listing adapters and the single-document record ask for it rather than
+    mapping the boolean to a word themselves, so the two cannot come to
+    disagree about which word means what.
+    """
+    return LOCATIONS_COMPLETE if document.locations_are_whole else LOCATIONS_UNKNOWN
+
+
 @dataclass(frozen=True)
 class IngestOutcome:
     """What happened to one file."""
@@ -93,9 +105,8 @@ class IngestOutcome:
     # "known", "new", "unknown", or empty for an outcome that never got that
     # far — a failed document.
     location: str = ""
-    # The followable path this run observed the document at: the ingest root
-    # joined to the containment path. Carried already joined so the report and
-    # the query path cannot spell one location two ways.
+    # The followable path this run observed the document at. Carried already
+    # joined so the report and the query path cannot spell one place two ways.
     location_path: str = ""
 
 
@@ -183,9 +194,9 @@ class IngestReport:
         was offered. Folding this into `limitations` would flip `complete` to
         false and report a discovery as a shortfall.
 
-        Each is the followable path — the ingest root joined to the containment
-        path — because the root is the whole of what distinguishes the second
-        custodian's copy from the first's.
+        Each is the followable path the place was observed at, which is the
+        whole of its identity: two paths that differ are two places, and one
+        path reached two ways is one.
         """
         return [o.location_path for o in self.outcomes if o.location == LOCATION_NEW]
 
@@ -226,7 +237,7 @@ class DocumentLocationRecord:
 
     @property
     def observed_at(self) -> list[DocumentLocation]:
-        """Every recorded location, earliest first, each carrying its root.
+        """Every recorded place, earliest first, each an absolute path.
 
         The whole set rather than "the ones other than the document's own", and
         the difference matters twice.
@@ -1084,7 +1095,7 @@ class IngestionService:
         """
         document = self.resolve_document(casefile_reference, reference)
         recorded = self._store.document_locations(document.id, MAX_DOCUMENT_LOCATIONS)
-        verdict = LOCATIONS_COMPLETE if document.locations_are_whole else LOCATIONS_UNKNOWN
+        verdict = locations_verdict(document)
         return DocumentLocationRecord(
             verdict=verdict, document=document, recorded=recorded
         )

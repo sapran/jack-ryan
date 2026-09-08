@@ -28,6 +28,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from jackryan.cli import _render_document as _render_cli_document
+from jackryan.interfaces.mcp.server import _render_document as _render_mcp_document
 from jackryan.interfaces.mcp.server import build_mcp_server
 from jackryan.rendering import render_report
 from jackryan.server import create_app
@@ -807,3 +808,55 @@ def test_the_port_cannot_store_a_document_without_saying_where(context):
         assert parameters[required].default is inspect.Parameter.empty, (
             f"{required} has a default, so a caller can omit it"
         )
+
+
+def test_a_listing_mark_says_whether_the_count_is_the_whole_story(
+    context, casefile, tmp_path
+):
+    """A count alone over-claims where the record began late.
+
+    Reingest a pre-record document from the very place it came from and it has
+    exactly one recorded observation — its own. `additional_locations` counts
+    it, because for such a document nothing identifies which row is its own,
+    and suppressing the mark instead would hide a genuine second place for a
+    migrated document whose one row really is elsewhere.
+
+    So the mark stays and the row says what it is worth. Without the verdict a
+    listing reports "found in another place" for a file that was found in one,
+    which is a false finding — and the change's own reasoning is that a false
+    finding on this surface is worse than an absent one.
+    """
+    dump = tmp_path / "dump"
+    _at(dump, "ledger.txt")
+    context.ingestion.ingest(casefile.short_id, dump)
+    document = _only(context, casefile)
+    _lose_the_observation(context, document.id)
+
+    # Reingested from the same root, so the single recorded place is its own.
+    context.ingestion.ingest(casefile.short_id, dump)
+    document = _only(context, casefile)
+    record = _located(context, casefile, document)
+    assert record.recorded.total == 1
+    assert record.observed_at[0].path == f"{dump.resolve()}/ledger.txt"
+
+    for label, row in (
+        ("cli", _render_cli_document(document)),
+        ("mcp", _render_mcp_document(document)),
+    ):
+        assert row.get("locations") == 1, f"{label}: the count went missing"
+        assert row.get("locations_recorded") == "unknown", (
+            f"{label}: the listing reported a second place with nothing to say the "
+            f"count cannot be attributed: {row.get('locations_recorded')!r}"
+        )
+
+    # A document whose record is whole says so, and is not marked at all when
+    # it was found in one place.
+    other = tmp_path / "other"
+    _at(other, "memo.txt", "# Memo\n\nA different document entirely.\n")
+    context.ingestion.ingest(casefile.short_id, other)
+    fresh = next(
+        d for d in _rows(context, casefile) if d.filename == "memo.txt"
+    )
+    assert fresh.additional_locations == 0
+    assert "locations" not in _render_cli_document(fresh)
+    assert "locations_recorded" not in _render_cli_document(fresh)

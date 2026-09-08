@@ -18,6 +18,7 @@ from .ingestion.legacy_office import converter_status
 from .app import build_context
 from .errors import JackRyanError
 from .rendering import render_casefile, render_document, render_hit, render_report
+from .services.ingestion import locations_verdict
 from .services.search import DEFAULT_CARRIER_PAGE
 from .storage.port import Casefile, Document, SearchHit
 
@@ -48,6 +49,11 @@ def _render_document(document: Document) -> dict[str, Any]:
     # spelled once in the domain object cannot drift between two adapters.
     if document.additional_locations:
         row["locations"] = document.location_count
+    # The count alone over-claims where the record began late: its one
+    # observation may be the document's own place, and nothing in the row would
+    # say so. The verdict travels beside the count for that reason — a listing
+    # never builds a location record, so this is its only qualifier.
+        row["locations_recorded"] = locations_verdict(document)
     if document.summary:
         # Added only when present, so a table for a corpus ingested without a
         # summariser keeps the shape it has today. Model-written, so the producer
