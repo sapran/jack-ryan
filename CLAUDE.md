@@ -271,8 +271,16 @@ and sharing code with what it checks would defeat that.
   fragment nobody chose.
 - **A window is a slice of `extracted_text`, never joined chunk texts.** Chunks
   overlap by configuration, so joining them repeats the overlap, and a chunk's
-  stored text is stripped while its offsets are not. The slice is what a person
-  reading those offsets sees, which is what makes a citation checkable by hand.
+  offsets select its stored text exactly, while rows written before that was
+  true name the untrimmed window — which is why `_slice` still trims before
+  comparing. The slice is what a person reading those offsets sees, which is
+  what makes a citation checkable by hand.
+- **A mention's document position is derived, and an older corpus's is stale.**
+  It comes from the chunk's recorded start plus the mention's chunk-relative
+  offset, so a corpus ingested before the offsets were tightened counts one
+  occurrence near a chunk boundary twice; `jackryan repair mention-offsets
+  <casefile>` recomputes it from the stored text, writes nothing else, and is
+  idempotent.
 - **Widening what is read never widens what is cited.** The matched passage
   stays the unit that identifiers address and `case_cite` quotes. A payload that
   returns more than it declares cannot be followed back, which is why provenance

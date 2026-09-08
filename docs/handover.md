@@ -1449,6 +1449,92 @@ migration rung and the JSON field is published.
 
 ---
 
+## A chunk begins where its text does — 2026-09-08
+
+**What was wrong.** A chunk's stored text was `piece.strip()` while its recorded
+`char_start` was the untrimmed window's start. `replace_chunks` derives a
+mention's document position as `parent.char_start + mention.char_start`, so
+every such position was short by the whitespace trimmed off the front of its
+chunk. The identifier inventory distinguishes occurrences by `(document_id,
+document_offset)` — correctly — so when two overlapping windows trimmed unequal
+whitespace, one textual occurrence acquired two positions and was counted twice.
+
+**Why it survived.** The guard that looks like it covers this states its own
+offsets: `test_one_occurrence_across_two_overlapping_chunks_counts_once` builds
+two `Chunk` objects by hand, so it proves the counting SQL and nothing about the
+offsets the SQL counts. The chunker's own guard compared
+`TEXT[char_start:char_end].strip()` with the chunk's text — trimming before
+comparing, which is exactly the difference at issue — and whether any of `TEXT`'s
+windows opened on whitespace was incidental anyway.
+
+**What changed.** The chunker records the trimmed span, so
+`source[char_start:char_end] == text` exactly. `replace_chunks` is untouched: the
+derivation was right and the fix is to make its input true. `Windower._slice`
+still trims before comparing, deliberately — every chunk row written before this
+change carries the wide offsets, and an exact comparison there would return
+`None` for all of them, switching windowing off for every existing corpus.
+
+**The repair, and what it does not do.** Code alone changes no stored row.
+`jackryan repair mention-offsets <casefile>` recomputes each mention's position
+from the stored text — one document at a time, one write per document, only
+`mentions.document_offset`, and only where it differs. It is idempotent by
+construction rather than by bookkeeping, because it recomputes rather than
+adjusts. A chunk whose stored text is not inside the span its own offsets name is
+counted as unlocatable and skipped: a position guessed for it would resolve and
+be wrong. Not a migration step, for two reasons — locating a stored text inside
+its window needs Python (SQLite's `ltrim` takes an explicit character set and
+would diverge from `str.strip()` on the Unicode whitespace a Ukrainian or Russian
+scan is full of), and a step runs when a store is opened, which would rewrite an
+operator's corpus with nobody asking.
+
+**No real corpus has been repaired.** The 435 MB corpus still holds stale
+positions, and will until an operator runs the pass and authorises it. Old
+`chunks.char_start` values stay wide for ever and that is safe: windowing trims
+before comparing, `case_cite`'s span reads a little wide exactly as it did, and
+the repair reads the stored text rather than assuming a convention, so it
+corrects a pre-fix corpus and a post-fix one identically.
+
+**Verified, on synthetic data only.** 719 passed, 3 skipped;
+`openspec validate --all --strict` 18/18; `gitleaks detect` no leaks. End to end
+against a disposable store on the deterministic embedder: ingest 0 failures,
+inventory `(1, 1)`, two chunks carrying the identifier, positions staled to the
+pre-fix values → `(2, 1)`, repair →
+`documents_examined=1, chunks_examined=2, chunks_unlocatable=0,
+mentions_corrected=1` → `(1, 1)`, second run `mentions_corrected=0` and still
+`(1, 1)`.
+
+**The mutation table, with a GREEN unmutated control.** Run through the uv-safe
+harness — a copied tree keeps importing the original worktree through the
+editable `.pth`, which reports GREEN for everything.
+
+| Mutation | Verdict |
+|---|---|
+| chunker records `char_start=position, char_end=window_end` again | RED |
+| facet counts `COUNT(DISTINCT document_offset)` | RED |
+| repair uses `chunk.char_start` instead of `+ within` | RED |
+| repair does `within = max(within, 0)` instead of skipping | RED |
+| `recompute_mention_offsets` drops its `<>` predicate | RED |
+
+**One fixture defect the table caught and reading did not.** The third mutation
+was GREEN on the first run. `_stale_positions` staled only the *mention* rows and
+left `chunks.char_start` tight, so the repair's search found every stored text at
+position zero and `chunk.char_start + within` coincided with `chunk.char_start`.
+That is not a pre-fix corpus: a real one has wide chunk offsets *and* the
+positions derived from them. The helper now writes both, and `_stale_corpus`
+asserts that at least one chunk's offsets no longer select its own text, so the
+fixture cannot silently stop being pre-fix.
+
+**What it did not check.** No real corpus, no reingest, no retrieval baseline
+re-measurement — the tightened offsets change no chunk boundary and no stored
+text, so nothing embedded moved, but that is an argument rather than a
+measurement and `scripts/evaluate_retrieval.py` needs model weights. The CLI
+repair path is exercised through `cli.main` against the deterministic context;
+the shipped `jackryan` entry point with no config file opens under the default
+profile's real embedder and is refused on corpus identity, which is the correct
+outcome rather than a working invocation.
+
+---
+
 ## What this environment could not do, so you should not trust it was checked
 
 - **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real

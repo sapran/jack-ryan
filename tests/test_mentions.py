@@ -991,10 +991,10 @@ def test_one_occurrence_across_two_overlapping_chunks_counts_once(context, store
     were the same one seen twice.
 
     The two chunks and their shared document offset are stated outright rather
-    than produced by an ingest, because whether a fixture's text lands an
-    identifier inside the overlap depends on where the chunker snaps to
-    paragraphs — so an ingest-level test would be asserting the fixture as much
-    as the counting.
+    than produced by an ingest, so this test isolates the counting itself. What
+    an ingest actually records is a separate question, guarded below by
+    `test_one_occurrence_in_two_overlapping_chunks_counts_once_after_a_real_ingest`
+    — the gap where the defect lived.
     """
     casefile, document = stored
     shared = "duplicated@acme.example"
@@ -1041,6 +1041,279 @@ def test_one_occurrence_across_two_overlapping_chunks_counts_once(context, store
         "chunks, and counting rows makes the figure wrong by the overlap"
     )
     assert facet.documents == 1
+
+
+def _overlapping_occurrence_document(contract, value: str) -> str:
+    """Text placing one occurrence of `value` inside two overlapping windows.
+
+    Built from the contract rather than from literals so it still lands in the
+    overlap if the suite's chunk size changes. The chunker steps back by the
+    overlap, so the second window opens at `chunk_max_chars - overlap`, and the
+    whitespace goes exactly there: that is what makes the two windows trim
+    unequally and disagree about where this occurrence sits. No blank line
+    anywhere — a paragraph break inside the first window's back half would move
+    the boundary.
+    """
+    window, overlap = contract.chunk_max_chars, contract.chunk_overlap_chars
+    prose = "The clerk filed the tariff schedule and the annex together. "
+    lead_in = " \n Paid to "
+    assert len(lead_in) + len(value) < overlap, (
+        "the identifier does not fit inside the overlap under this contract"
+    )
+    filler = prose * (window // len(prose) + 2)
+    head = filler[: window - overlap]
+    tail = " and the annex was returned unsigned the following week. "
+    return head + lead_in + value + tail + filler[: window // 2]
+
+
+def test_one_occurrence_in_two_overlapping_chunks_counts_once_after_a_real_ingest(
+    context, tmp_path
+):
+    """The claim above, made through the shipped pipeline instead of by hand.
+
+    The chunker recorded the window's start while storing the window's trimmed
+    text, so two windows that trimmed unequal whitespace reported one occurrence
+    at two document positions and the facet counted it twice. The store-level
+    test cannot see that: it states its own offsets.
+
+    Written to `.txt` deliberately. `PlainTextExtractor` stores the file's text
+    verbatim; every markup suffix goes to docling, which re-renders the document
+    and would not preserve the whitespace this fixture depends on.
+    """
+    contract = context.config.contract
+    value = "duplicated@acme.example"
+    text = _overlapping_occurrence_document(contract, value)
+    assert text.count(value) == 1, "the fixture holds more than one occurrence"
+    boundary = contract.chunk_max_chars - contract.chunk_overlap_chars
+    assert text[boundary].isspace() and not text[0].isspace(), (
+        "both windows open on the same whitespace, so this fixture cannot "
+        "produce the disagreement it exists to catch"
+    )
+
+    path = tmp_path / "remittance.txt"
+    path.write_text(text, encoding="utf-8")
+    casefile = context.casefiles.create("Overlapping Occurrence")
+    assert not context.ingestion.ingest(casefile.slug, path).failed
+
+    document = context.store.list_documents(casefile.id)[0]
+    assert document.extracted_text == text, (
+        "the extractor changed the text, so the offsets asserted below are not "
+        "the ones this fixture was built for"
+    )
+
+    carriers = [
+        chunk
+        for chunk in context.store.list_document_chunks(document.id)
+        if value in chunk.text
+    ]
+    assert len(carriers) == 2, (
+        f"{len(carriers)} chunks carry the identifier; the count below means "
+        "nothing unless exactly two overlapping chunks do"
+    )
+    assert len({c.char_start + c.text.index(value) for c in carriers}) == 1, (
+        "the two chunks place one occurrence at different document positions, "
+        "which is what makes the inventory count it twice"
+    )
+
+    facet = next(
+        f
+        for f in context.store.mention_facets(casefile.id, "email", 20)
+        if f.value == value
+    )
+    assert (facet.mentions, facet.documents) == (1, 1), (
+        f"one occurrence seen by two overlapping chunks was counted as "
+        f"{facet.mentions} mention(s) in {facet.documents} document(s)"
+    )
+
+
+def test_one_occurrence_in_each_of_two_documents_counts_as_two(context, tmp_path):
+    """Catches a collapse keyed on the position alone.
+
+    Both files are built by the same helper, so the identifier sits at the same
+    character in each. Counting distinct positions rather than distinct
+    (document, position) pairs would fold the two into one — and the two
+    documents differ only by a trailing line, because identical bytes would
+    deduplicate to a single document and there would be nothing to count.
+    """
+    contract = context.config.contract
+    value = "duplicated@acme.example"
+    text = _overlapping_occurrence_document(contract, value)
+    folder = tmp_path / "custodians"
+    folder.mkdir()
+    (folder / "first.txt").write_text(text, encoding="utf-8")
+    (folder / "second.txt").write_text(
+        text + "\nA second custodian's copy, filed separately.\n", encoding="utf-8"
+    )
+
+    casefile = context.casefiles.create("Two Custodians")
+    assert not context.ingestion.ingest(casefile.slug, folder).failed
+
+    facet = next(
+        f
+        for f in context.store.mention_facets(casefile.id, "email", 20)
+        if f.value == value
+    )
+    assert (facet.mentions, facet.documents) == (2, 2), (
+        f"two documents each mentioning the identifier once reported "
+        f"{facet.mentions} mention(s) in {facet.documents} document(s)"
+    )
+
+
+def _stale_positions(context, document, boundary: int) -> None:
+    """Reproduce what an ingest before this fix recorded, in both tables.
+
+    The old chunker recorded the window it trimmed, so a chunk whose window
+    opened on whitespace was written with the window's start, and the mention
+    position derived from it was short by the trimmed lead. Both are written
+    here, because they are one state: a fixture that staled only the mention
+    rows would leave every chunk's offsets already tight, the repair's search
+    would find each stored text at position zero, and its correction term would
+    coincide with doing nothing — the mutation that removes it then passes.
+
+    Written as SQL against the known window starts rather than by reverting the
+    chunker, so these tests still describe a pre-fix corpus when the chunker
+    changes again.
+    """
+    chunks = context.store.list_document_chunks(document.id)
+    assert [c.ordinal for c in chunks] == [0, 1], (
+        "this fixture knows the window starts of a two-chunk document only"
+    )
+    windows = {chunks[0].id: 0, chunks[1].id: boundary}
+    db = context.store._db
+    db.executemany(
+        "UPDATE chunks SET char_start = ? WHERE id = ?",
+        [(start, chunk_id) for chunk_id, start in windows.items()],
+    )
+    db.executemany(
+        "UPDATE mentions SET document_offset = ? + char_start WHERE chunk_id = ?",
+        [(start, chunk_id) for chunk_id, start in windows.items()],
+    )
+    db.commit()
+
+
+def _chunk_rows(context, document_id: str) -> list[dict]:
+    return [
+        dict(row)
+        for row in context.store._db.execute(
+            "SELECT * FROM chunks WHERE document_id = ? ORDER BY ordinal", (document_id,)
+        )
+    ]
+
+
+def _stale_corpus(context, tmp_path, title: str):
+    """A one-document casefile recorded the way an ingest before this fix did."""
+    contract = context.config.contract
+    value = "duplicated@acme.example"
+    text = _overlapping_occurrence_document(contract, value)
+    path = tmp_path / "remittance.txt"
+    path.write_text(text, encoding="utf-8")
+    casefile = context.casefiles.create(title)
+    assert not context.ingestion.ingest(casefile.slug, path).failed
+    document = context.store.list_documents(casefile.id)[0]
+    _stale_positions(
+        context, document, contract.chunk_max_chars - contract.chunk_overlap_chars
+    )
+    assert any(
+        text[chunk.char_start : chunk.char_end] != chunk.text
+        for chunk in context.store.list_document_chunks(document.id)
+    ), (
+        "every chunk's offsets still select its own text, so this is not a "
+        "pre-fix corpus and the repair has no trimmed lead to recover"
+    )
+    return casefile, document, value
+
+
+def _email_facet(context, casefile_id: str, value: str):
+    hit = [
+        f for f in context.store.mention_facets(casefile_id, "email", 20) if f.value == value
+    ]
+    return (hit[0].mentions, hit[0].documents) if hit else None
+
+
+def test_the_repair_corrects_positions_an_earlier_ingest_recorded(context, tmp_path):
+    """A corpus ingested before the offsets were tightened is correctable.
+
+    Code alone changes no stored row: an existing corpus keeps counting one
+    occurrence twice until an operator runs the pass. What it must not do is
+    touch the evidence, so the document's text, the chunk rows, the vectors and
+    every other mention field are compared before and after.
+    """
+    casefile, document, value = _stale_corpus(context, tmp_path, "Stale Positions")
+
+    assert _email_facet(context, casefile.id, value) == (2, 1), (
+        "the stale state was not reproduced, so the repair below proves nothing"
+    )
+    before_mentions = _mention_rows(context, casefile.id)
+    before_chunks = _chunk_rows(context, document.id)
+    before_text = context.store.get_document(document.id).extracted_text
+
+    report = context.ingestion.repair_mention_offsets(casefile.slug)
+
+    assert (
+        report.documents_examined,
+        report.chunks_examined,
+        report.chunks_unlocatable,
+        report.mentions_corrected,
+    ) == (1, 2, 0, 1), (
+        f"the pass reported {report}. One document, two chunks, nothing "
+        "unlocatable, and exactly one position corrected — the first chunk's was "
+        "already right, because its window opened on the text"
+    )
+    assert _email_facet(context, casefile.id, value) == (1, 1), (
+        "the corrected positions still count one occurrence twice"
+    )
+
+    assert _chunk_rows(context, document.id) == before_chunks, (
+        "the pass rewrote a chunk row; it may write only the derived position"
+    )
+    assert context.store.get_document(document.id).extracted_text == before_text, (
+        "the pass altered the extracted text, which is the evidence"
+    )
+    after_mentions = _mention_rows(context, casefile.id)
+    assert [
+        {k: v for k, v in row.items() if k != "document_offset"} for row in after_mentions
+    ] == [
+        {k: v for k, v in row.items() if k != "document_offset"} for row in before_mentions
+    ], "the pass changed a mention field other than the document position"
+    assert context.store.search_vector(
+        casefile.id, context.embedder.embed_query("tariff schedule annex"), 5
+    ), "the vectors no longer answer a search, so the pass disturbed them"
+
+    again = context.ingestion.repair_mention_offsets(casefile.slug)
+    assert again.mentions_corrected == 0, (
+        f"a second pass corrected {again.mentions_corrected} position(s); it "
+        "recomputes from the stored text, so there is nothing left to correct"
+    )
+    assert _email_facet(context, casefile.id, value) == (1, 1)
+
+
+def test_the_repair_leaves_a_chunk_whose_text_is_not_at_its_offsets_alone(
+    context, tmp_path
+):
+    """A position guessed for an inconsistent chunk would resolve and be wrong.
+
+    The document's text is replaced with something the chunks cannot be found
+    in — a half-completed ingest leaving new text against old offsets. Nothing
+    is guessed: the mention rows come out exactly as they went in.
+    """
+    casefile, document, _ = _stale_corpus(context, tmp_path, "Inconsistent Offsets")
+    context.store._db.execute(
+        "UPDATE documents SET extracted_text = ? WHERE id = ?",
+        ("Replaced by a later ingest.", document.id),
+    )
+    context.store._db.commit()
+    stale_rows = _mention_rows(context, casefile.id)
+
+    report = context.ingestion.repair_mention_offsets(casefile.slug)
+
+    assert (report.chunks_examined, report.chunks_unlocatable) == (2, 2), (
+        f"the pass reported {report}; both chunks' stored text is absent from "
+        "the span their offsets name"
+    )
+    assert report.mentions_corrected == 0
+    assert _mention_rows(context, casefile.id) == stale_rows, (
+        "a position was guessed for a chunk that could not be located"
+    )
 
 
 def test_a_mention_cannot_name_a_casefile_other_than_its_chunks(context, stored):

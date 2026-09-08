@@ -367,6 +367,33 @@ class StorePort(Protocol):
         self, document_id: str, ordinal: int, radius: int
     ) -> list[Chunk]: ...
 
+    def list_document_ids(self, casefile_id: str) -> list[str]:
+        """Every document in a casefile, expansions included, oldest first.
+
+        Identifiers rather than documents, and that is the whole reason it
+        exists: `list_documents` carries each row's extracted text, so a
+        maintenance pass over a casefile would hold the corpus in memory in
+        order to walk it. Ordered so that a run is reproducible.
+        """
+        ...
+
+    def list_document_chunks(self, document_id: str) -> list[Chunk]:
+        """One document's chunks, in ordinal order."""
+        ...
+
+    def recompute_mention_offsets(self, text_starts: dict[str, int]) -> int:
+        """Rewrite the document position of every mention on the named chunks.
+
+        Takes, per chunk identifier, where that chunk's stored text begins in
+        its document, and sets each mention's position to that plus the
+        mention's own chunk-relative offset — the same derivation
+        `replace_chunks` makes at write time, from a value the caller has
+        established against the document's text. Returns how many rows actually
+        changed, so a caller can report a correction and tell a repeated run
+        from a first one. Nothing else about a mention is touched.
+        """
+        ...
+
     def search_keyword(
         self,
         casefile_id: str,

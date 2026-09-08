@@ -6,6 +6,13 @@ and why it was parked.
 
 ## Parked
 
+- **Root `CLAUDE.md` points at an `openspec/config.yaml` that does not exist.**
+  Its "OpenSpec governs every substantive change" section says "Config at
+  `openspec/config.yaml`"; `openspec/` holds only `changes/` and `specs/`.
+  Noticed while reading the OpenSpec rules for the chunk-offset change and
+  parked as unrelated to it — a documentation line, but one that sends a reader
+  looking for a file that was never committed.
+
 - **"The fold is on" and "the identity says the fold is on" are computed from
   different things.** `app.py` decides `folding` from the summariser *object*
   (`chunk_summaries and chosen_summariser is not None`); `CorpusIdentity.__str__`

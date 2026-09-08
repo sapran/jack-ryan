@@ -116,3 +116,16 @@ def test_ingesting_into_an_unknown_casefile_exits_nonzero(capsys, corpus):
     code, _, err = run(["ingest", "no-such-case", str(corpus)], capsys)
     assert code == 1
     assert "not_found" in err
+
+
+def test_repair_reports_a_corpus_that_needs_nothing(capsys, corpus):
+    """The pass is safe to run on current data, and says it changed nothing."""
+    run(["--json", "casefile", "create", "Harbour Inquiry"], capsys)
+    run(["--json", "ingest", "harbour-inquiry", str(corpus)], capsys)
+
+    code, out, _ = run(["--json", "repair", "mention-offsets", "harbour-inquiry"], capsys)
+    assert code == 0
+    report = json.loads(out)
+    assert report["documents_examined"] == 3
+    assert report["chunks_unlocatable"] == 0
+    assert report["mentions_corrected"] == 0
