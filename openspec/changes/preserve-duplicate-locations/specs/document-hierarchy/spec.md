@@ -14,7 +14,10 @@ The path a document reports is the first location its bytes were observed at.
 Where the same bytes were observed at further locations, those additional
 locations SHALL be reportable beside the path the document reports, and the
 disclosure SHALL be bounded: a document found in more places than the bound is
-characterised by how many, not by its next path.
+characterised by how many, not by its next path. Each additional location SHALL
+carry the root it was ingested from as well as the path within it, because a
+relative path on its own neither distinguishes one dump from another nor can be
+followed to the evidence.
 
 Where the record cannot answer what those locations were, the disclosure SHALL
 say so rather than presenting the one path it has as the whole set. Presenting a

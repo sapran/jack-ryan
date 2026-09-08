@@ -49,8 +49,19 @@ discovered copy from an ordinary reingest.
   which is already excluded for the same reason. A citation stops being able to
   move.
 - **Schema step 9, `document_locations`**: one row per document per observed
-  location, carrying when it was first seen, cascading with its document. Plus
+  location, keyed on `(document_id, source_root, containment_path)`, carrying
+  when it was first seen and cascading with its document. Plus
   `documents.locations_recorded`, an integer flag defaulting to 0.
+- **A location is the ingest root joined to the path within it**, and this is
+  the one place the plan was wrong. A containment path is relative to whatever
+  was ingested, so two dumps each holding `ledger.txt` at their top level
+  produce the same string; keyed on that alone the second custodian's copy
+  collides with the first and is lost, which is the very case being fixed. The
+  root is therefore part of the key — making this **the first absolute host path
+  the corpus stores**, a deliberate posture change noted in `design.md`. For a
+  document produced by expansion the root is inherited from its top-level file,
+  never the scratch directory its bytes were materialised into, which is new on
+  every run and would report a false discovery on every container reingest.
 - **No backfill, deliberately.** An existing document gets no location row. The
   only timestamp available is `created_at`, which is when the document was first
   ingested and not when any particular copy was observed. Inventing it would
@@ -125,11 +136,15 @@ Because real deltas exist, the `.openspec.yaml` `skip_specs: true` escape is
   `src/jackryan/rendering.py`, `src/jackryan/cli.py`, `src/jackryan/server.py`,
   `src/jackryan/interfaces/mcp/fencing.py`,
   `src/jackryan/interfaces/mcp/server.py`.
-- **Tests:** eleven added — ten in a new `tests/test_document_locations.py`, one
-  in `tests/test_migrations.py` for a document carried forward from a v4
-  baseline. `BASELINE_DOCUMENT_COLUMNS` and `test_the_frozen_baseline_is_frozen`
-  are not touched. Every new guard is shown red against the defect it exists for,
-  eleven mutations in all.
+- **Tests:** fourteen added — thirteen in a new
+  `tests/test_document_locations.py`, one in `tests/test_migrations.py` for a
+  document carried forward from a v4 baseline. `BASELINE_DOCUMENT_COLUMNS` and
+  `test_the_frozen_baseline_is_frozen` are not touched. One existing test was
+  re-anchored rather than relaxed: `test_an_older_store_gains_the_ingest_run_record`
+  derived its store's version from the top of the ladder, so any new rung made
+  it build a store already stamped at the `ingest_runs` version and skip the
+  step it exists to exercise. It now keys on the step that creates the table.
+  Every new guard is shown red against the defect it exists for.
 - **Store:** every existing store pays one full-file backup on first open, which
   `schema-migration/spec.md:77-78` requires before any step runs. No repair or
   reingest of any existing corpus is authorised by this change.

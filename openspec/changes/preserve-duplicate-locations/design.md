@@ -24,6 +24,33 @@ the citation names. Choosing latest-observed would have made the accumulated set
 available too, and still have left citations mutable — so it loses on the one
 axis that cannot be recovered elsewhere.
 
+## Decision 1a: a location is the ingest root plus the path within it
+
+The obvious key is the containment path alone, and it is wrong. A containment
+path is relative to whatever was ingested — `child.relative_to(path)` for a
+walk, `path.name` for a named file — so `jackryan ingest case /dumps/alpha` and
+`jackryan ingest case /dumps/beta`, each holding `ledger.txt` at its top level,
+both produce the string `ledger.txt`. Keyed on that, the second observation
+collides with the first and the second custodian is silently lost. That is the
+headline case, so the root joins the primary key.
+
+This is the first absolute host path the corpus stores. `ingest_runs` records no
+target path and `IngestOutcome.path` is report-only, so the posture change is
+deliberate and is noted here rather than left to be discovered: the evidence
+store now carries where on the operating analyst's filesystem material was read
+from, and every surface that discloses a location discloses that. It is
+justified because the root *is* the discriminating evidence — which custodian's
+dump a file came from — and because a location that cannot be followed by hand
+fails the standard `document-hierarchy` already sets for a containment path.
+
+**An expansion's root is inherited from its top-level file, never `work.root`.**
+For a document produced by expansion `work.root` is the scratch directory its
+bytes were materialised into, which is created afresh on every run. Recording it
+would insert a new row on every reingest of one container, report a false
+discovery each time, and grow the table without bound. Inheriting the top-level
+root also makes the location genuinely followable: go to that directory, open
+that archive, find that entry.
+
 ## Decision 2: four values for what a run learned, not a boolean
 
 `INSERT OR IGNORE` returns whether the row was new, and the tempting design is to

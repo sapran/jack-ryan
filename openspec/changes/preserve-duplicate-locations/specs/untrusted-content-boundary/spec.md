@@ -28,11 +28,15 @@ enters a line-oriented block.
 
 Where a document's bytes were observed at more than one source location, or the
 record of those locations cannot answer, the provenance SHALL carry that,
-bounded. Every additional path it carries is document- and filesystem-derived to
-exactly the same degree as the containment path, and SHALL be sanitised on the
-same terms. There is no weaker class of path here: a path that only appears as an
-additional location is chosen by whoever laid out the material, and reaches the
-same line-oriented block.
+bounded. Every such location SHALL be sanitised on the same terms as the
+containment path. A location is the ingested root joined to the path within it,
+and the second half is chosen by whoever laid out the material — an archive
+entry name or a directory name inside a dump — so it is attacker-controlled to
+exactly the degree the containment path is, and reaches the same line-oriented
+block. The root half is operator-chosen rather than document-derived, which
+makes it no safer to emit unsanitised: it is a filesystem path, it can carry a
+newline, and one rule over the whole joined location is one fewer place for the
+weaker half to be missed.
 
 #### Scenario: Returned corpus text is fenced and attributed
 

@@ -28,6 +28,21 @@ against it. The set of places one file was found is evidence of shared custody
 and distribution in its own right, and it is the deduplication that makes that
 set discoverable rather than something to be traded away for it.
 
+A recorded source location SHALL be the root that was ingested together with
+the path within it, and the two together SHALL be what makes one location
+distinct from another. A containment path is relative to whatever was ingested,
+so two dumps each holding one file at their top level yield the same relative
+path; keyed on that path alone the second observation would be indistinguishable
+from the first and the second custodian would be lost — which is the case this
+record exists for. The two together SHALL also be followable by hand, which a
+path relative to an unrecorded root is not.
+
+For a document produced by expansion the root SHALL be that of the top-level
+file it came out of, and SHALL NOT be any working directory its bytes were
+materialised into while it was read. Such a directory is created afresh on every
+run, so recording it would make each reingest of one container report locations
+it had never seen.
+
 A document's own filename and containment path SHALL be the first location its
 bytes were observed at, and SHALL NOT be overwritten by a later copy found
 elsewhere. That path is what a citation names, so a citation written before the
@@ -68,6 +83,16 @@ instance cannot know.
 
 - **WHEN** identical bytes are ingested from two different ordinary source folders in one casefile
 - **THEN** the casefile holds one document, and both source locations are recorded against it
+
+#### Scenario: Identical bytes under two ingest roots keep both locations
+
+- **WHEN** two separately ingested roots each hold identical bytes at the same path within them
+- **THEN** both locations are recorded, distinguished by the root each was ingested from
+
+#### Scenario: Reingesting a container records no new location for its entries
+
+- **WHEN** a container already ingested is ingested again from the same root
+- **THEN** its expanded documents record no further location, and the run reports no newly recorded location
 
 #### Scenario: A later copy does not overwrite the first location
 
