@@ -68,6 +68,11 @@ def render_report(report: IngestReport) -> dict[str, Any]:
                 "document_id": o.document_id,
                 "chunks": o.chunks,
                 "detail": o.detail,
+                # What this run learned about where the document was found.
+                # Here rather than at each surface so the two cannot drift:
+                # `ingestion-coverage` requires both human surfaces to return
+                # the same fields under the same names.
+                "location": o.location,
             }
             for o in report.outcomes
         ],

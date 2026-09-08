@@ -123,6 +123,11 @@ def _render_document(document: Document) -> dict[str, Any]:
         # Marked, not expanded: a listing says there is more to reach without
         # returning the forty thousand documents an archive might hold.
         row["children"] = document.child_count
+    if document.location_count > 1:
+        # Marked for the same reason the children are: identical bytes found in
+        # more than one place is shared custody or distribution, which is a
+        # finding rather than a duplicate to be passed over.
+        row["locations"] = document.location_count
     return row
 
 
@@ -307,7 +312,9 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             "hierarchy and lists every document in the casefile. `total` counts "
             "the rows in this page and `total_matching` the whole selection; "
             "when `truncated` is true, call again with `offset` set to "
-            "`continue_from`."
+            "`continue_from`. A row's `locations` count marks a document whose "
+            "identical bytes were found in more than one place, which is shared "
+            "custody or distribution rather than a duplicate to be ignored."
         ),
         annotations=_annotations_for("case_list_documents"),
     )
@@ -524,7 +531,10 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         name="case_read_document",
         description=(
             "A document's extracted text, bounded. Read late: it is the most expensive call "
-            "here and rarely the fastest route to an answer. Continue with the returned offset."
+            "here and rarely the fastest route to an answer. Continue with the returned offset. "
+            "The provenance block carries every other location the same bytes were found at, "
+            "bounded, and says `unknown` where the document was ingested before locations "
+            "were recorded."
         ),
         annotations=_annotations_for("case_read_document"),
     )
@@ -533,9 +543,10 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         casefile: str, document: str, offset: int = 0, limit: int = MAX_DOCUMENT_CHARS
     ) -> dict[str, Any]:
         resolved = await off_loop(context.casefiles.resolve, casefile)
-        found = await anyio.to_thread.run_sync(
-            context.ingestion.resolve_document, casefile, document
+        record = await anyio.to_thread.run_sync(
+            context.ingestion.document_locations, casefile, document
         )
+        found = record.document
 
         text = found.extracted_text
         start = max(0, int(offset))
@@ -563,6 +574,14 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
                 char_end=end,
                 containment_path=one_line(found.containment_path, 200),
                 text_source=found.text_source,
+                locations_recorded=record.verdict,
+                also_found_at=tuple(
+                    one_line(location.containment_path, 200)
+                    for location in record.also_found_at
+                ),
+                locations_total=record.recorded.total,
+                locations_truncated=record.truncated,
+                locations_note=record.note,
             ),
             "text": fence(window, nonce),
             "content_notice": NOTICE,

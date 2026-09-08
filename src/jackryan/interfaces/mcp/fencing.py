@@ -50,6 +50,11 @@ def provenance(
     char_end: int | None = None,
     heading_path: str = "",
     containment_path: str = "",
+    locations_recorded: str = "",
+    also_found_at: tuple[str, ...] = (),
+    locations_total: int = 0,
+    locations_truncated: bool = False,
+    locations_note: str = "",
     text_source: str = "",
     matched_chunk_id: str = "",
     matched_char_start: int | None = None,
@@ -78,6 +83,15 @@ def provenance(
     recognition is a transcription of what is on the page, however unreliable,
     whereas a summary is a claim about it. Emitted only when non-empty, so a
     provenance block for a document's own text never asserts a producer.
+
+    The `locations` block carries the other places the same bytes were observed.
+    `total` counts every recorded location **including** the one shown as
+    `found_at`; `also_found_at` holds the others, bounded. It is emitted only
+    when it says something — an additional location, or a record that cannot
+    answer — so a document found in one place produces exactly the block it
+    produced before this existed. Every path in it is document- and
+    filesystem-derived to the same degree as `found_at`, and is collapsed by the
+    caller on the same terms.
     """
     block: dict[str, Any] = {
         "casefile_id": casefile_id,
@@ -87,6 +101,16 @@ def provenance(
     }
     if containment_path and containment_path != filename:
         block["found_at"] = containment_path
+    if also_found_at or (locations_recorded and locations_recorded != "complete"):
+        locations: dict[str, Any] = {
+            "recorded": locations_recorded,
+            "also_found_at": list(also_found_at),
+            "total": locations_total,
+            "truncated": locations_truncated,
+        }
+        if locations_note:
+            locations["note"] = locations_note
+        block["locations"] = locations
     if char_start is not None:
         block["char_start"] = char_start
     if char_end is not None:

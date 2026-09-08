@@ -64,6 +64,17 @@ class Document:
     # How many documents were expanded directly out of this one. Carried so a
     # listing can show that there is more to reach without fetching it.
     child_count: int = 0
+    # Whether this document's source locations were recorded from the moment it
+    # was created. False for every row that predates the location record: its
+    # `containment_path` is one location it was observed at, and any others were
+    # overwritten before they could be kept. A surface that treated the recorded
+    # rows as the whole set for such a document would be asserting something it
+    # cannot know.
+    locations_recorded: bool = False
+    # How many source locations are recorded for this document. Carried so a
+    # listing can mark a file found in several places without fetching them —
+    # the `child_count` precedent, and populated only when a query aliases it.
+    location_count: int = 0
 
     @property
     def short_id(self) -> str:
@@ -74,6 +85,30 @@ class Document:
         """Whether this document came out of another rather than off disk."""
         return self.parent_id is not None
 
+
+@dataclass(frozen=True)
+class DocumentLocation:
+    """One place a document's bytes were observed."""
+
+    containment_path: str
+    first_seen_at: datetime
+
+
+@dataclass(frozen=True)
+class DocumentLocationSet:
+    """A document's recorded source locations, bounded, and how many there are.
+
+    Facts only. Whether the set may be treated as whole is the service layer's
+    rule, and lives with the verdict rather than here — the same split
+    `IngestionCoverage` and `CasefileCoverage` already make.
+    """
+
+    locations: list[DocumentLocation]
+    total: int
+
+    @property
+    def truncated(self) -> bool:
+        return len(self.locations) < self.total
 
 @dataclass(frozen=True)
 class Chunk:
@@ -418,6 +453,23 @@ class StorePort(Protocol):
     def find_document_by_hash(
         self, casefile_id: str, content_hash: str, identity_path: str = ""
     ) -> Document | None: ...
+
+    def record_document_location(
+        self, document_id: str, containment_path: str, first_seen_at: datetime
+    ) -> bool:
+        """Record where a document's bytes were observed. True when it was new.
+
+        Recorded for every document, including one produced by expansion, whose
+        path is part of its identity and therefore always yields exactly one
+        location. Uniform on purpose: a caller asking where a document was found
+        gets one answer shape, and no surface has to branch on how the document
+        came to exist.
+        """
+        ...
+
+    def document_locations(
+        self, document_id: str, limit: int
+    ) -> DocumentLocationSet: ...
 
     def delete_document(self, document_id: str) -> bool: ...
 

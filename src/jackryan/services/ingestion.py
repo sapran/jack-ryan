@@ -29,6 +29,8 @@ from ..mentions.port import MentionExtractor
 from ..storage.port import (
     Chunk,
     Document,
+    DocumentLocation,
+    DocumentLocationSet,
     DocumentPage,
     IngestRun,
     Mention,
@@ -57,6 +59,24 @@ MAX_DOCUMENT_PAGE = 200
 # that still reports the selection's true size.
 MAX_DOCUMENT_OFFSET = 2**63 - 1
 
+# Twenty paths at the surfaces' 200-character ceiling is at most 4,000
+# characters beside a 20,000-character read, and a document observed in more
+# than twenty places is characterised by its count rather than by its
+# twenty-first path — which is why there is a bound and deliberately no
+# continuation to follow.
+MAX_DOCUMENT_LOCATIONS = 20
+
+# What an ingest learned about where one document was found. Four values rather
+# than a boolean, because "this location was not recorded" and "we cannot say
+# whether it was" are different claims and only one of them is a discovery.
+LOCATION_FIRST = "first"  # a new document; this is its first location
+LOCATION_KNOWN = "known"  # already recorded for this document
+LOCATION_NEW = "new"  # not recorded, and the record is whole: a discovery
+LOCATION_UNKNOWN = "unknown"  # the document predates the record; unanswerable
+
+LOCATIONS_COMPLETE = "complete"
+LOCATIONS_UNKNOWN = "unknown"
+
 
 @dataclass(frozen=True)
 class IngestOutcome:
@@ -68,6 +88,10 @@ class IngestOutcome:
     chunks: int = 0
     detail: str = ""
     containment_path: str = ""
+    # What this run learned about where the document was found: "first",
+    # "known", "new", "unknown", or empty for an outcome that never got that
+    # far — a failed document.
+    location: str = ""
 
 
 @dataclass(frozen=True)
@@ -146,6 +170,17 @@ class IngestReport:
         return lines
 
     @property
+    def new_locations(self) -> list[str]:
+        """Copies of documents this casefile already held, found somewhere new.
+
+        Derived, like `limitations`, and deliberately **not** part of it: a file
+        found in a second place was ingested, so the run covered everything it
+        was offered. Folding this into `limitations` would flip `complete` to
+        false and report a discovery as a shortfall.
+        """
+        return [o.containment_path for o in self.outcomes if o.location == LOCATION_NEW]
+
+    @property
     def complete(self) -> bool:
         """Whether everything this run was offered is now in the corpus.
 
@@ -166,6 +201,49 @@ class MentionOffsetRepair:
     chunks_unlocatable: int
     mentions_corrected: int
 
+
+@dataclass(frozen=True)
+class DocumentLocationRecord:
+    """Where a document was observed, and whether that record may be read as whole.
+
+    Three fields rather than a flattened copy of the store's set: the locations
+    and their count are the store's, the verdict is this layer's rule, and the
+    document travels with them so no adapter has to resolve it twice.
+    """
+
+    verdict: str
+    document: Document
+    recorded: DocumentLocationSet
+
+    @property
+    def also_found_at(self) -> list[DocumentLocation]:
+        """Every recorded location except the one the document itself reports."""
+        return [
+            location
+            for location in self.recorded.locations
+            if location.containment_path != self.document.containment_path
+        ]
+
+    @property
+    def truncated(self) -> bool:
+        return self.recorded.truncated
+
+    @property
+    def note(self) -> str:
+        """The one sentence every surface says when the record cannot answer.
+
+        Written once here rather than at each surface, for the reason
+        `ingestion-coverage` gives about coverage reasons: two renderings of a
+        caveat a caller weighs before trusting the corpus are free to diverge,
+        and the divergence is invisible.
+        """
+        if self.verdict == LOCATIONS_COMPLETE:
+            return ""
+        return (
+            "this document was ingested before source locations were recorded, "
+            "so the locations shown may be incomplete and any others were "
+            "overwritten"
+        )
 
 @dataclass(frozen=True)
 class _Work:
@@ -555,6 +633,11 @@ class IngestionService:
                 parent_id=work.parent_id,
                 containment_path=work.containment_path,
                 identity_path=identity_path,
+                # Ignored by the upsert on conflict, deliberately: a document
+                # migrated in from an older schema keeps its `False` however
+                # often it is reingested, because the copies it lost are still
+                # lost. Only an insert can honestly claim the record is whole.
+                locations_recorded=True,
             )
             # Everything that can fail happens before anything is written.
             #
@@ -580,10 +663,27 @@ class IngestionService:
             )
 
             stored = self._store.upsert_document(document)
+            # Recorded after the row exists, so the foreign key resolves, and
+            # before the chunks, so a document that reached this point has its
+            # location whatever happens next.
+            location_is_new = self._store.record_document_location(
+                stored.id, work.containment_path, now
+            )
             # Mentions travel with the chunks rather than in a later call:
             # `replace_chunks` mints every chunk id afresh, so a separate write
             # afterwards would attach them to rows that had just been replaced.
             self._store.replace_chunks(stored.id, prepared, embeddings, mentions)
+            if existing is None:
+                location = LOCATION_FIRST
+            elif not existing.locations_recorded:
+                # The document predates the record. This path may well be the
+                # one it was originally ingested from, so calling it a discovery
+                # would be a finding this instance cannot support.
+                location = LOCATION_UNKNOWN
+            elif location_is_new:
+                location = LOCATION_NEW
+            else:
+                location = LOCATION_KNOWN
             return (
                 IngestOutcome(
                     path=str(work.path),
@@ -591,6 +691,7 @@ class IngestionService:
                     document_id=stored.id,
                     chunks=len(prepared),
                     containment_path=work.containment_path,
+                    location=location,
                 ),
                 stored,
                 extraction,
@@ -893,3 +994,21 @@ class IngestionService:
                 f"{reference!r} matches {len(matches)} documents ({shown}); use the full id"
             )
         raise NotFoundError(f"no document in this casefile matches {reference!r}")
+
+    def document_locations(
+        self, casefile_reference: str, reference: str
+    ) -> DocumentLocationRecord:
+        """Where one document's bytes were observed, bounded, with a verdict.
+
+        The verdict is a rule of this layer rather than of the store, the same
+        way a casefile's coverage verdict is: the store holds counts, and what
+        those counts may be claimed to mean is domain reasoning. Resolution goes
+        through `resolve_document`, so casefile scoping and 8-character prefixes
+        are inherited rather than restated.
+        """
+        document = self.resolve_document(casefile_reference, reference)
+        recorded = self._store.document_locations(document.id, MAX_DOCUMENT_LOCATIONS)
+        verdict = LOCATIONS_COMPLETE if document.locations_recorded else LOCATIONS_UNKNOWN
+        return DocumentLocationRecord(
+            verdict=verdict, document=document, recorded=recorded
+        )

@@ -146,6 +146,13 @@ def test_an_older_store_gains_the_ingest_run_record(tmp_path):
     `test_the_ladder_versions_strictly_increase`, which asserts the property
     instead of consuming the value. This half is here for the behaviour: that a
     store one rung down really does arrive with the table.
+
+    The anchor is the step that creates the table, not the top of the ladder.
+    The two were the same value only while this was the newest rung: taking
+    `max(to_version < SCHEMA_VERSION)` means every rung added above it builds a
+    store already stamped at *this* step's version, which then correctly skips
+    the step the test exists to exercise and fails for a reason that has nothing
+    to do with the run record.
     """
     expected_columns = {
         "id",
@@ -161,8 +168,14 @@ def test_an_older_store_gains_the_ingest_run_record(tmp_path):
         "exhausted_by",
     }
 
+    creates_the_record = min(
+        step.to_version
+        for step in _STEPS
+        if any("ingest_runs" in statement for statement in step.statements)
+    )
     previous = max(
-        step.to_version for step in _STEPS if step.to_version < SCHEMA_VERSION
+        (step.to_version for step in _STEPS if step.to_version < creates_the_record),
+        default=_BASELINE_VERSION,
     )
     at_previous = build_baseline_store(tmp_path / "at-previous.db", version=previous)
     store = SqliteStore(at_previous)
