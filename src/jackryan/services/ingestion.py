@@ -94,6 +94,16 @@ class IngestReport:
 
 
 @dataclass(frozen=True)
+class MentionOffsetRepair:
+    """What a pass over a casefile's mention positions examined and changed."""
+
+    documents_examined: int
+    chunks_examined: int
+    chunks_unlocatable: int
+    mentions_corrected: int
+
+
+@dataclass(frozen=True)
 class _Work:
     """One file waiting to be ingested, and where it came from."""
 
@@ -563,6 +573,56 @@ class IngestionService:
             return ""
         notes = [c.summary for c in chunks] if self._fold_summaries else [c.text for c in chunks]
         return self._summariser.summarise_document(notes)
+
+    # -- repair ------------------------------------------------------------
+
+    def repair_mention_offsets(self, casefile_reference: str) -> MentionOffsetRepair:
+        """Recompute where each mention sits in its document, from the stored text.
+
+        A mention's document position is derived when its chunk is written, from
+        that chunk's recorded start. Chunks written while the recorded start
+        named the untrimmed window are wrong by the trimmed whitespace, so two
+        overlapping chunks place one occurrence twice and the inventory counts it
+        twice. Recomputing the position corrects that without re-extracting,
+        re-chunking or re-embedding anything.
+
+        Operator-invoked rather than a migration step: locating a stored text
+        inside the span its offsets name is not expressible in the schema
+        ladder's statements, and a corpus is not rewritten in place because
+        somebody opened it.
+
+        Writes only the derived position. Where a chunk's stored text is not
+        found inside its own span — a half-completed ingest leaving new text
+        against old offsets, the same inconsistency `Windower._slice` declines to
+        widen — that chunk is counted and left alone: a position guessed for it
+        would resolve and be wrong.
+        """
+        casefile = self._casefiles.resolve(casefile_reference)
+        documents = chunks_seen = unlocatable = corrected = 0
+        for document_id in self._store.list_document_ids(casefile.id):
+            document = self._store.get_document(document_id)
+            if document is None:
+                continue
+            documents += 1
+            text = document.extracted_text
+            starts: dict[str, int] = {}
+            for chunk in self._store.list_document_chunks(document_id):
+                chunks_seen += 1
+                # Searched inside the span the offsets name and never in the
+                # whole document: the same text can occur elsewhere, and a match
+                # found there would move the mention into a passage nobody chose.
+                within = text[chunk.char_start : chunk.char_end].find(chunk.text)
+                if within < 0:
+                    unlocatable += 1
+                    continue
+                starts[chunk.id] = chunk.char_start + within
+            corrected += self._store.recompute_mention_offsets(starts)
+        return MentionOffsetRepair(
+            documents_examined=documents,
+            chunks_examined=chunks_seen,
+            chunks_unlocatable=unlocatable,
+            mentions_corrected=corrected,
+        )
 
     # -- queries -----------------------------------------------------------
 

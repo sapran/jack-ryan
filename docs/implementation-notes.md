@@ -61,6 +61,12 @@ and why it was parked.
   a `mcp-tool-surface` contract change and needs its own delta. The journey test
   is named and documented for what it actually proves — reaching and *reading*
   without a search — after an earlier version claimed more.
+- **Root `CLAUDE.md` points at an `openspec/config.yaml` that does not exist.**
+  Its "OpenSpec governs every substantive change" section says "Config at
+  `openspec/config.yaml`"; `openspec/` holds only `changes/` and `specs/`.
+  Noticed while reading the OpenSpec rules for the chunk-offset change and
+  parked as unrelated to it — a documentation line, but one that sends a reader
+  looking for a file that was never committed.
 
 - **"The fold is on" and "the identity says the fold is on" are computed from
   different things.** `app.py` decides `folding` from the summariser *object*

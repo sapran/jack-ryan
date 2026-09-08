@@ -724,6 +724,56 @@ class SqliteStore:
             ).fetchall()
         return [_row_to_chunk(row) for row in rows]
 
+    def list_document_ids(self, casefile_id: str) -> list[str]:
+        """Identifiers only, so a maintenance pass need not hold the corpus.
+
+        `list_documents` carries every row's extracted text, which is the whole
+        of a casefile. Ordered so a run over it is reproducible.
+        """
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id FROM documents WHERE casefile_id = ?"
+                " ORDER BY created_at, id",
+                (casefile_id,),
+            ).fetchall()
+        return [row["id"] for row in rows]
+
+    def list_document_chunks(self, document_id: str) -> list[Chunk]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM chunks WHERE document_id = ? ORDER BY ordinal",
+                (document_id,),
+            ).fetchall()
+        return [_row_to_chunk(row) for row in rows]
+
+    def recompute_mention_offsets(self, text_starts: dict[str, int]) -> int:
+        """Only `document_offset`, and only where it differs.
+
+        The derivation is the one `replace_chunks` makes at write time — the
+        chunk's start plus the mention's own chunk-relative offset — from a
+        start the caller established against the document's text rather than
+        from the one recorded on the chunk.
+
+        The `<>` predicate is what makes a repeated run report nothing rather
+        than rewriting every row and claiming a correction.
+        """
+        if not text_starts:
+            return 0
+        with self._lock:
+            db = self._db
+            try:
+                cursor = db.executemany(
+                    "UPDATE mentions SET document_offset = ? + char_start"
+                    " WHERE chunk_id = ? AND document_offset <> ? + char_start",
+                    [(start, chunk_id, start) for chunk_id, start in text_starts.items()],
+                )
+                changed = cursor.rowcount
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+        return changed
+
     # -- retrieval ---------------------------------------------------------
     #
     # The queries live in `retrieval.py`; these take the lock and hand over the
