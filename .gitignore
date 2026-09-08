@@ -30,3 +30,7 @@ build/
 
 # Disposable worktrees for isolated change work
 /.worktrees/
+
+# macOS Finder metadata. Untracked and noisy; they were staged by a `git add -A`
+# once and caught at the leak check.
+.DS_Store

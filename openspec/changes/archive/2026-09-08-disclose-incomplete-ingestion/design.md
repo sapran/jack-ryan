@@ -111,21 +111,39 @@ The honest fix is to move the ceiling into `_expand`, where `budget.take_child`
 already measures `len(child.data)`. That changes zip, tar and RAR behaviour and
 one existing test, so it is parked rather than smuggled in here.
 
-## Decision 5: the run row is written after the loop, never in a `finally`
+## Decision 5: the run row is written after the loop, and its absence is made detectable
 
 A run that raised part way is **deliberately left unrecorded**.
 
 Recording it would require deciding what a half-run covered, and any answer is a
-guess. Leaving it unrecorded makes the next reader's verdict `unknown` — the
-conservative direction, and the one an operator can act on. `finally` would
-instead record a row asserting the run finished, which is the one thing known to
-be false.
+guess. `finally` would instead record a row asserting the run finished, which is
+the one thing known to be false.
 
-**The write itself is allowed to raise.** An eight-integer insert that fails means
-the store is broken, and a caller who ingested a folder needs to hear that rather
-than receive a clean-looking report. There is no logger anywhere in
-`src/jackryan`, so a swallow would leave no artifact at all — and the honest
-fallback is already in place: an unrecorded run makes the next verdict `unknown`.
+**Corrected after review, because the original form of this decision was
+wrong.** It claimed that leaving a raised run unrecorded "makes the next
+reader's verdict `unknown`". That is true only of a *first* run. Three reviewers
+independently reproduced the consequence by execution: a run that aborts after
+any clean recorded run leaves the documents it already wrote in the corpus, the
+earliest recorded run still began against an empty casefile, every recorded run
+is clean — and the verdict read `complete` with offered files missing. Measured
+at four documents held against six offered. That is the one answer this whole
+capability exists to prevent, and absence of a record could not detect it.
+
+So absence is kept, and made **detectable**: each row records the casefile's
+document count both before and after its run, and a gap between one run's
+`documents_after` and the next run's `documents_before` is a continuity break
+that forces `unknown`. Chosen over marking an aborted run, because a marker
+cannot be written by a process that was killed, nor by a run whose own record
+write failed; the gap catches both. Chosen over an unfinished-row scheme because
+`delete_document` is exposed on no surface in this repository, so continuity
+chaining has no reachable false positive from legitimate curation.
+
+**The write itself is allowed to raise.** An insert of eleven values that fails
+means the store is broken, and a caller who ingested a folder needs to hear that
+rather than receive a clean-looking report. There is no logger anywhere in
+`src/jackryan`, so a swallow would leave no artifact at all — and that failure is
+the one the gap catches for free, since the next run finds documents this one
+never accounted for.
 
 ## Decision 6: `limitations` derives, `complete` derives from it
 

@@ -37,7 +37,7 @@
 ## 7. Write the record, expose the verdict
 
 - [x] 7.1 Capture `started_at` and `documents_before` before the budget is built; verify `documents_before` is read once and nowhere later. *One read site in `ingest`, before the workspace exists.*
-- [x] 7.2 Record the run after the loop, not in a `finally`; verify a run that raised leaves no row and the write is allowed to raise. *`test_the_workspace_is_removed_even_when_the_ingest_raises` already drives an ingest that raises mid-run; the record is after the `finally`, so no row is written for it.*
+- [x] 7.2 Record the run after the loop, not in a `finally`; verify a run that raised leaves no row and the write is allowed to raise. *`test_the_workspace_is_removed_even_when_the_ingest_raises` already drives an ingest that raises mid-run; the record is after the `finally`, so no row is written for it. **Insufficient as first written, and corrected after review**: leaving a raised run unrecorded only makes the verdict `unknown` for a *first* run. Three reviewers reproduced the consequence by execution — an abort after a clean run read `complete` with four documents held against six offered. Each row now carries `documents_after` as well as `documents_before`, and a gap between consecutive runs is a continuity break forcing `unknown`, which also catches a killed process and a failed record write. Pinned by `test_a_run_that_raised_part_way_keeps_the_verdict_unknown` and mutation-proved.*
 - [x] 7.3 Add `CasefileCoverage` and `CasefileService.coverage`; verify the verdict is the service's rule and the counts stay the store's. *`test_no_adapter_reaches_the_store` still green, which is what forced the method onto the service rather than letting the tool reach the store.*
 
 ## 8. Adapters, in one vocabulary

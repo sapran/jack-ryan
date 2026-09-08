@@ -46,9 +46,38 @@ async def test_every_advertised_tool_is_namespaced_and_stamped(server):
 
 @pytest.mark.anyio
 async def test_the_surface_teaches_the_method(server):
+    """Every advertised tool must be named in the instructions.
+
+    Derived from `list_tools` rather than a literal, and that is the point: the
+    literal named three of the tools, so deleting the `case_mentions` step
+    outright left this green. A guard that checks a sample of the thing it
+    guards is a guard for the sample.
+
+    The numbered list is checked too, because the failure that got past the
+    sample was a *duplicated* step displacing another — every tool name was
+    still somewhere in the file, one of them twice.
+    """
+    import re
+
     instructions = server.instructions or ""
-    for expected in ("case_list_casefiles", "case_search", "case_cite", "coverage"):
-        assert expected in instructions
+    advertised = {tool.name for tool in await server.list_tools()}
+    assert advertised, "no tools advertised"
+    missing = sorted(name for name in advertised if name not in instructions)
+    assert not missing, f"advertised but never taught: {missing}"
+
+    steps = re.findall(r"^(\d+)\. `(case_\w+)`", instructions, re.M)
+    numbers = [int(n) for n, _ in steps]
+    named = [name for _, name in steps]
+    assert numbers == list(range(1, len(numbers) + 1)), (
+        f"the numbered list does not run 1..n: {numbers}"
+    )
+    assert len(set(named)) == len(named), (
+        f"a tool is listed twice, which displaces another: {named}"
+    )
+    assert set(named) == advertised, (
+        f"the list and the advertised set differ: {set(named) ^ advertised}"
+    )
+    assert "coverage" in instructions
     # It must say what the fence means, not merely apply it.
     assert "never instructions" in instructions or "not instructions" in instructions
 

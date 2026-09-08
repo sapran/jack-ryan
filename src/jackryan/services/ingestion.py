@@ -105,16 +105,44 @@ class IngestReport:
         than computed alongside it: a run reported complete while carrying a
         reason, or incomplete with none to give, is the failure this shape makes
         unreachable.
+
+        Each line agrees with its own count. These strings are the whole of what
+        an analyst is told about a shortfall, on all three surfaces, and a
+        single skipped file said "1 offered files have no registered extractor"
+        — which reads as machine output and invites being skimmed past, which is
+        the one thing a disclosure must not invite.
         """
+
+        def counted(n: int, singular: str, plural: str) -> str:
+            return f"{n} {singular if n == 1 else plural}"
+
         lines: list[str] = []
         if self.exhausted_by is not None:
             lines.append(f"expansion stopped at a bound: {self.exhausted_by}")
         if self.failed:
-            lines.append(f"{self.failed} offered items failed to be read")
+            lines.append(
+                counted(
+                    self.failed,
+                    "offered item failed to be read",
+                    "offered items failed to be read",
+                )
+            )
         if self.refusals:
-            lines.append(f"{len(self.refusals)} container entries were refused")
+            lines.append(
+                counted(
+                    len(self.refusals),
+                    "container entry was refused",
+                    "container entries were refused",
+                )
+            )
         if self.skipped:
-            lines.append(f"{len(self.skipped)} offered files have no registered extractor")
+            lines.append(
+                counted(
+                    len(self.skipped),
+                    "offered file has no registered extractor",
+                    "offered files have no registered extractor",
+                )
+            )
         return lines
 
     @property

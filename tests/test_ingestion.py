@@ -54,7 +54,34 @@ def test_a_file_no_extractor_accepts_is_reported_as_skipped(context, casefile, t
     assert not any("activate.bat" in o.path for o in report.outcomes)
     assert report.ingested == 1
     assert not report.complete
-    assert any("no registered extractor" in line for line in report.limitations)
+    # By value, singular. This line is the whole of what an analyst is told
+    # about the shortfall, and "1 offered files have no registered extractor"
+    # reads as machine output — which is what gets skimmed past.
+    assert report.limitations == ["1 offered file has no registered extractor"]
+
+
+def test_a_limitation_line_agrees_with_its_own_count(context, casefile, tmp_path):
+    """The plural branch of the same three lines.
+
+    A separate test rather than more assertions above, because a single fixture
+    cannot be both one file and several, and asserting the singular and the
+    plural forms of one string in one test means neither is pinned when the
+    fixture changes.
+    """
+    folder = tmp_path / "drop"
+    folder.mkdir()
+    (folder / "lease.md").write_text("# Lease\n\nThe harbour lease was awarded.\n", "utf-8")
+    for name in ("activate.bat", "install.bat"):
+        (folder / name).write_bytes(b"@echo off\r\nrem nothing reads this\r\n")
+    for name in ("first.txt", "second.txt"):
+        (folder / name).write_text("", encoding="utf-8")
+
+    report = context.ingestion.ingest(casefile.short_id, folder)
+
+    assert report.limitations == [
+        "2 offered items failed to be read",
+        "2 offered files have no registered extractor",
+    ]
 
 
 def test_a_clean_run_reports_itself_complete(context, casefile, corpus):
