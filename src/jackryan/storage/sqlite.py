@@ -34,6 +34,8 @@ from .port import (
     IngestionCoverage,
     IngestRun,
     Mention,
+    MentionCarrier,
+    MentionDocumentPage,
     MentionFacet,
 )
 
@@ -512,6 +514,123 @@ class SqliteStore:
             limit=int(limit),
             selection=selection,
         )
+
+    def documents_with_mention(
+        self,
+        casefile_id: str,
+        mention_kind: str,
+        mention_value: str,
+        offset: int,
+        limit: int,
+    ) -> MentionDocumentPage:
+        """Every document carrying one identifier, one page, and the set's size.
+
+        Three statements under one lock, all three composing the *same*
+        predicate string and binds: the count, the page, and the passage to cite
+        per returned document.
+
+        The page is chosen on a query that touches only `mentions` and the two
+        small `documents` columns it orders by, and widened afterwards. Ordering
+        `SELECT d.*` directly puts `extracted_text` through the sorter, which is
+        the whole cost this page exists to avoid — a page of a real casefile
+        would carry megabytes of text to report a handful of integers.
+
+        The ordering leads with the occurrence count, so the most heavily
+        carrying document is reached first, and ends in `d.id`, which is unique,
+        so it is a total order and a page boundary cannot land inside a tie.
+        That is deliberately unlike the fused-ranking rule, which forbids
+        breaking a tie by an identifier: that rule exists so two stores built
+        from the same documents rank alike, and document ids differ between
+        stores. Here the requirement is only that one unchanged store pages
+        consistently, and `d.id` is reached only where two documents are equal
+        on the count, the containment path and the creation time before it.
+        `containment_path` is the corpus-derived key, as it is for the children
+        selection above, and is set for every document — a folder walk records
+        each file's relative path, a single file its name.
+        """
+        body, binds = retrieval.mention_predicate(
+            "m", casefile_id, mention_kind, mention_value
+        )
+        # Floored here as well as in the service, for the reason
+        # `list_document_page` gives: the reported `offset` must be the one
+        # SQLite applied, because `continue_from` is computed from it and the
+        # tests reach this method directly.
+        start = max(0, int(offset))
+        with self._lock:
+            total = self._db.execute(
+                f"SELECT COUNT(DISTINCT m.document_id) AS total FROM mentions m WHERE {body}",
+                binds,
+            ).fetchone()["total"]
+            rows = self._db.execute(
+                "SELECT d.*, ("
+                "   SELECT COUNT(*) FROM documents k WHERE k.parent_id = d.id"
+                " ) AS child_count, chosen.mentions AS mentions"
+                " FROM documents d"
+                " JOIN (SELECT m.document_id AS document_id,"
+                "              COUNT(DISTINCT m.document_offset) AS mentions"
+                "         FROM mentions m"
+                "         JOIN documents dd ON dd.id = m.document_id"
+                f"        WHERE {body}"
+                "         GROUP BY m.document_id, dd.containment_path, dd.created_at"
+                "         ORDER BY mentions DESC, dd.containment_path, dd.created_at,"
+                "                  m.document_id"
+                "         LIMIT ? OFFSET ?) chosen ON chosen.document_id = d.id"
+                # Repeated deliberately: SQL guarantees nothing about the row
+                # order a join produces, so the subquery's ordering is not
+                # inherited. The same insurance `list_document_page` keeps.
+                " ORDER BY chosen.mentions DESC, d.containment_path, d.created_at, d.id",
+                (*binds, int(limit), start),
+            ).fetchall()
+            documents = [_row_to_document(row) for row in rows]
+            counts = {row["id"]: row["mentions"] for row in rows}
+            passages = self._first_passages(body, binds, [d.id for d in documents])
+        return MentionDocumentPage(
+            carriers=[
+                MentionCarrier(
+                    document=document,
+                    mentions=counts[document.id],
+                    chunk_id=passages.get(document.id, ""),
+                )
+                for document in documents
+            ],
+            total_matching=total,
+            offset=start,
+            limit=int(limit),
+            kind=mention_kind,
+            value=mention_value,
+        )
+
+    def _first_passages(
+        self, body: str, binds: tuple[str, ...], document_ids: list[str]
+    ) -> dict[str, str]:
+        """The passage carrying each named document's earliest occurrence.
+
+        One statement for the whole page rather than a correlated subquery per
+        row: correlated, it re-seeks every mention of the identifier in the
+        casefile once for each of up to two hundred rows.
+
+        The pick is the earliest position in the document, then the lowest chunk
+        ordinal. Two chunks sharing an overlap hold the same occurrence, and the
+        earlier chunk is the one a reader reaches first; the trailing
+        `m.chunk_id` decides only between two candidates indistinguishable on
+        both, where there is nothing left to decide.
+
+        Called inside the caller's lock, so it takes none of its own.
+        """
+        if not document_ids:
+            return {}
+        placeholders = ",".join("?" for _ in document_ids)
+        rows = self._db.execute(
+            "SELECT m.document_id AS document_id, m.chunk_id AS chunk_id"
+            " FROM mentions m JOIN chunks c ON c.id = m.chunk_id"
+            f" WHERE {body} AND m.document_id IN ({placeholders})"
+            " ORDER BY m.document_id, m.document_offset, c.ordinal, m.chunk_id",
+            (*binds, *document_ids),
+        ).fetchall()
+        first: dict[str, str] = {}
+        for row in rows:
+            first.setdefault(row["document_id"], row["chunk_id"])
+        return first
 
     def list_documents(
         self, casefile_id: str, include_expanded: bool = False

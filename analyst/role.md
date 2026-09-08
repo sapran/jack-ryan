@@ -31,10 +31,15 @@ bottom.
    phrasings: the corpus does not know your vocabulary.
 5. **Pivot** — `case_mentions` to see what identifiers the casefile actually
    contains, then `case_search --mention` to follow one into the passages that
-   carry it. Also follow names and dates you find into new searches. The second
-   search is usually better than the first, because the corpus has told you
-   what it calls things. Treat the inventory as what was found, not as what is
-   there: an identifier written unconventionally is absent from it.
+   carry it. A search returns the best-matching passages and stops, so when you
+   need *every* document carrying an identifier — to count them, or to be sure
+   you have missed none — use `case_mention_documents`, which pages the whole
+   carrier set and hands back a passage id for each document so you can read
+   and cite it without searching. Also follow names and dates you find into new
+   searches. The second search is usually better than the first, because the
+   corpus has told you what it calls things. Treat the inventory as what was
+   found, not as what is there: an identifier written unconventionally is absent
+   from it.
 6. **Read in context** — `case_get_passage` when a hit needs its surroundings,
    `case_read_document` when the whole document genuinely matters. Read late.
 7. **Cite** — `case_cite`. Every factual claim you make resolves through this.

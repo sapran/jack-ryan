@@ -6,6 +6,15 @@ and why it was parked.
 
 ## Parked
 
+- **A docstring counts the port's methods, and the count is stale.**
+  `services/windowing.py:207-210` says the `Windower` asks the store "one
+  question out of the nineteen the port declares". `StorePort` declared 31
+  before `follow-an-identifier-exhaustively` and 32 after, so the figure was
+  already wrong by twelve and is not made wrong by that change. Parked rather
+  than corrected because the file is untouched by it, and because a hand-written
+  count in prose will go stale again — the fix worth having is to state the
+  narrowness without a number.
+
 - **The unbounded listing docstring overstates adapter migration.** `storage/sqlite.py:521` says every adapter uses `list_document_page`, but `cli.py:284` still calls `list_documents`, loading full extracted text for the selection. MCP and REST are paged; CLI is not. Parked because CLI pagination was not part of task 2's MCP/REST handoff; correct the claim or scope a CLI paging change separately.
 
 - **Task 2 PM verification hit a converter-test setup failure outside the paging diff.** On `6b7f872`, `uv run --no-sync pytest -q` returned 758 passed, 3 skipped and one failure: `tests/test_legacy_office.py::test_a_timeout_kills_the_whole_converter_tree_not_just_the_launcher` could not read the stub's `grandchild.pid`, before reaching its process-tree assertions. The exact test passed when run alone (1 passed, exit 0); the full run remains failed and no root cause or regression attribution is established. Parked because converter behavior is outside task 2. The focused paging suite passed all 16 tests.
@@ -132,6 +141,15 @@ and why it was parked.
   a `mcp-tool-surface` contract change and needs its own delta. The journey test
   is named and documented for what it actually proves — reaching and *reading*
   without a search — after an earlier version claimed more.
+
+  **Narrowed, not closed, by `follow-an-identifier-exhaustively`.**
+  `case_mention_documents` hands back a `chunk_id` per document, so a document
+  reached by *identifier* — the pivot out of `case_mentions` — is now citable
+  with no search: `test_an_agent_cites_a_carrier_without_a_ranked_search`
+  proves it with `case_search` removed from the server. The gap above is
+  unchanged for `case_list_documents`, which is the container-navigation
+  journey and the case this note was written about: a container's child that
+  carries no extracted identifier is still reachable, readable and uncitable.
 
 - **The offset repair skips a document that vanished mid-pass, and no field of
   its report can say so.** `repair_mention_offsets` lists a casefile's document
@@ -353,6 +371,17 @@ and why it was parked.
   production consumer — passage-level mentions on the agent surface — which is a
   new capability rather than a refactor. Revisit when something actually needs
   to read a mention.
+
+  **Something now does, and it is the aggregate shape rather than the proposed
+  one.** `follow-an-identifier-exhaustively` added
+  `StorePort.documents_with_mention`, which reads the `mentions` table and
+  returns documents, occurrence counts and a passage id — a production caller
+  reached from all four surfaces. So the port is no longer write-only for
+  mentions. The chunk-keyed `get_mentions(chunk_ids)` still has no caller, and
+  none of the twelve raw-SQL reads in `tests/test_mentions.py` changed: they
+  assert casefile-wide invariants that an aggregate cannot express either, for
+  the same structural reason recorded above. Revisit again only if something
+  needs one chunk's mentions.
 
 - **Every agent-surface failure now passes through one place, and that place
   emits nothing.** `returns_error_payload` (`interfaces/mcp/errors.py`) reduces

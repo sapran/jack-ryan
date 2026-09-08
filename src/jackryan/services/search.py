@@ -6,8 +6,17 @@ from ..embedding.port import EmbedderPort
 from ..errors import AmbiguousReferenceError, ConfigError, NotFoundError, ValidationError
 from ..mentions import MENTION_KINDS, default_extractors
 from ..reranking.port import RerankError, RerankerPort
-from ..storage.port import Chunk, Document, MentionFacet, SearchHit, StorePort, Window
+from ..storage.port import (
+    Chunk,
+    Document,
+    MentionDocumentPage,
+    MentionFacet,
+    SearchHit,
+    StorePort,
+    Window,
+)
 from .casefiles import CasefileService
+from .ingestion import MAX_DOCUMENT_OFFSET
 from .windowing import DEFAULT_WINDOW_MAX_CHARS, Windower
 
 MAX_LIMIT = 100
@@ -30,6 +39,11 @@ RRF_K = 60
 
 DEFAULT_FACET_LIMIT = 50
 MAX_FACET_LIMIT = 500
+
+DEFAULT_CARRIER_PAGE = 50
+# Matches `MAX_DOCUMENT_PAGE`: the rows are document metadata of the same
+# weight.
+MAX_CARRIER_PAGE = 200
 
 
 def _parsed_mention(reference: str) -> tuple[str, str]:
@@ -338,6 +352,55 @@ class SearchService:
         # Clamped rather than refused, as every other bound on this surface is.
         bounded = max(1, min(int(limit), MAX_FACET_LIMIT))
         return self._store.mention_facets(casefile.id, _validated_kind(kind), bounded)
+
+    def mention_documents(
+        self,
+        casefile_reference: str,
+        mention: str,
+        offset: int = 0,
+        limit: int = DEFAULT_CARRIER_PAGE,
+    ) -> MentionDocumentPage:
+        """Every document carrying one identifier, a bounded page at a time.
+
+        The exhaustive counterpart to `search`, and deliberately not a mode of
+        it. `search` ranks and stops: both retrievers are asked for a bounded
+        depth and the result is cut to the caller's limit, so an identifier
+        carried by three hundred documents comes back as ten passages and
+        nothing in that answer says so. This asks the store which documents
+        carry it and pages the answer, which is a different question with a
+        different bound — how many pages the caller reads.
+
+        It embeds nothing and ranks nothing. Paging by raising the retrieval
+        depth was the obvious alternative and is unusable: reciprocal rank
+        fusion ties routinely, so two requests at different depths do not agree
+        about which candidate sits at a given position, and pages cut from such
+        an ordering repeat and omit entries silently.
+
+        The identifier is parsed by the same function `search` uses, so
+        `<kind>:<value>` and a bare value mean here exactly what they mean
+        there, an unknown kind is refused naming the kinds, and the caller's
+        spelling is normalised the way the store holds it.
+
+        An empty identifier is refused. `_parsed_mention` returns no filter for
+        it, which is right for a search and wrong here: the store would match
+        `normalised = ''`, find nothing, and the caller would read an empty
+        carrier set as "this casefile carries no such identifier" — the silent
+        false negative this whole capability exists to remove.
+
+        Both bounds are clamped at both ends, as every bound on this surface is.
+        """
+        casefile = self._casefiles.resolve(casefile_reference)
+        kind, value = _parsed_mention(mention)
+        if not value:
+            raise ValidationError(
+                "an identifier is required. Write <kind>:<value>, or a value "
+                "alone to match any kind; take one from the identifier inventory."
+            )
+        bounded = max(1, min(int(limit), MAX_CARRIER_PAGE))
+        start = min(max(0, int(offset)), MAX_DOCUMENT_OFFSET)
+        return self._store.documents_with_mention(
+            casefile.id, kind, value, start, bounded
+        )
 
     # -- reranking ---------------------------------------------------------
 

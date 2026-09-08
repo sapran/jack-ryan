@@ -18,6 +18,7 @@ from .ingestion.legacy_office import converter_status
 from .app import build_context
 from .errors import JackRyanError
 from .rendering import render_casefile, render_document, render_hit, render_report
+from .services.search import DEFAULT_CARRIER_PAGE
 from .storage.port import Casefile, Document, SearchHit
 
 
@@ -142,6 +143,17 @@ def build_parser() -> argparse.ArgumentParser:
     mentions.add_argument("casefile")
     mentions.add_argument("--kind", default="", help="one identifier kind, or all")
     mentions.add_argument("--limit", type=int, default=50)
+
+    # A separate top-level command rather than a subgroup, because `mentions`
+    # is already a leaf command and cannot also be a group.
+    carriers = sub.add_parser(
+        "mention-documents",
+        help="every document carrying one identifier, a page at a time",
+    )
+    carriers.add_argument("casefile")
+    carriers.add_argument("mention", metavar="KIND:VALUE")
+    carriers.add_argument("--offset", type=int, default=0)
+    carriers.add_argument("--limit", type=int, default=DEFAULT_CARRIER_PAGE)
 
     document = sub.add_parser("document", help="inspect ingested documents").add_subparsers(
         dest="document_command", required=True
@@ -273,6 +285,57 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(
                         f"{row['mentions']:>8}  {row['documents']:>5}  "
                         f"{row['kind']:<20} {row['value']}"
+                    )
+            return 0
+
+        if args.command == "mention-documents":
+            page = context.search.mention_documents(
+                args.casefile, args.mention, args.offset, args.limit
+            )
+            envelope = {
+                "mention": args.mention,
+                "kind": page.kind,
+                "value": page.value,
+                "total": len(page.carriers),
+                "offset": page.offset,
+                "total_matching": page.total_matching,
+                "truncated": page.truncated,
+                "continue_from": page.continue_from,
+                "documents": [
+                    {
+                        **_render_document(carrier.document),
+                        "mentions": carrier.mentions,
+                        "chunk_id": carrier.chunk_id,
+                    }
+                    for carrier in page.carriers
+                ],
+            }
+            if args.json:
+                # The envelope, not a bare row list as `mentions` prints: the
+                # paging counts are the point of a paged command, and a list
+                # drops them.
+                _print(envelope, True, "")
+            elif not page.carriers:
+                print(
+                    f"No document in this casefile carries {page.value}. The "
+                    "inventory records what the extractors found."
+                )
+            else:
+                print(
+                    f"{page.value}"
+                    + (f" ({page.kind})" if page.kind else "")
+                    + f" — {page.total_matching} document(s) carry it"
+                )
+                print(f"{'mentions':>8}  {'passage':<10}  document")
+                for row in envelope["documents"]:
+                    print(
+                        f"{row['mentions']:>8}  {row['chunk_id'][:8]:<10}  "
+                        f"{row.get('found_at') or row['filename']}"
+                    )
+                if page.truncated:
+                    print(
+                        f"\n{len(page.carriers)} of {page.total_matching} shown; "
+                        f"continue with --offset {page.continue_from}"
                     )
             return 0
 

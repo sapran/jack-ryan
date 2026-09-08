@@ -813,3 +813,191 @@ def test_the_two_human_surfaces_return_the_same_ingest_result(
     assert cli_payload["failed"] == 1
     assert any("no registered extractor" in line for line in cli_payload["limitations"])
     assert any("failed to be read" in line for line in cli_payload["limitations"])
+
+
+# -- the exhaustive path out of the inventory --------------------------------
+
+# Hand-counted from the `identified` fixture's own text: `invoice.md` writes the
+# address twice and `letter.md` once, so two documents carry it and their counts
+# sum to the three the inventory reports. Two rather than one, so an ordering by
+# occurrence count is a claim about something; fewer than three, so a carrier set
+# equal to the casefile would not pass.
+EXPECTED_CARRIER_ROWS = frozenset({("invoice.md", 2), ("letter.md", 1)})
+PIVOT_VALUE = "billing@acme.example"
+
+
+def carriers_of(rows):
+    """A surface's carrier page reduced to the two facts every surface must agree on."""
+    return frozenset((row["filename"], row["mentions"]) for row in rows)
+
+
+def test_every_surface_enumerates_the_same_carriers(identified, monkeypatch, capsys):
+    """One question — which documents carry this identifier — asked four ways.
+
+    All four are compared against `EXPECTED_CARRIER_ROWS`, hand-counted from the
+    fixture's text, rather than against each other: four surfaces agreeing on a
+    wrong answer is exactly what one service method behind all of them makes
+    likely, and comparing them only with each other could not see it.
+    """
+    context, casefile = identified
+
+    page = context.search.mention_documents(casefile.short_id, PIVOT_VALUE)
+    service = frozenset(
+        (c.document.filename, c.mentions) for c in page.carriers
+    )
+    assert service == EXPECTED_CARRIER_ROWS, (
+        "the service layer does not enumerate the carriers the fixture's own "
+        f"text contains; expected {sorted(EXPECTED_CARRIER_ROWS)}, got {sorted(service)}"
+    )
+
+    rest = anyio.run(
+        rest_get,
+        rest_app(context),
+        f"/api/casefiles/{casefile.short_id}/mentions/documents",
+        urlencode({"mention": PIVOT_VALUE}),
+    )
+    server = build_mcp_server(context)
+    agent = anyio.run(
+        call,
+        server,
+        "case_mention_documents",
+        {"casefile": casefile.short_id, "mention": PIVOT_VALUE},
+    )
+    command = cli_json(
+        context, monkeypatch, capsys, ["mention-documents", casefile.short_id, PIVOT_VALUE]
+    )
+
+    for surface, rows in (
+        ("REST", rest["documents"]),
+        ("the agent payload", agent["results"]),
+        ("the CLI", command["documents"]),
+    ):
+        assert carriers_of(rows) == EXPECTED_CARRIER_ROWS, (
+            f"{surface} enumerates different carriers: {sorted(carriers_of(rows))} "
+            f"against {sorted(EXPECTED_CARRIER_ROWS)}"
+        )
+
+    # The four paging scalars, which are the point of a paged answer: a surface
+    # that dropped `total_matching` or computed `truncated` its own way would
+    # agree on the rows above and mislead about coverage.
+    for surface, payload in (
+        ("REST", rest),
+        ("the agent payload", agent),
+        ("the CLI", command),
+    ):
+        assert payload["offset"] == 0, surface
+        assert payload["total_matching"] == len(EXPECTED_CARRIER_ROWS), surface
+        assert payload["truncated"] is False, surface
+        assert payload["continue_from"] is None, surface
+        # The normalised form actually matched, which the caller must be able to
+        # see: here it is what was typed, and the fixture writes it in two cases.
+        assert payload["value"] == PIVOT_VALUE, surface
+        assert payload["kind"] == "", surface
+
+
+def test_a_carrier_entry_carries_what_reads_and_cites_it(identified):
+    """The row's and the payload's key sets, asserted exactly.
+
+    Exactly rather than by containment, for the reason `test_mcp_surface.py`
+    records: a renamed key stays truthy and passes every value-by-value
+    assertion above. `chunk_id` is the field the whole capability turns on — it
+    is what lets a document reached by enumeration be read and cited without a
+    ranked search.
+    """
+    context, casefile = identified
+    server = build_mcp_server(context)
+
+    payload = anyio.run(
+        call,
+        server,
+        "case_mention_documents",
+        {"casefile": casefile.short_id, "mention": PIVOT_VALUE},
+    )
+
+    assert set(payload) == {
+        "total",
+        "formatted",
+        "results",
+        "mention",
+        "kind",
+        "value",
+        "offset",
+        "total_matching",
+        "truncated",
+        "continue_from",
+        "content_notice",
+    }
+    for row in payload["results"]:
+        assert set(row) == {
+            "document_id",
+            "short_id",
+            "filename",
+            "media_type",
+            "read_as",
+            "characters",
+            "byte_size",
+            "mentions",
+            "chunk_id",
+        }
+        assert row["chunk_id"], "a carrier that addresses no passage cannot be cited"
+
+
+def test_the_enumeration_tool_is_advertised_stamped_taught_and_in_the_role(identified):
+    """The same four registration points, for the tool that follows the inventory.
+
+    Same argument as the inventory's own version above: the set-comparison test
+    compares `READONLY_TOOLS` with itself, so dropping this tool from it leaves
+    that test green and the tool simply gone.
+    """
+    context, _ = identified
+
+    for profile in sorted(PROFILES):
+        server = build_mcp_server(context, profile=profile)
+        advertised = {tool.name: tool for tool in anyio.run(server.list_tools)}
+        assert "case_mention_documents" in advertised, (
+            f"the {profile} profile does not advertise case_mention_documents, so "
+            "an agent on it cannot reach every document carrying an identifier"
+        )
+        stamp = advertised["case_mention_documents"].annotations
+        assert stamp is not None, "case_mention_documents is advertised unstamped"
+        assert stamp.read_only_hint is True
+        assert stamp.destructive_hint is False
+        assert stamp.open_world_hint is False, (
+            "case_mention_documents reads the local store and reaches nothing "
+            "beyond it, so it is closed-world"
+        )
+
+    server = build_mcp_server(context)
+    assert "case_mention_documents" in (server.instructions or ""), (
+        "the surface does not teach the tool, so an agent has to infer the whole "
+        "carrier set from a bounded ranking"
+    )
+
+    assert "case_mention_documents" in ROLE.read_text(encoding="utf-8"), (
+        "the analyst role does not name the tool. Its pivot step is where an "
+        "identifier becomes the next question, and stopping at the best-matching "
+        "passages is what this tool exists to prevent"
+    )
+
+
+def test_ranked_search_points_at_the_exhaustive_path(identified):
+    """What `case_search` says about its own count, and where completeness lives.
+
+    An agent reading `total` as a quantity of evidence is the failure the
+    exhaustive path exists to remove, and a tool the agent is never told about
+    does not remove it. Read from the advertised description rather than from the
+    source, so this is what an agent is actually given.
+    """
+    context, _ = identified
+    server = build_mcp_server(context)
+    advertised = {tool.name: tool for tool in anyio.run(server.list_tools)}
+
+    description = advertised["case_search"].description or ""
+    assert "case_mention_documents" in description, (
+        "ranked search does not name the exhaustive path, so an agent needing "
+        "every carrier is left raising the limit"
+    )
+    assert "returned" in description and "never how many the" in description, (
+        "ranked search does not say what its own count counts: "
+        f"{description!r}"
+    )

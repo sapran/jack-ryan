@@ -257,6 +257,68 @@ class MentionFacet:
 
 
 @dataclass(frozen=True)
+class MentionCarrier:
+    """One document that carries an identifier, and the passage to cite for it."""
+
+    document: Document
+    # Distinct textual occurrences in this document, counted the way the facet
+    # counts them — by position, never by stored row. Chunks overlap by the
+    # contract's overlap, so one occurrence near a boundary is extracted twice
+    # and a row count is wrong by exactly that overlap, invisibly. Counted this
+    # way, these figures sum to the facet's `mentions` for the identifier,
+    # which is the only check either number gets.
+    mentions: int
+    # A passage carrying the earliest occurrence: what makes a document reached
+    # by enumeration citable without a ranked search first. The earliest
+    # position in the document, then the lowest chunk ordinal, because the two
+    # chunks sharing an overlap hold the same occurrence. Empty only if a
+    # mention outlived its chunk, which the foreign key forbids; an empty value
+    # then reaches `case_cite` as a typed refusal rather than as a citation.
+    chunk_id: str
+
+
+@dataclass(frozen=True)
+class MentionDocumentPage:
+    """One bounded page of the documents carrying one identifier.
+
+    A domain object rather than a dict, for the reason `CasefileStatistics`
+    gives, and a type of its own rather than a `DocumentPage`: an entry here is
+    a document *plus* two values derived from the identifier, exactly as a
+    `SearchHit` is a document plus values derived from a query. Widening
+    `Document` with optional fields instead would touch every surface that
+    shows a document, which is the argument `docs/implementation-notes.md`
+    already parks for `character_count`.
+    """
+
+    carriers: list[MentionCarrier]
+    # How many documents carry the identifier in the store, which is not how
+    # many this page carries. Both are needed: a caller that cannot tell "this
+    # is all of them" from "this is the first fifty" reports the first fifty as
+    # coverage.
+    total_matching: int
+    offset: int
+    limit: int
+    # What was matched, filled by the store from the arguments it was given, so
+    # that two adapters cannot describe one selection differently — the same
+    # arrangement as `DocumentPage.selection`. `kind` is empty where a bare
+    # value matched any kind; `value` is the normalised form, which is what the
+    # counts are grouped by and what an adapter must show, because it may
+    # differ from what the caller typed.
+    kind: str
+    value: str
+
+    @property
+    def truncated(self) -> bool:
+        """Whether documents carrying the identifier were left unreturned."""
+        return self.offset + len(self.carriers) < self.total_matching
+
+    @property
+    def continue_from(self) -> int | None:
+        """The offset that resumes this listing, or `None` when it ended."""
+        return self.offset + len(self.carriers) if self.truncated else None
+
+
+@dataclass(frozen=True)
 class CasefileStatistics:
     """The size and shape of one casefile, counted in the database.
 
@@ -542,6 +604,33 @@ class StorePort(Protocol):
         Counted by the store rather than by the service layer, which holds no
         SQL: fetching a casefile's mentions in order to count them in Python
         costs the whole table in memory for a handful of integers.
+        """
+        ...
+
+    def documents_with_mention(
+        self,
+        casefile_id: str,
+        mention_kind: str,
+        mention_value: str,
+        offset: int,
+        limit: int,
+    ) -> MentionDocumentPage:
+        """One page of the documents carrying one normalised identifier.
+
+        An empty `mention_kind` matches any kind, as the search filter's does.
+        `mention_value` is the normalised form; validating it and refusing an
+        empty one belongs to the service layer, where the kinds are known.
+
+        The count SHALL be computed under the same predicate as the page. A
+        total derived from a different predicate than the rows is a number a
+        caller cannot act on, and nothing downstream detects it — and here it is
+        worse than in a plain listing: a total counted wider than the page keeps
+        `truncated` true past the last entry, so a caller following
+        `continue_from` never terminates.
+
+        No unbounded form is offered. `list_document_page` takes a negative
+        `limit` because the unbounded listing above it needs one; nothing needs
+        every carrier at once.
         """
         ...
 

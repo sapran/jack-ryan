@@ -20,6 +20,7 @@ from .ingestion.containers import rar_status
 from .ingestion.legacy_office import converter_status
 from .app import Context, build_context
 from .services.ingestion import DEFAULT_DOCUMENT_PAGE
+from .services.search import DEFAULT_CARRIER_PAGE
 from .rendering import render_casefile, render_document, render_hit, render_report
 from .errors import (
     AmbiguousReferenceError,
@@ -279,6 +280,42 @@ def create_app(context: Context | None = None) -> FastAPI:
                     "documents": f.documents,
                 }
                 for f in facets
+            ],
+        }
+
+    @app.get("/api/casefiles/{reference}/mentions/documents")
+    async def mention_documents(
+        request: Request,
+        reference: str,
+        mention: str,
+        offset: int = 0,
+        limit: int = DEFAULT_CARRIER_PAGE,
+    ) -> dict[str, Any]:
+        """Every document carrying one identifier, a bounded page at a time."""
+        ctx: Context = request.app.state.context
+        page = await run_in_threadpool(
+            ctx.search.mention_documents,
+            reference,
+            mention,
+            offset=offset,
+            limit=limit,
+        )
+        return {
+            "mention": mention,
+            "kind": page.kind,
+            "value": page.value,
+            "total": len(page.carriers),
+            "offset": page.offset,
+            "total_matching": page.total_matching,
+            "truncated": page.truncated,
+            "continue_from": page.continue_from,
+            "documents": [
+                {
+                    **serialize_document(carrier.document),
+                    "mentions": carrier.mentions,
+                    "chunk_id": carrier.chunk_id,
+                }
+                for carrier in page.carriers
             ],
         }
 

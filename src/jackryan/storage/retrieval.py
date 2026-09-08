@@ -25,6 +25,41 @@ from .port import MentionFacet
 _FTS_TOKEN = re.compile(r"[\w\u0400-\u04FF]+", re.UNICODE)
 
 
+def mention_predicate(
+    alias: str, casefile_id: str, mention_kind: str, mention_value: str
+) -> tuple[str, tuple[str, ...]]:
+    """The `WHERE` body matching one identifier's mentions inside one casefile.
+
+    Public, and shared: the ranked-search filter below splices it into a
+    chunk-id subquery, and the exhaustive enumeration in `sqlite.py` queries
+    the table directly. Both ask the same thing of `casefile_id`, `normalised`
+    and `kind`. Two spellings of one predicate drift silently — a filter that
+    honours a named kind beside an enumeration that forgot to would disagree
+    about what carries an identifier, and neither would error.
+
+    `alias` is the table's alias in the query being assembled, or empty where
+    `mentions` is unaliased. It is a literal from this module or from
+    `sqlite.py` and never comes from a caller; the identifier itself reaches
+    SQLite as a bound parameter, so a value carrying a quote is matched rather
+    than parsed.
+
+    The casefile is repeated wherever this is spliced although the query around
+    it may already be confined to one. It leads both mention indexes, and
+    without it neither is usable.
+
+    `mention_facets` deliberately does not use this. Its predicate omits
+    `normalised`, which it groups by rather than filters on, so it is a
+    different question about the same table.
+    """
+    prefix = f"{alias}." if alias else ""
+    clause = f"{prefix}casefile_id = ? AND {prefix}normalised = ?"
+    parameters: tuple[str, ...] = (casefile_id, mention_value)
+    if mention_kind:
+        clause += f" AND {prefix}kind = ?"
+        parameters += (mention_kind,)
+    return clause, parameters
+
+
 def _mention_filter(
     column: str, casefile_id: str, mention_kind: str, mention_value: str
 ) -> tuple[str, tuple[str, ...]]:
@@ -53,15 +88,8 @@ def _mention_filter(
     """
     if not mention_value:
         return "", ()
-    clause = (
-        f" AND {column} IN (SELECT chunk_id FROM mentions"
-        " WHERE casefile_id = ? AND normalised = ?"
-    )
-    parameters = (casefile_id, mention_value)
-    if mention_kind:
-        clause += " AND kind = ?"
-        parameters += (mention_kind,)
-    return clause + ")", parameters
+    body, parameters = mention_predicate("", casefile_id, mention_kind, mention_value)
+    return f" AND {column} IN (SELECT chunk_id FROM mentions WHERE {body})", parameters
 
 
 def search_keyword(
