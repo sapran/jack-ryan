@@ -61,12 +61,64 @@ and why it was parked.
   a `mcp-tool-surface` contract change and needs its own delta. The journey test
   is named and documented for what it actually proves — reaching and *reading*
   without a search — after an earlier version claimed more.
-- **Root `CLAUDE.md` points at an `openspec/config.yaml` that does not exist.**
-  Its "OpenSpec governs every substantive change" section says "Config at
-  `openspec/config.yaml`"; `openspec/` holds only `changes/` and `specs/`.
-  Noticed while reading the OpenSpec rules for the chunk-offset change and
-  parked as unrelated to it — a documentation line, but one that sends a reader
-  looking for a file that was never committed.
+
+- **The offset repair skips a document that vanished mid-pass, and no field of
+  its report can say so.** `repair_mention_offsets` lists a casefile's document
+  ids, then re-reads each one under a separate lock; when the row has gone by
+  then, `get_document` returns `None` and the loop `continue`s *before*
+  `documents_examined` is incremented. So the count cannot overstate what was
+  read, but it understates it invisibly, and a pass that missed documents reads
+  exactly like one that had none to miss — while those documents' mentions keep
+  counting one occurrence twice. Reachable only by a concurrent delete between
+  the two locked reads, which the shipped deployment does allow: the store's
+  lock is per-process and `docker-compose.yml` runs the `cli` service and the
+  API against one file. The repository has already made this judgement the other
+  way once, in `IngestReport.refusals` — *"Reported rather than dropped: silence
+  here reads as 'everything was ingested'"*. Parked, not fixed: the published
+  `mentions` requirement enumerates what the report carries — documents, chunks,
+  unlocatable chunks, positions corrected — so a fifth counter is a delta to
+  that requirement and belongs in a change that can argue for it. Found by the
+  silent-failure review of `a-chunk-begins-where-its-text-does`.
+
+- **The `repair` CLI branch never reads `args.repair_command`.** The parser
+  declares it with `required=True`, and `main` branches on
+  `args.command == "repair"` and then runs `repair_mention_offsets`
+  unconditionally. Correct today, because argparse admits exactly one value —
+  and latent: the day a second subcommand is added under `repair` (the group's
+  own help, "recompute derived data an earlier ingest recorded wrongly", plainly
+  anticipates one), invoking it will silently perform the mention-offset
+  *write* and hand back a plausible four-field report for a pass nobody asked
+  for. A write running under another command's name is the worst shape this can
+  take. The neighbouring `document` branch, twelve lines above, does dispatch on
+  its own discriminator. One line to close; parked because a code change now
+  needs its own change directory.
+
+- **`recompute_mention_offsets` takes an unscoped chunk-id mapping.** Its
+  predicate is `WHERE chunk_id = ?` alone, so nothing in the store constrains
+  the write to one casefile — the compartment is held only by
+  `repair_mention_offsets` deriving the ids from documents of the casefile it
+  resolved. Every other write on the port is keyed by an owning entity, and
+  `replace_chunks` twenty lines above argues the point at length: it derives
+  `document_id` and `casefile_id` from the parent chunk rather than trusting the
+  caller, because a compartment breach must be *"unreachable rather than merely
+  unused"* on a seam a second producer will arrive through. This new method is
+  the same kind of seam, written the other way. Not reachable today: one caller,
+  ids derived from a resolved casefile, and no adapter may reach the store. The
+  fix is a `casefile_id` parameter in the predicate; parked because changing a
+  port signature deserves an argued proposal rather than a drive-by.
+
+- **The published `mentions` requirement "mentions are written in the same
+  transaction that writes its chunks" now has a second writer, and nothing says
+  the reading that reconciles them.** `recompute_mention_offsets` updates a
+  mention row in a transaction that writes no chunk. The guarantee the
+  requirement exists to protect is intact — its own rationale is entirely about
+  `chunk_id` staying resolvable, the repair never creates, replaces or re-points
+  a mention, and its UPDATE matches nothing once a chunk id has been replaced —
+  so "written" plainly means "created" in context. Parked because that reading
+  is currently left to the reader: one clause in the requirement ("a later pass
+  that corrects the derived document position is not such a write") would make
+  the capability self-consistent, and editing a published spec needs a change
+  directory.
 
 - **"The fold is on" and "the identity says the fold is on" are computed from
   different things.** `app.py` decides `folding` from the summariser *object*

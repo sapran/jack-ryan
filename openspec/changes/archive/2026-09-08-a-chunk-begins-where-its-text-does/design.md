@@ -31,11 +31,21 @@ chunker's own guard and `Windower._slice` compare after `.strip()`.
 **Non-Goals.**
 
 - Moving `chunks.char_start` for rows already written.
-- Tightening `Windower._slice`.
+- Tightening `_slice`'s stale-offset guard, which must keep trimming before it
+  compares. (Its separate *not-widened* test did change, from a span comparison
+  to a text one — see the decision below. Recorded here because the original
+  wording read as though `_slice` were untouched.)
 - A boundary that cuts an identifier in half, so the two chunks yield different
   normalised text. The counts then describe two different strings, which is a
   different defect.
-- Any change to what a citation addresses, or to any payload shape.
+- Any change to which passage a citation addresses, or to any payload shape.
+  Corrected from "what a citation addresses", which was too broad and false:
+  `case_cite` publishes the chunk's own `char_start`/`char_end`, and search and
+  passage provenance publish them as `matched_char_start`/`matched_char_end`, so
+  for a corpus ingested after this change those numbers are narrower by whatever
+  whitespace was trimmed. The quoted text is byte-identical either way, so the
+  span is more accurate rather than different evidence — but it does move, and
+  the sentence said it did not.
 
 ## Decisions
 

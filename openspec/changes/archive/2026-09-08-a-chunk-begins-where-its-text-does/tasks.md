@@ -110,9 +110,14 @@
 
 - [x] 7.1 Add the `repair mention-offsets` subcommand in `build_parser` and its
       branch in `main`; verify all four report fields reach the payload.
-      *`test_repair_reports_a_corpus_that_needs_nothing` reads three of the four
-      out of the JSON; the fourth, `chunks_examined`, is asserted through the
-      service in `tests/test_mentions.py`.*
+      *`test_repair_reports_a_corpus_that_needs_nothing` asserts all four out of
+      the JSON. **The first version of this note recorded something weaker and
+      claimed the tick anyway**: the test read three of the four, and
+      `chunks_examined` was said to be "asserted through the service", which
+      verifies the service and not the payload. The review round caught it —
+      with the key unread, wiring it to `chunks_unlocatable` would have failed
+      nothing — and it is now pinned at the operator's surface, where it is the
+      field that separates "looked and found nothing" from "did not look".*
 - [x] 7.2 Add nothing to REST or the agent surface; verify the last spec
       scenario needs no new test —
       `test_the_readonly_profile_advertises_exactly_its_tools`
