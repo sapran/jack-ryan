@@ -36,8 +36,24 @@ from jackryan.services.ingestion import MAX_DOCUMENT_PAGE
 # page shapes are both exercised below — six over a limit of two is three full
 # pages, six over a limit of four ends in a partial page — because a final page
 # equal to the limit and one short of it are different boundaries.
-ENTRIES = ("alpha.txt", "bravo.txt", "charlie.txt", "delta.txt", "echo.txt")
+#
+# **The creation order is deliberately not the sorted order, and the nested
+# archive is deliberately not last.** Documents are stored in the order the
+# archive yields them, so rowids ascend in this order. A fixture written
+# alphabetically makes insertion order and containment-path order coincide, and
+# then the ordering under test cannot be distinguished from no ordering at all:
+# measured, dropping the query's outer `ORDER BY` left every test in this file
+# green. Scrambled, the two orders differ and the assertion bites.
+CREATION_ORDER = (
+    "echo.txt",
+    "charlie.txt",
+    "nested.zip",
+    "alpha.txt",
+    "delta.txt",
+    "bravo.txt",
+)
 NESTED = "nested.zip"
+ENTRIES = tuple(name for name in CREATION_ORDER if name != NESTED)
 BURIED = "buried.txt"
 
 
@@ -58,9 +74,11 @@ def container(context, casefile, tmp_path):
 
     outer = tmp_path / "bundle.zip"
     with zipfile.ZipFile(outer, "w") as archive:
-        for index, name in enumerate(ENTRIES):
-            archive.writestr(name, f"entry {index} of the harbour bundle")
-        archive.writestr(NESTED, inner.read_bytes())
+        for index, name in enumerate(CREATION_ORDER):
+            if name == NESTED:
+                archive.writestr(NESTED, inner.read_bytes())
+            else:
+                archive.writestr(name, f"entry {index} of the harbour bundle")
 
     report = context.ingestion.ingest(casefile.short_id, outer)
     assert report.failed == 0, "the fixture must ingest cleanly or it proves nothing"
@@ -83,7 +101,14 @@ def expected_order():
     the sorted entry names. Built here rather than fetched, so the assertion
     has an oracle the store cannot move.
     """
-    return sorted([*ENTRIES, NESTED])
+    order = sorted(CREATION_ORDER)
+    # The premise the ordering assertions rest on. If these ever coincide the
+    # tests below still pass while proving nothing about ordering, which is the
+    # state this file was first written in.
+    assert order != list(CREATION_ORDER), (
+        "the fixture must be created out of order, or no ordering is under test"
+    )
+    return order
 
 
 def _names(page):
@@ -94,19 +119,32 @@ def _names(page):
 
 
 def test_a_full_sweep_omits_and_repeats_nothing(context, casefile, container, expected_order):
-    """Six children over three pages of two, each exactly once."""
-    seen: list[str] = []
-    offsets = [0]
-    pages = []
+    """Six children over three pages of two, each exactly once.
 
-    while offsets:
+    The loop is bounded rather than `while True`. A `total_matching` counted
+    under a wider predicate than the page keeps `truncated` true past the last
+    document, so an unbounded follow of `continue_from` never terminates:
+    measured, that mutation hung for fifteen minutes instead of failing. A
+    guard that hangs is not a red test, so the bound is part of the assertion.
+    """
+    seen: list[str] = []
+    pages = []
+    offset = 0
+
+    for _ in range(10):
         page = context.ingestion.list_document_page(
-            casefile.short_id, container.short_id, offset=offsets.pop(), limit=2
+            casefile.short_id, container.short_id, offset=offset, limit=2
         )
         pages.append(page)
         seen.extend(_names(page))
-        if page.continue_from is not None:
-            offsets.append(page.continue_from)
+        if page.continue_from is None:
+            break
+        offset = page.continue_from
+    else:
+        raise AssertionError(
+            f"the listing never ended: {len(pages)} pages for "
+            f"total_matching={pages[-1].total_matching}"
+        )
 
     assert [len(p.documents) for p in pages] == [2, 2, 2]
     assert [p.offset for p in pages] == [0, 2, 4]
@@ -279,7 +317,10 @@ async def test_an_agent_reaches_a_child_and_cites_it_without_searching(
     # surface must accept.
     seen: list[str] = []
     offset, calls = 0, 0
-    while True:
+    # Bounded for the same reason as the service-level sweep: a wrong
+    # `total_matching` keeps `truncated` true forever, and a test that hangs
+    # reports nothing.
+    for _ in range(10):
         page = await _call(
             server,
             "case_list_documents",
@@ -295,6 +336,8 @@ async def test_an_agent_reaches_a_child_and_cites_it_without_searching(
             assert page["continue_from"] is None
             break
         offset = page["continue_from"]
+    else:
+        raise AssertionError(f"the listing never ended after {calls} calls")
 
     assert calls == 3
     assert seen == expected_order
