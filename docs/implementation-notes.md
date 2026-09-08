@@ -6,20 +6,43 @@ and why it was parked.
 
 ## Parked
 
-- **A test asserts against a glob of the shared temporary directory, so it
-  fails under concurrency.**
-  `tests/test_evaluate_retrieval.py:467`
-  (`test_the_workspace_is_kept_when_asked`) records
-  `glob("$TMPDIR/jackryan-evaluate-*")`, runs the harness with `--keep`, and
-  asserts exactly one new directory appeared. The path is process-global, so
-  anything else creating a matching directory in that window makes `kept` hold
-  two and the assertion fail. Observed once during the mutation-proving of
-  `follow-an-identifier-exhaustively`, in a run whose mutation was confined to
-  `interfaces/mcp/server.py` and could not affect it; it passed 3/3 in
-  isolation afterwards and the control run of the same harness was green.
-  Pre-existing and unrelated to that change, so parked rather than fixed. The
-  fix is to point the harness at a `tmp_path` subdirectory and assert on that,
-  rather than to retry or loosen the count.
+- **Two tests share a glob of the process-global temporary directory, and one
+  of them deletes what it finds there.** Both are in
+  `tests/test_evaluate_retrieval.py`, and between them they make the suite fail
+  intermittently *and* corrupt a concurrent run.
+
+  `test_the_workspace_is_removed_when_the_run_ends:457` records
+  `glob("$TMPDIR/jackryan-evaluate-*")`, runs the harness, and asserts
+  `after == before`. Anything else creating a workspace in that window fails
+  it.
+
+  `test_the_workspace_is_kept_when_asked:467` does the same and then
+  `shutil.rmtree`s every directory in `glob(...) - before`. That set is not
+  "the workspace this test kept" — it is *every* matching directory that
+  appeared meanwhile, including another process's live corpus. The victim then
+  fails with `FileNotFoundError` on a corpus file inside a workspace it is
+  still using.
+
+  **Reproduced deterministically**: four concurrent runs of that one file gave
+  `2 failed, 46 passed` in all four, with `assert 4 == 1` and
+  `assert {...} == {...}` on the two tests above. **Pre-existing**: the same
+  four-way run against `25eb9b8`, the commit before
+  `follow-an-identifier-exhaustively`, fails identically, and the file was last
+  touched in `6c12da4`. Sequentially the suite is green — 9 consecutive clean
+  runs of the full suite on `develop` after the concurrent worktree that had
+  been provoking it was removed.
+
+  It first surfaced as two red runs while two review subagents held a worktree
+  of this repository under `/private/tmp` and ran the harness from it. Any
+  second checkout — a worktree, a reviewer's sandbox, a second omp session —
+  triggers it, which is why it looks like flakiness rather than a defect.
+
+  Parked because it is outside that change and the fix is a real one: give the
+  harness a workspace root it is told about (a `tmp_path` subdirectory passed
+  in, or an env override) and assert on that, so neither test can see or delete
+  a directory belonging to anyone else. Retrying, loosening the count, or
+  serialising the file would all hide it while leaving the `rmtree` free to
+  destroy a concurrent run's data.
 
 - **A `--mention` argument reaches all four extractors unbounded.**
   `SearchService.search` caps its `query` at `MAX_QUERY_CHARS = 500`, and
