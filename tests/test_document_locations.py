@@ -111,6 +111,14 @@ def test_the_same_bytes_under_two_ingest_roots_keep_both_locations(
     identical containment path. Only the ingest root distinguishes them, and
     without it in the key the second observation collides with the first and
     the second custodian is lost — silently, which is the whole defect.
+
+    This is also the only test that can see how `also_found_at` excludes the
+    document's own location. It does so by position, taking the earliest — and
+    a version comparing `containment_path` against the document's looks
+    identical everywhere except here, where both locations share that path and
+    such a comparison discards *both*. Asserting the recorded set alone left
+    that mutation green, which is why the assertion below is on
+    `also_found_at`.
     """
     alpha = tmp_path / "custodian-alpha"
     beta = tmp_path / "custodian-beta"
@@ -131,6 +139,12 @@ def test_the_same_bytes_under_two_ingest_roots_keep_both_locations(
         f"{beta.resolve()}/ledger.txt",
     }
     assert report.new_locations == [f"{beta.resolve()}/ledger.txt"]
+    assert [location.full_path for location in record.also_found_at] == [
+        f"{beta.resolve()}/ledger.txt"
+    ], (
+        "the second custodian's copy was not offered as an additional location: "
+        f"{[location.full_path for location in record.also_found_at]}"
+    )
 
 
 def test_a_copy_found_later_does_not_overwrite_the_first_location(
