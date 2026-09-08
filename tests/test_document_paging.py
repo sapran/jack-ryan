@@ -70,7 +70,6 @@ CREATION_ORDER = (
     "bravo.txt",
 )
 NESTED = "nested.zip"
-ENTRIES = tuple(name for name in CREATION_ORDER if name != NESTED)
 BURIED = "buried.txt"
 
 
@@ -171,7 +170,6 @@ def test_a_full_sweep_omits_and_repeats_nothing(context, casefile, container, ex
     assert all(p.selection == "children" for p in pages)
     # The whole point: every child once, in the order the fixture implies.
     assert seen == expected_order
-    assert len(set(seen)) == 6
 
 
 def test_a_final_page_shorter_than_the_limit_ends_the_listing(
@@ -219,6 +217,51 @@ def test_an_over_large_limit_is_clamped_rather_than_refused(context, casefile, c
     assert page.limit == MAX_DOCUMENT_PAGE
     assert len(page.documents) <= MAX_DOCUMENT_PAGE
     assert len(page.documents) == 6
+
+
+def test_an_offset_beyond_sqlite_is_clamped_rather_than_raising(
+    context, casefile, container
+):
+    """An out-of-range offset is clamped, exactly as an out-of-range limit is.
+
+    `limit` was clamped from the start and `offset` only floored at zero, so a
+    value above SQLite's signed 64-bit maximum reached the driver as a bind and
+    raised `OverflowError` — not a `JackRyanError`, so the agent surface's one
+    translation did not catch it and the tool raised. Two published
+    requirements forbid that: an out-of-range argument is clamped rather than
+    refused, and a tool returns a payload rather than raising.
+
+    Reachable from both adapters: the agent surface has no validation layer
+    above it, and FastAPI parses an arbitrarily long digit string into a Python
+    int without bounding it.
+    """
+    page = context.ingestion.list_document_page(
+        casefile.short_id, container.short_id, offset=10**20, limit=2
+    )
+
+    assert page.documents == []
+    # Still an honest answer about the selection, not a denial of its contents.
+    assert page.total_matching == 6
+    assert page.truncated is False
+    assert page.continue_from is None
+
+
+@pytest.mark.anyio
+async def test_the_tool_returns_a_payload_for_an_absurd_offset(
+    context, casefile, container
+):
+    """The same argument through the surface a model actually drives."""
+    server = build_mcp_server(context)
+
+    payload = await _call(
+        server,
+        "case_list_documents",
+        {"casefile": casefile.short_id, "parent": container.short_id, "offset": 10**20},
+    )
+
+    assert "error" not in payload, f"the tool raised rather than answering: {payload}"
+    assert payload["results"] == []
+    assert payload["total_matching"] == 6
 
 
 def test_each_selection_names_itself(context, casefile, container):
@@ -287,19 +330,62 @@ def test_a_document_that_expanded_to_nothing_says_so(context, casefile, tmp_path
     assert page.truncated is False
 
 
+def test_the_echoed_parent_reports_its_own_child_count(context, casefile, container):
+    """The resolved parent must not contradict the page it heads.
+
+    `resolve_document` selects `*` and aliases no `child_count`, so the parent
+    arrived reporting zero children while `total_matching` on the same object
+    said six. Nothing rendered it, which is exactly why it would have survived
+    to the first surface that did — as a container reported as a leaf, the
+    defect this change fixes for rows.
+    """
+    page = context.ingestion.list_document_page(casefile.short_id, container.short_id)
+
+    assert page.parent is not None
+    assert page.parent.child_count == page.total_matching == 6
+
+
+def test_the_store_reports_the_offset_it_applied(context, casefile, container):
+    """A negative offset is floored where SQLite silently floors it too.
+
+    Asserted at the store rather than the service, because the service clamps
+    first and the hole was reachable only by calling the store directly — which
+    the container tests do. SQLite treats a negative OFFSET as zero, so a page
+    reporting `offset=-2` returned the first rows and handed back a
+    `continue_from` of 0, repeating them on the next call.
+    """
+    page = context.store.list_document_page(
+        casefile.id, parent_id=container.id, offset=-2, limit=2
+    )
+
+    assert page.offset == 0
+    assert page.continue_from == 2
+    assert len(page.documents) == 2
+
+
 # -- the compartment holds -------------------------------------------------
 
 
 def test_a_container_in_another_casefile_is_refused(context, casefile, container):
-    """A casefile is a compartment, and a listing may not reach across one."""
+    """A casefile is a compartment, and a listing may not reach across one.
+
+    The refusal must also not describe what it declined to return. An earlier
+    version asserted that the other casefile's intake was empty, which was
+    vacuous — nothing had ever been ingested there, so it passed whether or not
+    anything leaked, and it passed with the casefile guard removed.
+    """
     other = context.casefiles.create("Unrelated Inquiry")
 
-    with pytest.raises(NotFoundError):
+    with pytest.raises(NotFoundError) as excinfo:
         context.ingestion.list_document_page(other.short_id, container.id)
 
-    # And nothing about its contents leaked by another route: the other
-    # casefile still reports itself as empty.
-    assert context.ingestion.list_document_page(other.short_id).total_matching == 0
+    # The message may echo the caller's own reference and nothing else: a
+    # refusal naming a filename or a count would breach the compartment while
+    # appearing to respect it.
+    message = str(excinfo.value)
+    assert container.filename not in message
+    for name in CREATION_ORDER:
+        assert name not in message, f"the refusal named {name!r} from the other casefile"
 
 
 # -- the agent journey the capability exists for ---------------------------
@@ -311,14 +397,23 @@ async def _call(server, name, args=None):
 
 
 @pytest.mark.anyio
-async def test_an_agent_reaches_a_child_and_cites_it_without_searching(
+async def test_an_agent_reaches_and_reads_a_child_without_searching(
     context, casefile, container, expected_order
 ):
-    """Intake, enter the container by prefix, page it, read a child, cite it.
+    """Intake, enter the container by prefix, page it, read a child, then cite it.
 
-    No search runs. That is the point: an attachment's text is short and its
-    name is generic, so a container is exactly where retrieval is least likely
-    to surface the evidence, and this is the route that does not depend on it.
+    Reaching and reading the child takes no search, which is the capability
+    this change exists for: an attachment's text is short and its name is
+    generic, so a container is exactly where retrieval is least likely to
+    surface the evidence.
+
+    **Citing it does still take a search, and this test does not prove
+    otherwise.** An earlier name and docstring claimed "no search runs", which
+    was false — `case_cite` needs a `chunk_id`, and no tool on this surface
+    hands one back for a document reached by listing: `case_read_document`
+    returns text and provenance only. So the citation below goes through
+    `case_search` to obtain that id. The gap is recorded in
+    `docs/implementation-notes.md`; closing it is a separate change.
     """
     server = build_mcp_server(context)
 
@@ -400,7 +495,15 @@ async def test_an_agent_reaches_a_child_and_cites_it_without_searching(
 async def test_an_empty_page_explains_itself_rather_than_denying_the_corpus(
     context, casefile, container
 ):
-    """Three empty pages, three different true statements."""
+    """Three empty pages, three different true statements.
+
+    All three are asserted here. An earlier version promised three and checked
+    two: the `children` branch went unasserted anywhere, and mutating it to
+    fall through to "No documents in this casefile." left the whole suite
+    green — which is precisely the false negative the helper exists to prevent,
+    and it is `formatted` that the surface instructions tell an agent to read
+    first.
+    """
     server = build_mcp_server(context)
 
     past_end = await _call(
@@ -416,6 +519,28 @@ async def test_an_empty_page_explains_itself_rather_than_denying_the_corpus(
         server, "case_list_documents", {"casefile": empty_casefile.short_id}
     )
     assert blank["formatted"] == "No documents in this casefile."
+
+    # A document that expanded to nothing: a legitimate question with the
+    # answer "none", which must not read as an empty casefile.
+    leaf = next(
+        entry
+        for entry in (
+            await _call(
+                server,
+                "case_list_documents",
+                {"casefile": casefile.short_id, "parent": container.short_id},
+            )
+        )["results"]
+        if not entry.get("children")
+    )
+    childless = await _call(
+        server,
+        "case_list_documents",
+        {"casefile": casefile.short_id, "parent": leaf["short_id"]},
+    )
+    assert childless["selection"] == "children"
+    assert childless["results"] == []
+    assert childless["formatted"] == "Nothing was expanded out of this document."
 
 
 # -- the two surfaces agree ------------------------------------------------

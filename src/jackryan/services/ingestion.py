@@ -39,6 +39,17 @@ MAX_FILE_BYTES = 512 * 1024 * 1024
 DEFAULT_DOCUMENT_PAGE = 50
 MAX_DOCUMENT_PAGE = 200
 
+# The largest value SQLite accepts as an INTEGER bind. An offset is floored at
+# zero and capped here rather than left unbounded: anything larger reaches the
+# driver and raises `OverflowError`, which is not a `JackRyanError` and so
+# escapes the agent surface's one error translation, making the tool raise
+# instead of answering. Both published rules forbid that — an out-of-range
+# argument is clamped rather than refused, and a tool returns a payload rather
+# than raising. Clamping costs nothing: every offset a caller could act on is
+# many orders of magnitude below this, and one this large returns an empty page
+# that still reports the selection's true size.
+MAX_DOCUMENT_OFFSET = 2**63 - 1
+
 
 @dataclass(frozen=True)
 class IngestOutcome:
@@ -591,10 +602,19 @@ class IngestionService:
         Clamped rather than refused, as every other bound on this surface is:
         the agent surface has no request-validation layer above it and an
         over-large limit is a harmless mistake.
+
+        **The second parameter is a reference, not `include_expanded`** — unlike
+        `list_documents`, whose flag sits second. The order is the one the agent
+        surface forwards positionally through `anyio.to_thread.run_sync`, which
+        passes no keywords, so it must not be rearranged. Migrating a
+        `list_documents(cf, True)` call by changing the method name alone passes
+        `True` as `parent_reference` and raises `AttributeError` on `.strip()`,
+        which is not a `JackRyanError` and so escapes both adapters'
+        translations. Pass `include_expanded=` by keyword.
         """
         casefile = self._casefiles.resolve(casefile_reference)
         bounded = max(1, min(int(limit), MAX_DOCUMENT_PAGE))
-        start = max(0, int(offset))
+        start = min(max(0, int(offset)), MAX_DOCUMENT_OFFSET)
 
         # Checked before resolving, because `resolve_document` refuses an empty
         # reference — and an omitted parent is the default, not a mistake.
@@ -609,7 +629,15 @@ class IngestionService:
             offset=start,
             limit=bounded,
         )
-        return replace(page, parent=parent)
+        if parent is None:
+            return page
+        # `resolve_document`'s queries select `*` and alias no `child_count`, so
+        # the resolved parent reports zero children while the page's own
+        # `total_matching` — counted under exactly the parent's direct-child
+        # predicate — says otherwise. Nothing renders it today, but handing back
+        # an object that contradicts itself is the very defect this change fixes
+        # for rows: a container reported as a leaf.
+        return replace(page, parent=replace(parent, child_count=page.total_matching))
 
     def containment_chain(self, casefile_reference: str, reference: str) -> list[Document]:
         """The documents from the ingested file down to this one, inclusive.

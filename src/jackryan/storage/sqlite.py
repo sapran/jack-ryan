@@ -448,9 +448,24 @@ class SqliteStore:
         more to reach without paying to fetch it — and so a container nested
         inside another is markable, which the children selection is the whole
         reason for.
+
+        `offset` is floored here as well as in the service, because the reported
+        `offset` must be the one SQLite actually applied: it is what
+        `continue_from` is computed from, and SQLite silently treats a negative
+        OFFSET as zero. A page that returned the first rows while reporting
+        `offset=-2` would hand back a `continue_from` of 0 and repeat them. The
+        service is the only caller that clamps, and the tests reach this method
+        directly, so the hole was one positional argument away.
+
+        `limit` is either negative, meaning unbounded, or at least 1. A `limit`
+        of 0 returns no rows while the count still reports the selection's
+        size, so `truncated` stays true and a caller following `continue_from`
+        never advances. The service clamps it to at least 1; this method does
+        not second-guess a deliberate negative.
         """
         clause, order, selection = _document_selection(include_expanded, parent_id)
         predicate = f" WHERE d.casefile_id = ?{clause}"
+        start = max(0, int(offset))
         binds: tuple[object, ...] = (
             (casefile_id,) if parent_id is None else (casefile_id, parent_id)
         )
@@ -486,12 +501,12 @@ class SqliteStore:
                 # through the public path, which is the reason to keep it, not
                 # a reason to drop it.
                 f"{order}",
-                (*binds, int(limit), int(offset)),
+                (*binds, int(limit), start),
             ).fetchall()
         return DocumentPage(
             documents=[_row_to_document(r) for r in rows],
             total_matching=total,
-            offset=int(offset),
+            offset=start,
             limit=int(limit),
             selection=selection,
         )
