@@ -739,7 +739,11 @@ def test_a_document_is_not_stored_without_its_observation(context, casefile, tmp
     )
     assert (
         context.store._db.execute(
-            "SELECT COUNT(*) AS n FROM document_observations"
+            # `document_places`, which is the table `store_document` writes and
+            # the trigger above refuses. Counting `document_observations` here
+            # would be a check that cannot fail: nothing in this build writes
+            # that table, so its count is zero for every implementation.
+            "SELECT COUNT(*) AS n FROM document_places"
         ).fetchone()["n"]
         == 0
     )
@@ -1066,6 +1070,51 @@ def test_two_spellings_of_one_place_already_migrated_collapse_to_the_earlier(con
             "collapsing two spellings kept the later sighting, which makes an "
             "old record look young"
         )
+    finally:
+        context.close()
+
+
+def test_the_carry_forward_never_re_dates_a_place_to_a_later_sighting(config, gate):
+    """An already-correct spelling keeps its own earliest time, not the pair's.
+
+    Found by review and reproduced against the rung's own SQL before it was
+    tightened. Where a pair's concatenation is already normal — `/dump` and
+    `note.txt` — the observation row and the pair name one place under one
+    spelling, so the row must not be dropped in favour of the pair's timestamp.
+    It was: a live sighting recorded in January was replaced by a pair written
+    in February, and because wholeness is the earliest observation against the
+    document's creation, that can turn a whole record into one unable to
+    answer. The two are reachable in that order while an older build still
+    holds the store open across an upgrade.
+    """
+    dump = Path(config.data_dir).parent / "dump"
+    _at(dump, "ledger.txt")
+
+    context = _instance(config, gate)
+    try:
+        casefile = context.casefiles.create("Harbour Inquiry")
+        context.ingestion.ingest(casefile.short_id, dump)
+        document = _only(context, casefile)
+    finally:
+        context.close()
+
+    root = str(dump.resolve())
+    _rewind(
+        config,
+        version=10,
+        pairs=[(document.id, root, "ledger.txt", "2026-02-01T00:00:00+00:00")],
+        observations=[(document.id, f"{root}/ledger.txt", "2026-01-01T00:00:00+00:00")],
+    )
+
+    context = _instance(config, gate)
+    try:
+        located = _located(context, casefile, document)
+        assert [location.path for location in located.recorded.locations] == [
+            f"{root}/ledger.txt"
+        ]
+        assert located.recorded.locations[0].first_seen_at.isoformat() == (
+            "2026-01-01T00:00:00+00:00"
+        ), "the carry-forward re-dated a place to a sighting later than the one recorded"
     finally:
         context.close()
 

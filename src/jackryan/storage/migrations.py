@@ -350,23 +350,30 @@ _STEPS: tuple[_Step, ...] = (
             " PRIMARY KEY (document_id, location_path))",
             # Observations this instance's own code wrote, which are already
             # spelled by `join_location` and must be carried across as they
-            # are. The NOT EXISTS excludes the rows rung 10 derived: those are
-            # re-derived below from the raw pairs, which is the only place the
-            # correct spelling can be recovered from. A root of `/` is why —
+            # are. The NOT EXISTS excludes the rows rung 10 *misspelled*: those
+            # are re-derived below from the raw pairs, which is the only place
+            # the correct spelling can be recovered from. A root of `/` is why —
             # `//lease.md` is its own normal form, so no amount of
             # re-normalising the concatenated string recovers `/lease.md`, and
             # only the pair `('/', 'lease.md')` says what was meant.
             #
-            # A new-code path that happens to equal a legacy concatenation is
-            # excluded here and inserted below with the same spelling, so the
-            # place survives either way.
+            # The predicate is deliberately narrower than "this row matches a
+            # pair": it also requires that the pair's concatenation *differs*
+            # from its join, so a row is dropped only when the statement below
+            # will reinsert that same place under a different spelling. Without
+            # the second condition, a row whose concatenation is already normal
+            # is excluded here and re-dated below from the pairs alone —
+            # measured, and it replaced an earlier live sighting with a later
+            # one, which is the mis-dating `min` exists to prevent.
             "INSERT INTO document_places (document_id, location_path, first_seen_at)"
             " SELECT o.document_id, o.location_path, MIN(o.first_seen_at)"
             " FROM document_observations o"
             " WHERE NOT EXISTS ("
             "   SELECT 1 FROM document_locations l"
             "   WHERE l.document_id = o.document_id"
-            "     AND l.source_root || '/' || l.containment_path = o.location_path)"
+            "     AND l.source_root || '/' || l.containment_path = o.location_path"
+            "     AND l.source_root || '/' || l.containment_path"
+            "         <> jr_join_location(l.source_root, l.containment_path))"
             " GROUP BY o.document_id, o.location_path"
             " ON CONFLICT(document_id, location_path) DO UPDATE SET"
             "   first_seen_at = min(first_seen_at, excluded.first_seen_at)",
@@ -382,6 +389,15 @@ _STEPS: tuple[_Step, ...] = (
             " GROUP BY document_id, jr_join_location(source_root, containment_path)"
             " ON CONFLICT(document_id, location_path) DO UPDATE SET"
             "   first_seen_at = min(first_seen_at, excluded.first_seen_at)",
+            # A legacy `containment_path` is always relative — archive entries
+            # are refused for an absolute name before they can become one, and
+            # a folder walk stores a `relative_to` result. The join relies on
+            # it: `PurePosixPath` discards its left operand when the right is
+            # absolute, so an absolute path here would strip the custodian root
+            # and merge two custodians into one place. The guard is in
+            # `ingestion/containers.py`; this is the one place a violation of
+            # it would become permanent.
+            #
             # Both older tables stay, unwritten and unread, for the reason rung
             # 10 gave: they are the record as it was kept, and this rung's own
             # correctness is checkable against them. Do not clean them up.
@@ -522,6 +538,12 @@ def migrate(conn: sqlite3.Connection, path: Path) -> None:
     # importing it here is what makes that one definition rather than a second
     # copy in SQL. Deterministic so SQLite may use it inside the GROUP BY it
     # appears in twice.
+    #
+    # Withdrawn again below, and that is enforcement rather than tidiness: the
+    # caller keeps this connection for the life of the process, so a function
+    # left registered exists on the one boot that migrated and on no boot
+    # afterwards. Anything that came to depend on it would work the day it was
+    # written and raise `no such function` after the next restart.
     conn.create_function("jr_join_location", 2, join_location, deterministic=True)
 
     try:
@@ -557,6 +579,10 @@ def migrate(conn: sqlite3.Connection, path: Path) -> None:
             f"{recorded} to {SCHEMA_VERSION}: {type(exc).__name__}: {exc}."
             + reassurance
         ) from exc
+    finally:
+        # Passing None removes it, so the store's connection leaves this
+        # function exactly as it found it, migration or no migration.
+        conn.create_function("jr_join_location", 2, None)
 
 def backup_before_migrating(
     conn: sqlite3.Connection, path: Path, recorded: int
