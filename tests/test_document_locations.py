@@ -19,19 +19,25 @@ outlive them, and a later observation then reads as the whole history.
 
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
+import tarfile
 import zipfile
 from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
 
+from jackryan.app import build_context
 from jackryan.cli import _render_document as _render_cli_document
+from jackryan.embedding.deterministic import DeterministicEmbedder
 from jackryan.interfaces.mcp.server import _render_document as _render_mcp_document
 from jackryan.interfaces.mcp.server import build_mcp_server
 from jackryan.rendering import render_report
 from jackryan.server import create_app
+
+from conftest import TEST_DIMENSIONS
 
 LEDGER = "# Ledger\n\nThe tariff was deferred until the following quarter.\n"
 
@@ -79,7 +85,7 @@ def _located(context, casefile, document):
 def _observation_rows(context, document_id):
     """Read the table directly: a row count is the thing under test here."""
     return context.store._db.execute(
-        "SELECT location_path, first_seen_at FROM document_observations"
+        "SELECT location_path, first_seen_at FROM document_places"
         " WHERE document_id = ? ORDER BY first_seen_at, location_path",
         (document_id,),
     ).fetchall()
@@ -94,7 +100,7 @@ def _lose_the_observation(context, document_id):
     verification reached the same state with an exit code.
     """
     context.store._db.execute(
-        "DELETE FROM document_observations WHERE document_id = ?", (document_id,)
+        "DELETE FROM document_places WHERE document_id = ?", (document_id,)
     )
     context.store._db.commit()
 
@@ -114,7 +120,7 @@ def _make_the_observation_write_fail(context):
     insert genuinely runs and genuinely has to be rolled back.
     """
     context.store._db.execute(
-        "CREATE TRIGGER refuse_observations BEFORE INSERT ON document_observations"
+        "CREATE TRIGGER refuse_observations BEFORE INSERT ON document_places"
         " BEGIN SELECT RAISE(ABORT, 'observation write failed'); END"
     )
     context.store._db.commit()
@@ -893,3 +899,224 @@ def test_the_document_handed_back_by_the_store_does_not_misreport_itself(
     )
     assert stored.location_count == 1
     assert stored.additional_locations == 0
+
+
+# -- carried forward from an older schema ----------------------------------
+#
+# A migration spelled a location by concatenating the old ingest root with the
+# path within it, while every live observation is spelled by `join_location`,
+# which normalises. These prove the two now agree, because where they did not
+# a reingest of unchanged evidence recorded a second place and announced it as
+# a discovery. The expected paths below are written out by hand rather than
+# built by calling `join_location`, so the assertion does not compute its
+# expectation with the code it is checking.
+
+
+def _tar(path, entries):
+    with tarfile.open(path, "w") as archive:
+        for name, data in entries:
+            info = tarfile.TarInfo(name)
+            body = data.encode()
+            info.size = len(body)
+            archive.addfile(info, io.BytesIO(body))
+    return path
+
+
+def _instance(config, gate):
+    return build_context(config, embedder=DeterministicEmbedder(TEST_DIMENSIONS), gate=gate)
+
+
+def _rewind(config, *, version, pairs, observations=()):
+    """Leave the store in the state an older build's last write left it in.
+
+    The document rows, chunks and vectors are whatever a real ingest produced
+    moments ago; what is rewound is the location record and the recorded
+    version. `pairs` is what a schema-9 build wrote — an ingest root and the
+    path within it — and `observations` is what rung 10 derived from those, for
+    a store that has already climbed that rung.
+    """
+    db = sqlite3.connect(config.db_path)
+    db.execute("DELETE FROM document_places")
+    db.execute("DELETE FROM document_observations")
+    db.executemany(
+        "INSERT INTO document_locations"
+        " (document_id, source_root, containment_path, first_seen_at)"
+        " VALUES (?, ?, ?, ?)",
+        pairs,
+    )
+    db.executemany(
+        "INSERT INTO document_observations (document_id, location_path, first_seen_at)"
+        " VALUES (?, ?, ?)",
+        observations,
+    )
+    db.execute(
+        "INSERT INTO store_meta (key, value) VALUES ('schema_version', ?)"
+        " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(version),),
+    )
+    db.commit()
+    db.close()
+
+
+def test_a_migrated_archive_entry_is_one_location_after_reingesting_it(config, gate):
+    """The blocker, end to end: schema 9, migrate, reingest the same archive.
+
+    A tar routinely names its entries `./name`, and the old pair recorded the
+    containment path exactly as the container yielded it. Concatenating that
+    pair produced `bundle.tar/./note.txt`; the reingest observed
+    `bundle.tar/note.txt`. One place, two rows, reported to the analyst as a
+    newly discovered copy of the evidence.
+    """
+    dump = Path(config.data_dir).parent / "dump"
+    dump.mkdir(parents=True, exist_ok=True)
+    bundle = _tar(dump / "bundle.tar", [("./note.txt", LEDGER)])
+
+    context = _instance(config, gate)
+    try:
+        casefile = context.casefiles.create("Harbour Inquiry")
+        context.ingestion.ingest(casefile.short_id, bundle)
+        documents = _rows(context, casefile, include_expanded=True)
+        container = next(d for d in documents if d.parent_id is None)
+        entry = next(d for d in documents if d.parent_id is not None)
+        entry_created = entry.created_at
+    finally:
+        context.close()
+
+    root = str(dump.resolve())
+    _rewind(
+        config,
+        version=9,
+        pairs=[
+            (container.id, root, "bundle.tar", "2026-01-01T00:00:00+00:00"),
+            (entry.id, root, "bundle.tar/./note.txt", "2026-01-01T00:00:01+00:00"),
+        ],
+    )
+
+    context = _instance(config, gate)
+    try:
+        report = context.ingestion.ingest(casefile.short_id, bundle)
+        located = _located(context, casefile, entry)
+        outcome = next(o for o in report.outcomes if o.document_id == entry.id)
+
+        assert [location.path for location in located.recorded.locations] == [
+            f"{root}/bundle.tar/note.txt"
+        ], "the carried location and the live one spell the same place differently"
+        assert located.recorded.total == 1
+        assert outcome.location == "known", (
+            "reingesting the unchanged archive reported a place it had not seen"
+        )
+        assert report.new_locations == []
+        # Carried forward, not re-dated: the old sighting is the one recorded,
+        # and it predates the document, which is what makes the record whole.
+        earliest = located.recorded.locations[0].first_seen_at
+        assert earliest.isoformat() == "2026-01-01T00:00:01+00:00"
+        assert earliest < entry_created
+        assert located.verdict == "complete"
+    finally:
+        context.close()
+
+
+def test_two_spellings_of_one_place_already_migrated_collapse_to_the_earlier(config, gate):
+    """A store that already climbed rung 10 cannot be repaired by editing it.
+
+    This is the population the follow-up exists for: schema 10, holding the
+    concatenated spelling and the live one for one file. Both survive a rung
+    that only corrects what it is migrating; only a rung applied *above* 10
+    reaches them.
+    """
+    dump = Path(config.data_dir).parent / "dump"
+    dump.mkdir(parents=True, exist_ok=True)
+    bundle = _tar(dump / "bundle.tar", [("./note.txt", LEDGER)])
+
+    context = _instance(config, gate)
+    try:
+        casefile = context.casefiles.create("Harbour Inquiry")
+        context.ingestion.ingest(casefile.short_id, bundle)
+        documents = _rows(context, casefile, include_expanded=True)
+        container = next(d for d in documents if d.parent_id is None)
+        entry = next(d for d in documents if d.parent_id is not None)
+    finally:
+        context.close()
+
+    root = str(dump.resolve())
+    _rewind(
+        config,
+        version=10,
+        pairs=[
+            (container.id, root, "bundle.tar", "2026-01-01T00:00:00+00:00"),
+            (entry.id, root, "bundle.tar/./note.txt", "2026-01-01T00:00:01+00:00"),
+        ],
+        observations=[
+            (container.id, f"{root}/bundle.tar", "2026-01-01T00:00:00+00:00"),
+            (entry.id, f"{root}/bundle.tar/./note.txt", "2026-01-01T00:00:01+00:00"),
+            # What a reingest under schema 10 added: the same place, spelled
+            # the way the runtime spells it, dated later.
+            (entry.id, f"{root}/bundle.tar/note.txt", "2026-06-01T00:00:00+00:00"),
+        ],
+    )
+
+    context = _instance(config, gate)
+    try:
+        located = _located(context, casefile, entry)
+        assert [location.path for location in located.recorded.locations] == [
+            f"{root}/bundle.tar/note.txt"
+        ]
+        assert located.recorded.total == 1, "one place was still recorded twice"
+        assert located.recorded.locations[0].first_seen_at.isoformat() == "2026-01-01T00:00:01+00:00", (
+            "collapsing two spellings kept the later sighting, which makes an "
+            "old record look young"
+        )
+    finally:
+        context.close()
+
+
+def test_the_carry_forward_keeps_two_different_places_and_repairs_odd_spellings(
+    config, gate
+):
+    """The two halves of the same rung: collapse what is one place, keep what is two.
+
+    A `/` ingest root is the case no re-normalisation reaches: concatenation
+    gives `//lease.md`, which is already its own normal form under POSIX rules,
+    so only the surviving pair says that `/lease.md` was meant.
+    """
+    dump = Path(config.data_dir).parent / "dump"
+    _at(dump, "ledger.txt")
+
+    context = _instance(config, gate)
+    try:
+        casefile = context.casefiles.create("Harbour Inquiry")
+        context.ingestion.ingest(casefile.short_id, dump)
+        document = _only(context, casefile)
+    finally:
+        context.close()
+
+    _rewind(
+        config,
+        version=9,
+        pairs=[
+            ("x", "/", "lease.md", "2026-01-01T00:00:00+00:00"),
+            ("x", "/vault", "sub//ledger.txt", "2026-01-01T00:00:02+00:00"),
+            # Two custodians, two paths, two places — nothing may merge these.
+            ("x", "/custodian-a", "ledger.txt", "2026-01-01T00:00:03+00:00"),
+            ("x", "/custodian-b", "ledger.txt", "2026-01-01T00:00:04+00:00"),
+        ],
+    )
+    # The pairs above are attached to the real document, so the store's own
+    # reads see them.
+    db = sqlite3.connect(config.db_path)
+    db.execute("UPDATE document_locations SET document_id = ?", (document.id,))
+    db.commit()
+    db.close()
+
+    context = _instance(config, gate)
+    try:
+        located = _located(context, casefile, document)
+        assert sorted(location.path for location in located.recorded.locations) == [
+            "/custodian-a/ledger.txt",
+            "/custodian-b/ledger.txt",
+            "/lease.md",
+            "/vault/sub/ledger.txt",
+        ]
+        assert located.recorded.total == 4
+    finally:
+        context.close()
