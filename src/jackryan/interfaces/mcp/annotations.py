@@ -26,6 +26,7 @@ ANNOTATIONS: dict[str, Stamp] = {
     "case_list_casefiles": Stamp(read_only=True, destructive=False, open_world=False),
     "case_casefile_overview": Stamp(read_only=True, destructive=False, open_world=False),
     "case_list_documents": Stamp(read_only=True, destructive=False, open_world=False),
+    "case_list_passages": Stamp(read_only=True, destructive=False, open_world=False),
     "case_search": Stamp(read_only=True, destructive=False, open_world=False),
     "case_get_passage": Stamp(read_only=True, destructive=False, open_world=False),
     "case_read_document": Stamp(read_only=True, destructive=False, open_world=False),

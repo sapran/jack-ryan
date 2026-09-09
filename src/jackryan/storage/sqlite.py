@@ -33,12 +33,14 @@ from .port import (
     DocumentLocation,
     DocumentLocationSet,
     DocumentPage,
+    DocumentPassagePage,
     IngestionCoverage,
     IngestRun,
     Mention,
     MentionCarrier,
     MentionDocumentPage,
     MentionFacet,
+    PassageReference,
 )
 
 
@@ -192,6 +194,19 @@ def _row_to_chunk(row: sqlite3.Row) -> Chunk:
         char_start=row["char_start"],
         char_end=row["char_end"],
         summary=row["summary"],
+    )
+
+
+def _row_to_passage_reference(row: sqlite3.Row) -> PassageReference:
+    """A passage without its text. `characters` is aliased by the query."""
+    return PassageReference(
+        id=row["id"],
+        document_id=row["document_id"],
+        ordinal=row["ordinal"],
+        heading_path=row["heading_path"],
+        char_start=row["char_start"],
+        char_end=row["char_end"],
+        characters=row["characters"],
     )
 
 
@@ -1168,6 +1183,75 @@ class SqliteStore:
                 (document_id,),
             ).fetchall()
         return [_row_to_chunk(row) for row in rows]
+
+    def list_document_passage_page(
+        self, document_id: str, offset: int, limit: int
+    ) -> DocumentPassagePage:
+        """One page of a document's passages, and how many it holds.
+
+        Two statements under one lock, both under the same predicate: the count
+        and the page. A total counted under a different predicate than the rows
+        keeps `truncated` true past the last entry, so a caller following
+        `continue_from` never terminates.
+
+        **The page is chosen narrow and widened afterwards**, as both other
+        paged listings are, and here the reason is `LENGTH(c.text)`. An
+        `ORDER BY` that needs a sort makes SQLite compute a statement's output
+        columns for every matching row before the `LIMIT` can discard any, so a
+        single-statement form would read every passage's text in the document to
+        report a page of integers — which for a large document is the whole
+        stored corpus of it. The inner query selects `id` and orders by columns
+        the row already carries; the outer reads text for the chosen page alone.
+
+        The ordering is the document's own reading order and ends in `c.id`,
+        which is unique, so it is a total order and a page boundary cannot land
+        inside a tie. `ordinal` alone would not be: the chunker produces them
+        sequentially but `chunks` does not enforce uniqueness on
+        `(document_id, ordinal)`, and an ordering that rests on an unenforced
+        invariant is one schema change away from paging wrongly in silence.
+        `char_start` is the corpus-derived tiebreak before it. Ending in an
+        identifier is deliberately unlike the fused-ranking rule, which forbids
+        it: that rule exists so two stores built from the same documents rank
+        alike, and chunk ids are minted afresh by every reingest. Here the
+        requirement is only that one unchanged store pages consistently, and
+        `c.id` is reached only where two passages share an ordinal *and* a
+        start — the case `hybrid-search` itself calls the exception, because
+        whichever comes first the caller is reading the same words at the same
+        place.
+
+        Both bounds are floored here as well as in the service, for the reason
+        `list_document_page` gives: the reported values must be the ones SQLite
+        applied, because `continue_from` is computed from them and the tests
+        reach this method directly. Unlike `list_document_page` this offers no
+        unbounded form, so there is no deliberate negative to preserve.
+        """
+        start = max(0, int(offset))
+        page = max(1, int(limit))
+        order = " ORDER BY ordinal, char_start, id"
+        with self._lock:
+            total = self._db.execute(
+                "SELECT COUNT(*) AS total FROM chunks WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()["total"]
+            rows = self._db.execute(
+                "SELECT c.id, c.document_id, c.ordinal, c.heading_path,"
+                "       c.char_start, c.char_end, LENGTH(c.text) AS characters"
+                "  FROM chunks c"
+                "  JOIN (SELECT id FROM chunks WHERE document_id = ?"
+                f"{order} LIMIT ? OFFSET ?) chosen ON chosen.id = c.id"
+                # Repeated for the reason `list_document_page` states at its own
+                # join: SQL guarantees nothing about the order a join emits, so
+                # the subquery's ordering is not inherited, and paging that
+                # repeats or omits an entry cannot be caught by reading one page.
+                " ORDER BY c.ordinal, c.char_start, c.id",
+                (document_id, page, start),
+            ).fetchall()
+        return DocumentPassagePage(
+            passages=[_row_to_passage_reference(row) for row in rows],
+            total_matching=total,
+            offset=start,
+            limit=page,
+        )
 
     def recompute_mention_offsets(self, text_starts: dict[str, int]) -> int:
         """Only `document_offset`, and only where it differs.

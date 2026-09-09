@@ -26,10 +26,17 @@ bottom.
    its id back as `parent` to list what came out of it. A dump's real evidence
    is often an attachment, and its own filename identifies nothing without the
    message that carried it.
-4. **Search** — `case_search`. Start broad, then narrow. Read the `formatted`
+4. **Index a document you reached that way** — `case_list_passages`. Browsing
+   gets you to a document; this is what lets you cite it. `case_cite` needs a
+   passage id, and reading a document hands back text and spans but no passage,
+   so without this step the journey has to fall back to a search to recover an
+   id — behind the very mechanism you browsed to avoid. Pass a `document_id`
+   and each row's `chunk_id` goes straight to `case_get_passage` and
+   `case_cite`. A document with no passages says so; do not invent one.
+5. **Search** — `case_search`. Start broad, then narrow. Read the `formatted`
    index first and pull bodies only where you have committed. Try several
    phrasings: the corpus does not know your vocabulary.
-5. **Pivot** — `case_mentions` to see what identifiers the casefile actually
+6. **Pivot** — `case_mentions` to see what identifiers the casefile actually
    contains, then `case_search --mention` to follow one into the passages that
    carry it. A search returns the best-matching passages and stops, so when you
    need *every* document carrying an identifier — to count them, or to be sure
@@ -40,9 +47,9 @@ bottom.
    corpus has told you what it calls things. Treat the inventory as what was
    found, not as what is there: an identifier written unconventionally is absent
    from it.
-6. **Read in context** — `case_get_passage` when a hit needs its surroundings,
+7. **Read in context** — `case_get_passage` when a hit needs its surroundings,
    `case_read_document` when the whole document genuinely matters. Read late.
-7. **Cite** — `case_cite`. Every factual claim you make resolves through this.
+8. **Cite** — `case_cite`. Every factual claim you make resolves through this.
 
 ## Epistemics
 

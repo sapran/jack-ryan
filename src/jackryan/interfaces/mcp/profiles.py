@@ -13,6 +13,7 @@ READONLY_TOOLS = frozenset(
         "case_list_casefiles",
         "case_casefile_overview",
         "case_list_documents",
+        "case_list_passages",
         "case_search",
         "case_get_passage",
         "case_read_document",

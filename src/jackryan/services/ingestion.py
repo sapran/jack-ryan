@@ -32,6 +32,7 @@ from ..storage.port import (
     DocumentLocation,
     DocumentLocationSet,
     DocumentPage,
+    DocumentPassagePage,
     IngestRun,
     Mention,
     StorePort,
@@ -48,6 +49,12 @@ MAX_FILE_BYTES = 512 * 1024 * 1024
 # there is nothing for a second, tighter adapter bound to protect.
 DEFAULT_DOCUMENT_PAGE = 50
 MAX_DOCUMENT_PAGE = 200
+
+# A passage listing row is metadata of the same weight as a document listing
+# row — identifiers, a position and two integers — so it takes the same bounds
+# for the same reason: there is nothing for a tighter adapter bound to protect.
+DEFAULT_PASSAGE_PAGE = 50
+MAX_PASSAGE_PAGE = 200
 
 # The largest value SQLite accepts as an INTEGER bind. An offset is floored at
 # zero and capped here rather than left unbounded: anything larger reaches the
@@ -1036,6 +1043,55 @@ class IngestionService:
         # an object that contradicts itself is the very defect this change fixes
         # for rows: a container reported as a leaf.
         return replace(page, parent=replace(parent, child_count=page.total_matching))
+
+    def list_document_passage_page(
+        self,
+        casefile_reference: str,
+        reference: str,
+        offset: int = 0,
+        limit: int = DEFAULT_PASSAGE_PAGE,
+    ) -> DocumentPassagePage:
+        """A bounded page of one document's stored passages, in reading order.
+
+        This is what makes a document reached by *browsing* citable.
+        `case_cite` takes a passage identifier, and until this existed no
+        surface handed one back for a document reached through the document
+        listing — a read returns text, spans and provenance, and no passage. So
+        the container journey had to run a ranked search to recover an id
+        before it could cite what it had just read, which puts the citation back
+        behind the one mechanism container navigation exists to route around: an
+        attachment's text is short, its name is generic, and it competes against
+        the whole corpus.
+
+        It ranks nothing and scores nothing. The order is the document's own, so
+        this is an index of a document rather than a judgement about it — which
+        passage matters is the caller's to decide, from the document's structure
+        and from reading a candidate through `passage_window`.
+
+        **On this service rather than on `SearchService`**, though a passage is a
+        retrieval object, because the argument is a *document* reference and
+        `resolve_document` is the one definition of how one is resolved inside a
+        casefile — prefixes, the ambiguity refusal and the compartment boundary
+        included. Giving `SearchService` its own would be a second definition of
+        the rule that confines this call, which is the failure the whole
+        service layer is arranged to prevent.
+
+        Both bounds are clamped at both ends, as every bound on this surface is:
+        `limit` to between 1 and `MAX_PASSAGE_PAGE`, `offset` to between 0 and
+        `MAX_DOCUMENT_OFFSET`. The offset's upper bound is the one that looks
+        unnecessary and is not — a value above SQLite's integer range reaches
+        the driver and raises `OverflowError`, which is not a `JackRyanError`,
+        so the tool would raise instead of answering.
+
+        The resolved document travels back on the page, as a container does on a
+        document listing, so a surface can name what it indexed without
+        resolving the reference a second time.
+        """
+        document = self.resolve_document(casefile_reference, reference)
+        bounded = max(1, min(int(limit), MAX_PASSAGE_PAGE))
+        start = min(max(0, int(offset)), MAX_DOCUMENT_OFFSET)
+        page = self._store.list_document_passage_page(document.id, start, bounded)
+        return replace(page, document=document)
 
     def containment_chain(self, casefile_reference: str, reference: str) -> list[Document]:
         """The documents from the ingested file down to this one, inclusive.

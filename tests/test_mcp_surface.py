@@ -110,6 +110,10 @@ async def test_every_advertised_tool_still_declares_its_parameters(server):
             {"casefile", "parent", "expanded", "offset", "limit"},
             ["casefile"],
         ),
+        "case_list_passages": (
+            {"casefile", "document", "offset", "limit"},
+            ["casefile", "document"],
+        ),
         "case_search": ({"casefile", "query", "limit", "mention"}, ["casefile", "query"]),
         "case_mentions": ({"casefile", "kind", "limit"}, ["casefile"]),
         "case_mention_documents": (

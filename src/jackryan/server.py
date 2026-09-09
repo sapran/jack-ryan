@@ -19,7 +19,7 @@ from . import __version__
 from .ingestion.containers import rar_status
 from .ingestion.legacy_office import converter_status
 from .app import Context, build_context
-from .services.ingestion import DEFAULT_DOCUMENT_PAGE
+from .services.ingestion import DEFAULT_DOCUMENT_PAGE, DEFAULT_PASSAGE_PAGE
 from .services.search import DEFAULT_CARRIER_PAGE
 from .rendering import render_casefile, render_document, render_hit, render_report
 from .errors import (
@@ -252,6 +252,55 @@ def create_app(context: Context | None = None) -> FastAPI:
             ],
             "locations_truncated": record.truncated,
             "locations_note": record.note,
+        }
+
+    @app.get("/api/casefiles/{reference}/documents/{document_reference}/passages")
+    async def list_document_passages(
+        request: Request,
+        reference: str,
+        document_reference: str,
+        offset: int = 0,
+        limit: int = DEFAULT_PASSAGE_PAGE,
+    ) -> dict[str, Any]:
+        """One document's stored passages, a bounded page at a time.
+
+        The same question the agent surface's `case_list_passages` answers, from
+        the same service method and with the same field names: two surfaces
+        describing one selection differently is the defect one service method
+        exists to prevent.
+
+        Off the event loop, like the listing and search routes beside it. A
+        keyword argument is safe here and is a `TypeError` on the agent surface
+        — `run_in_threadpool` forwards keywords and `anyio.to_thread.run_sync`
+        does not.
+        """
+        ctx: Context = request.app.state.context
+        page = await run_in_threadpool(
+            ctx.ingestion.list_document_passage_page,
+            reference,
+            document_reference,
+            offset=offset,
+            limit=limit,
+        )
+        return {
+            "total": len(page.passages),
+            "offset": page.offset,
+            "total_matching": page.total_matching,
+            "truncated": page.truncated,
+            "continue_from": page.continue_from,
+            "document_id": page.document.id if page.document else None,
+            "passages": [
+                {
+                    "chunk_id": passage.id,
+                    "document_id": passage.document_id,
+                    "ordinal": passage.ordinal,
+                    "heading_path": passage.heading_path,
+                    "char_start": passage.char_start,
+                    "char_end": passage.char_end,
+                    "characters": passage.characters,
+                }
+                for passage in page.passages
+            ],
         }
 
     @app.get("/api/casefiles/{reference}/search")

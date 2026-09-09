@@ -16,13 +16,19 @@ from mcp.types import ToolAnnotations
 
 from ... import __version__
 from ...app import Context
-from ...services.ingestion import DEFAULT_DOCUMENT_PAGE, locations_verdict
+from ...services.ingestion import (
+    DEFAULT_DOCUMENT_PAGE,
+    DEFAULT_PASSAGE_PAGE,
+    locations_verdict,
+)
 from ...services.search import DEFAULT_CARRIER_PAGE
 from ...storage.port import (
     Casefile,
     Document,
     DocumentPage,
+    DocumentPassagePage,
     MentionDocumentPage,
+    PassageReference,
 )
 from ...services.casefiles import (
     COVERAGE_COMPLETE,
@@ -55,26 +61,36 @@ Work in this order, and resist starting at the end:
    list what came out of it, and again to go deeper. Evidence in a real dump
    often sits inside something an analyst dropped in whole, and neither the
    overview nor a search will tell you what a container held.
-4. `case_mentions` — the identifiers the casefile actually contains: email
+4. `case_list_passages` — the passages one document was divided into, in its
+   own order. This is what makes a document you reached by listing citable:
+   `case_cite` needs a passage id, and a read hands back text and spans but no
+   passage. Pass a `document_id` from step 3 — an attachment inside an archive
+   included — and each row's `chunk_id` goes straight into `case_get_passage`
+   and `case_cite`, with no search having run. It ranks nothing; it is an index
+   of one document, and a document with no passages says so rather than
+   offering you an identifier that resolves to nothing.
+5. `case_mentions` — the identifiers the casefile actually contains: email
    addresses, telephone numbers, bank accounts, registration numbers, each
    with how many times and in how many documents. Ask before you guess what to
    search for. It is an inventory of what was *found*, never a claim about what
    is there.
-5. `case_search` — hybrid keyword and semantic retrieval. Start broad, then
+6. `case_search` — hybrid keyword and semantic retrieval. Start broad, then
    narrow. Read the `formatted` index first and pull bodies only where you
    have committed. `mention` narrows a search to passages carrying one
    identifier — that is how an entry from `case_mentions` becomes a pivot.
-6. `case_mention_documents` — every document carrying one identifier, a page
+7. `case_mention_documents` — every document carrying one identifier, a page
    at a time. `case_search` ranks and stops at a bounded number of passages, so
    its `total` counts what it returned and never what the casefile holds; this
    enumerates the whole carrier set instead. Each row carries a passage id, so
    a document reached this way can be read and cited without searching for it.
-7. `case_get_passage` — a passage with the surrounding text of its section,
+8. `case_get_passage` — a passage with the surrounding text of its section,
    when a hit needs its surroundings to be intelligible. The passage stays the
    thing you cite; the surroundings are there to be read.
-8. `case_read_document` — the full text, bounded. Read this late; it is the
+9. `case_read_document` — the full text, bounded. Read this late; it is the
    most expensive thing you can do and rarely the fastest route to an answer.
-9. `case_cite` — turn a passage into a citation. Every factual claim you make
+   It carries no passage identifiers: to cite what you read here, take them
+   from `case_list_passages` and match the span.
+10. `case_cite` — turn a passage into a citation. Every factual claim you make
    should resolve through this to a document and a span.
 
 Epistemics this corpus demands:
@@ -148,6 +164,74 @@ def _render_document(document: Document) -> dict[str, Any]:
     # never builds a location record, so this is its only qualifier.
         row["locations_recorded"] = locations_verdict(document)
     return row
+
+
+def _render_passage(passage: PassageReference) -> dict[str, Any]:
+    """One row of a document's passage index — identifiers, a place, a size.
+
+    `chunk_id` and `document_id` because `mcp-tool-surface` requires an entry
+    that addresses a passage to carry both, and because they are what
+    `case_get_passage` and `case_cite` take. The name is `chunk_id` rather than
+    `passage_id` for the same reason the tool names are a contract: it is the
+    key those two tools already accept, and a second spelling of one identifier
+    is a second thing an agent has to learn.
+
+    **No passage text, deliberately.** `listing_payload` is unfenced because it
+    promises to carry no corpus prose, and `untrusted-content-boundary` says a
+    payload built on that promise is not the one to carry prose. A clipped
+    opening here would either ship corpus text unfenced or force a fence into a
+    shape whose stated reason for not needing one had quietly stopped being
+    true. The words are one call away, fenced, through the passage and citation
+    tools.
+
+    `characters` is the passage's stored length, which is not always
+    `char_end - char_start`: rows written before the chunker recorded the
+    trimmed span describe the untrimmed window. It is what a caller would
+    receive if it read the passage.
+    """
+    return {
+        "chunk_id": passage.id,
+        "short_id": passage.short_id,
+        "document_id": passage.document_id,
+        "ordinal": passage.ordinal,
+        # Corpus-derived: a heading is written by whoever wrote the document,
+        # and would otherwise forge rows in the index the agent reads first.
+        "heading_path": one_line(passage.heading_path, 200),
+        "char_start": passage.char_start,
+        "char_end": passage.char_end,
+        "characters": passage.characters,
+    }
+
+
+def _no_passages(page: DocumentPassagePage) -> str:
+    """Why a passage index is empty, without claiming more than that.
+
+    Two different true statements, for the reason `_nothing_listed` gives: "this
+    document has nothing to cite" said of a page past the end is a false claim
+    of absence, and this capability exists to remove exactly that.
+
+    A document with no passages is a real state rather than a defect.
+    `router.extract` refuses to store a document whose text is unusable but
+    exempts a container, because an archive's value is in its entries — so an
+    archive holding none is stored with no text and no passages. A corpus filled
+    before that refusal existed may hold others.
+
+    It names the tool to reach the contents rather than reporting a child count.
+    `resolve_document` aliases no `child_count`, so the document on this page
+    reports zero children whatever it holds; stating a count from it would be
+    asserting something this payload cannot support.
+    """
+    if page.beyond_the_end:
+        return (
+            f"No passages at offset {page.offset}; "
+            f"{page.total_matching} in this document."
+        )
+    return (
+        "This document has no stored passages, so nothing in it can be cited. A "
+        "container is stored for the entries it holds rather than for text of "
+        "its own; if it has children, list them with case_list_documents and "
+        "its id as `parent`."
+    )
 
 
 def _nothing_listed(page: DocumentPage) -> str:
@@ -358,7 +442,9 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             "places this instance recorded the same bytes at; one file offered "
             "twice at one path is one place. It may be shared custody or "
             "distribution; the count does not decide which. A row's "
-            "`locations_recorded` says whether that count is the whole story."
+            "`locations_recorded` says whether that count is the whole story. To "
+            "cite anything in a document listed here, take its `document_id` to "
+            "`case_list_passages` for the passage ids `case_cite` needs."
         ),
         annotations=_annotations_for("case_list_documents"),
     )
@@ -408,6 +494,83 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
                 "filename": one_line(page.parent.filename, 200),
                 "found_at": one_line(page.parent.containment_path, 200),
             }
+        return payload
+
+    @server.tool(
+        name="case_list_passages",
+        description=(
+            "The passages one document was divided into, a bounded page at a "
+            "time, in the document's own order. This is how a document you "
+            "reached by listing becomes citable: `case_cite` needs a passage "
+            "id, and a read gives you text and spans but no passage. Take a "
+            "`document_id` from `case_list_documents` — including from inside a "
+            "container — and every row's `chunk_id` goes straight into "
+            "`case_get_passage` to read it and `case_cite` to cite it, with no "
+            "search having run. It ranks nothing: `ordinal` is where the "
+            "passage sits in the document, `heading_path` is the section it "
+            "came from, `char_start` and `char_end` are its span, and "
+            "`characters` is its length. It carries no text — read a passage "
+            "with `case_get_passage`, or read the document and match an offset "
+            "you saw against a row's span. `total` counts the rows in this page "
+            "and `total_matching` the passages the document holds; when "
+            "`truncated` is true, call again with `offset` set to "
+            "`continue_from`."
+        ),
+        annotations=_annotations_for("case_list_passages"),
+    )
+    @returns_error_payload
+    async def case_list_passages(
+        casefile: str,
+        document: str,
+        offset: int = 0,
+        limit: int = DEFAULT_PASSAGE_PAGE,
+    ) -> dict[str, Any]:
+        # Positional, and load-bearing for the reason `case_search` states at
+        # its own call: `anyio.to_thread.run_sync` forwards no keywords, so a
+        # keyword here is a TypeError at the first paged call rather than at
+        # import.
+        page = await anyio.to_thread.run_sync(
+            context.ingestion.list_document_passage_page,
+            casefile,
+            document,
+            offset,
+            limit,
+        )
+        rows = [_render_passage(p) for p in page.passages]
+        formatted = (
+            "\n".join(
+                f"{r['ordinal']:>4}  [{r['short_id']}]  "
+                f"{r['char_start']:>8,}–{r['char_end']:<8,}"
+                f"  {r['characters']:>6,} chars"
+                + (f"  {one_line(r['heading_path'], 60)}" if r["heading_path"] else "")
+                for r in rows
+            )
+            or _no_passages(page)
+        )
+        payload = listing_payload(rows, formatted=formatted)
+        payload["offset"] = page.offset
+        payload["total_matching"] = page.total_matching
+        payload["truncated"] = page.truncated
+        payload["continue_from"] = page.continue_from
+        if page.document is not None:
+            # Echoed so an agent that passed an 8-character prefix can see which
+            # document it indexed, and by the path a person would follow: an
+            # attachment's own filename identifies nothing without the message
+            # and archive that carried it. The same block the document listing
+            # echoes for a container it entered.
+            payload["document"] = {
+                "document_id": page.document.id,
+                "short_id": page.document.short_id,
+                "filename": one_line(page.document.filename, 200),
+                "found_at": one_line(page.document.containment_path, 200),
+                # A passage read off a scan can be fluent and wrong, and this
+                # index is where an agent chooses which passage to quote.
+                "read_as": read_as(page.document.text_source),
+            }
+        # Every heading below, and the filename above, was written by whoever
+        # wrote the documents — the reason the identifier inventory carries this
+        # notice while carrying no prose either.
+        payload["content_notice"] = NOTICE
         return payload
 
     # -- retrieval ---------------------------------------------------------
@@ -659,6 +822,8 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         description=(
             "A document's extracted text, bounded. Read late: it is the most expensive call "
             "here and rarely the fastest route to an answer. Continue with the returned offset. "
+            "It carries no passage identifiers, so it cannot be cited from directly: get "
+            "them from `case_list_passages` and match the span you want against a row's. "
             "The provenance block carries the locations recorded for the document, "
             "bounded, and says `unknown` where the record of where it was found does not "
             "reach back to when it was stored."

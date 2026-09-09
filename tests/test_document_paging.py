@@ -407,13 +407,15 @@ async def test_an_agent_reaches_and_reads_a_child_without_searching(
     generic, so a container is exactly where retrieval is least likely to
     surface the evidence.
 
-    **Citing it does still take a search, and this test does not prove
-    otherwise.** An earlier name and docstring claimed "no search runs", which
-    was false — `case_cite` needs a `chunk_id`, and no tool on this surface
-    hands one back for a document reached by listing: `case_read_document`
-    returns text and provenance only. So the citation below goes through
-    `case_search` to obtain that id. The gap is recorded in
-    `docs/implementation-notes.md`; closing it is a separate change.
+    **Citing it no longer takes a search either.** An earlier version of this
+    test went through `case_search` to obtain the `chunk_id` that `case_cite`
+    needs, because no tool handed one back for a document reached by listing —
+    a gap this test's docstring recorded, and which
+    `cite-a-document-reached-by-listing` closed by adding
+    `case_list_passages`. The citation below therefore comes from the document
+    listing alone. That the journey works with `case_search` genuinely absent
+    from the server is asserted in `tests/test_document_passages.py`, which
+    removes the tool; this file's subject is the paging, so it does not.
     """
     server = build_mcp_server(context)
 
@@ -471,16 +473,13 @@ async def test_an_agent_reaches_and_reads_a_child_without_searching(
     )
     assert "harbour bundle" in read["text"]
 
-    passage = await _call(
+    index = await _call(
         server,
-        "case_search",
-        {"casefile": casefile.short_id, "query": "harbour bundle", "limit": 10},
+        "case_list_passages",
+        {"casefile": casefile.short_id, "document": child["document_id"]},
     )
-    chunk_id = next(
-        hit["chunk_id"]
-        for hit in passage["results"]
-        if hit["document_id"] == child["document_id"]
-    )
+    chunk_id = index["results"][0]["chunk_id"]
+    assert index["results"][0]["document_id"] == child["document_id"]
     citation = await _call(
         server, "case_cite", {"casefile": casefile.short_id, "chunk_id": chunk_id}
     )

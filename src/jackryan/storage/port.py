@@ -190,6 +190,39 @@ class Chunk:
 
 
 @dataclass(frozen=True)
+class PassageReference:
+    """A stored passage addressed without its text, for indexing a document.
+
+    Deliberately not a `Chunk`, and the difference is the whole reason it
+    exists. A listing of a document's passages that carried each one's text
+    would pay for the document's entire stored corpus in order to report its
+    shape — the same cost `list_document_ids` exists to avoid one level up, and
+    the one `list_document_page` selects narrow rows to avoid. Handing back a
+    `Chunk` with `text=""` instead would be worse than expensive: a passage
+    holding no text and a passage whose text was not fetched would be the same
+    object, and only one of those is a corpus defect.
+
+    `characters` is read from the stored text rather than derived from the span.
+    The two agree exactly on a corpus ingested after the chunker began
+    recording the trimmed span, and disagree on an older one, whose rows still
+    describe the untrimmed window. This is what a caller would receive if it
+    read the passage, so it comes from the passage.
+    """
+
+    id: str
+    document_id: str
+    ordinal: int
+    heading_path: str
+    char_start: int
+    char_end: int
+    characters: int
+
+    @property
+    def short_id(self) -> str:
+        return self.id[:8]
+
+
+@dataclass(frozen=True)
 class Window:
     """A span of a document's text that contains a matched chunk.
 
@@ -544,6 +577,59 @@ class DocumentPage:
         return self.offset + len(self.documents) if self.truncated else None
 
 
+@dataclass(frozen=True)
+class DocumentPassagePage:
+    """One bounded page of a document's stored passages, in reading order.
+
+    A domain object rather than a tuple or a dict, for the reason
+    `CasefileStatistics` gives, and a type of its own rather than a
+    `DocumentPage`: the entries are passages, not documents.
+
+    The field names are `DocumentPage`'s and `MentionDocumentPage`'s
+    deliberately. This is the third paged listing on the surface, and
+    `mcp-tool-surface` asks for one continuation contract rather than a new
+    spelling per listing — an agent that has learned to follow `truncated` and
+    `continue_from` must not have to learn a third.
+    """
+
+    passages: list[PassageReference]
+    # How many passages the document holds in the store, which is not how many
+    # this page carries. Both are needed: a caller that cannot tell "this is all
+    # of them" from "this is the first fifty" reports the first fifty as
+    # coverage.
+    total_matching: int
+    offset: int
+    limit: int
+    # The document these passages belong to. Set by the service layer, which
+    # resolved the reference; the store leaves it empty because the store is
+    # handed an identifier, not a reference. The same arrangement as
+    # `DocumentPage.parent`.
+    document: Document | None = None
+
+    @property
+    def truncated(self) -> bool:
+        """Whether passages of this document were left unreturned."""
+        return self.offset + len(self.passages) < self.total_matching
+
+    @property
+    def continue_from(self) -> int | None:
+        """The offset that resumes this listing, or `None` when it ended."""
+        return self.offset + len(self.passages) if self.truncated else None
+
+    @property
+    def beyond_the_end(self) -> bool:
+        """Whether this page is empty because it began past the last passage.
+
+        A property of the page rather than of any surface, for the reason
+        `MentionDocumentPage.beyond_the_end` gives: every surface has to answer
+        the same question and must not answer it differently. "This document has
+        no passages to cite" said of a page past the end is a false claim of
+        absence, and this is the capability that exists to remove exactly that
+        class of false negative.
+        """
+        return not self.passages and bool(self.offset) and bool(self.total_matching)
+
+
 class StorePort(Protocol):
     """What the service layer requires of a store."""
 
@@ -683,7 +769,48 @@ class StorePort(Protocol):
         ...
 
     def list_document_chunks(self, document_id: str) -> list[Chunk]:
-        """One document's chunks, in ordinal order."""
+        """One document's chunks, in ordinal order.
+
+        Unbounded and carrying every chunk's text: a maintenance call, used by
+        the offset repair, which needs the text to locate a passage in its
+        document. A surface asking for a document's passages wants
+        `list_document_passage_page` instead.
+        """
+        ...
+
+    def list_document_passage_page(
+        self, document_id: str, offset: int, limit: int
+    ) -> DocumentPassagePage:
+        """One bounded page of a document's passages, and how many it holds.
+
+        Addressed by document identifier, like `document_locations` and
+        `list_document_chunks` beside it: the service resolved the reference
+        inside its casefile before calling, which is where that rule lives.
+
+        The count SHALL be computed under the same predicate as the page. A
+        total derived from a different predicate than the rows is a number a
+        caller cannot act on, and here — as in `documents_with_mention` — a
+        total counted wider than the page keeps `truncated` true past the last
+        entry, so a caller following `continue_from` never terminates.
+
+        The ordering SHALL be total. `chunks` does not enforce uniqueness on
+        `(document_id, ordinal)`: the chunker produces them sequentially, but
+        nothing in the schema says so, and `mcp-tool-surface` requires an
+        ordering in which a page boundary cannot fall inside a tie and repeat or
+        skip an entry.
+
+        No unbounded form is offered, and an implementation SHALL enforce that
+        rather than trusting its caller — the same requirement
+        `documents_with_mention` states, for the same two reasons: a negative
+        `limit` is SQLite's own "no bound" and the neighbouring
+        `list_document_page` honours one, and a `limit` of 0 returns no rows
+        while the count still reports the whole set, so `truncated` stays true
+        and `continue_from` never advances. Both are floored to at least one.
+
+        A passage SHALL be returned without its text. The text is what makes
+        this expensive, the caller asked for an index, and the tools that return
+        a passage and a citation are one call away.
+        """
         ...
 
     def recompute_mention_offsets(self, text_starts: dict[str, int]) -> int:
