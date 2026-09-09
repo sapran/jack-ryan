@@ -383,6 +383,16 @@ _STEPS: tuple[_Step, ...] = (
             # here, and `min` keeps the earlier sighting — which is the
             # timestamp the wholeness of the record is judged against, so
             # keeping the later one would turn an old record into a young one.
+            #
+            # The unqualified `first_seen_at` on the left of the SET, and inside
+            # the `min`, is the *existing* row's, even though the SELECT's source
+            # table has a column of that name. Measured rather than assumed,
+            # because it reads ambiguously: with a stored row at T1 and a source
+            # row at T2 > T1, the surviving value is T1, and it is T1 whether the
+            # reference is written bare or as `document_places.first_seen_at`.
+            # The rungs are shipped, so the bare form stays;
+            # `test_the_carry_forward_never_re_dates_a_place_to_a_later_sighting`
+            # is what would catch it if that ever stopped being true.
             "INSERT INTO document_places (document_id, location_path, first_seen_at)"
             " SELECT document_id, jr_join_location(source_root, containment_path),"
             " MIN(first_seen_at) FROM document_locations"
