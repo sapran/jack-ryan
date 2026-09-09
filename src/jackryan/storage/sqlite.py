@@ -30,6 +30,8 @@ from .port import (
     CasefileStatistics,
     Chunk,
     Document,
+    DocumentLocation,
+    DocumentLocationSet,
     DocumentPage,
     IngestionCoverage,
     IngestRun,
@@ -114,6 +116,38 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# The derived values a document needs before a caller may judge its location
+# record, spelled once.
+#
+# They are aliases rather than columns because whether the record is whole is a
+# property of the rows, not a claim stored beside them — the claim that used to
+# be stored could disagree with them, and did. A query that omits these yields a
+# document whose record silently reads as not whole, so the four queries a
+# caller resolves a document through all select them: `get_document`,
+# `find_document_by_hash`, `find_documents_by_id_prefix` and
+# `list_document_page`.
+#
+# Two queries deliberately do not, and both would be wrong to "fix" here:
+#
+# `ancestors` exists to render a containment chain, nothing asks it about
+# locations, and it is recursive.
+#
+# The mention-carrier listing omits the location count, which is a **recorded
+# finding** from PM verification of the previous change and is parked for a
+# separate surface-consistency change. Adding the aliases there would resolve a
+# finding this change was told to leave standing, silently and in passing —
+# which is worse than the gap, because the record would then describe a defect
+# that no longer exists.
+_OBSERVATION_ALIASES = (
+    ", ("
+    "   SELECT COUNT(*) FROM document_places o WHERE o.document_id = d.id"
+    " ) AS location_count, ("
+    "   SELECT MIN(first_seen_at) FROM document_places o"
+    "   WHERE o.document_id = d.id"
+    " ) AS first_observed_at"
+)
+
+
 def _row_to_document(row: sqlite3.Row) -> Document:
     return Document(
         id=row["id"],
@@ -133,6 +167,17 @@ def _row_to_document(row: sqlite3.Row) -> Document:
         containment_path=row["containment_path"],
         identity_path=row["identity_path"],
         child_count=row["child_count"] if "child_count" in row.keys() else 0,
+        # Both aliased rather than stored, so they take the guard `child_count`
+        # above does. `locations_recorded` is deliberately not read: it was a
+        # stored claim about these rows, written in a different transaction from
+        # them, and the two could disagree. Wholeness is derived from
+        # `first_observed_at` against `created_at` on the domain object.
+        location_count=row["location_count"] if "location_count" in row.keys() else 0,
+        first_observed_at=(
+            _from_iso(row["first_observed_at"])
+            if "first_observed_at" in row.keys() and row["first_observed_at"] is not None
+            else None
+        ),
     )
 
 
@@ -299,63 +344,140 @@ class SqliteStore:
 
     # -- documents ---------------------------------------------------------
 
-    def upsert_document(self, document: Document) -> Document:
+    def store_document(
+        self, document: Document, location_path: str, observed_at: datetime
+    ) -> tuple[Document, bool]:
+        # One lock, one transaction, one commit. The document row and the
+        # observation that opens its record are written together because the
+        # record is what answers whether the document's history is whole: a
+        # document committed without it asserts a history it does not have, and
+        # the next observation from somewhere else becomes the whole story.
+        #
+        # `BEGIN` and the rollback are explicit, following `replace_chunks`.
+        # Without them the failing observation leaves the document's insert
+        # pending in an open transaction on this connection, which the next
+        # successful write would commit — the interrupted state, reached by an
+        # ordinary failure instead of a process death. Mutation proving caught
+        # this: the first version of the guard for it dropped the observations
+        # table, which fails the identity lookup before the document is ever
+        # inserted, so it passed while never reaching the write it names.
         with self._lock:
-            self._db.execute(
-                "INSERT INTO documents (id, casefile_id, content_hash, filename, media_type,"
-                " byte_size, extracted_text, extractor, text_source, summary, summary_by,"
-                " created_at, updated_at, parent_id, containment_path, identity_path)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                " ON CONFLICT(casefile_id, content_hash, identity_path) DO UPDATE SET"
-                "   filename = excluded.filename,"
-                "   media_type = excluded.media_type,"
-                "   byte_size = excluded.byte_size,"
-                "   extracted_text = excluded.extracted_text,"
-                "   extractor = excluded.extractor,"
-                # Overwritten on reingest, not preserved: the value has to
-                # describe the text now stored beside it. A document reingested
-                # after the recognition engine changed was read by the new one.
-                "   text_source = excluded.text_source,"
-                # Overwritten on reingest for the same reason, one step further
-                # out: the summary has to describe the text now stored beside
-                # it. A document reingested after the summariser changed was
-                # summarised by the new one, and `summary_by` has to say so or
-                # it credits the wrong author for text it did not write.
-                "   summary = excluded.summary,"
-                "   summary_by = excluded.summary_by,"
-                "   updated_at = excluded.updated_at,"
-                "   parent_id = excluded.parent_id,"
-                "   containment_path = excluded.containment_path",
-                (
-                    document.id,
-                    document.casefile_id,
-                    document.content_hash,
-                    document.filename,
-                    document.media_type,
-                    document.byte_size,
-                    document.extracted_text,
-                    document.extractor,
-                    document.text_source,
-                    document.summary,
-                    document.summary_by,
-                    _to_iso(document.created_at),
-                    _to_iso(document.updated_at),
-                    document.parent_id,
-                    document.containment_path,
-                    document.identity_path,
-                ),
-            )
-            self._db.commit()
-        stored = self.find_document_by_hash(
-            document.casefile_id, document.content_hash, document.identity_path
-        )
-        assert stored is not None
-        return stored
+            try:
+                self._db.execute("BEGIN")
+                self._db.execute(
+                    "INSERT INTO documents (id, casefile_id, content_hash, filename,"
+                    " media_type, byte_size, extracted_text, extractor, text_source,"
+                    " summary, summary_by, created_at, updated_at, parent_id,"
+                    " containment_path, identity_path)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT(casefile_id, content_hash, identity_path) DO UPDATE SET"
+                    "   media_type = excluded.media_type,"
+                    "   byte_size = excluded.byte_size,"
+                    "   extracted_text = excluded.extracted_text,"
+                    "   extractor = excluded.extractor,"
+                    # Overwritten on reingest, not preserved: the value has to
+                    # describe the text now stored beside it. A document
+                    # reingested after the recognition engine changed was read
+                    # by the new one.
+                    "   text_source = excluded.text_source,"
+                    # Overwritten on reingest for the same reason, one step
+                    # further out: the summary has to describe the text now
+                    # stored beside it. A document reingested after the
+                    # summariser changed was summarised by the new one, and
+                    # `summary_by` has to say so or it credits the wrong author
+                    # for text it did not write.
+                    "   summary = excluded.summary,"
+                    "   summary_by = excluded.summary_by,"
+                    "   updated_at = excluded.updated_at,"
+                    # `filename` and `containment_path` are deliberately absent
+                    # from this list, like `created_at` above: they are the
+                    # *first* place this document's bytes were observed at, and
+                    # a later copy found elsewhere must not overwrite them.
+                    # Every observed place is kept in `document_places`;
+                    # this column is the one a citation names, so it has to be
+                    # stable or a citation written yesterday points somewhere
+                    # else today.
+                    "   parent_id = excluded.parent_id",
+                    (
+                        document.id,
+                        document.casefile_id,
+                        document.content_hash,
+                        document.filename,
+                        document.media_type,
+                        document.byte_size,
+                        document.extracted_text,
+                        document.extractor,
+                        document.text_source,
+                        document.summary,
+                        document.summary_by,
+                        _to_iso(document.created_at),
+                        _to_iso(document.updated_at),
+                        document.parent_id,
+                        document.containment_path,
+                        document.identity_path,
+                    ),
+                )
+                # Read back inside the transaction: on a reingest the surviving
+                # row keeps the identifier this document is about to be observed
+                # under.
+                row = self._db.execute(
+                    "SELECT * FROM documents"
+                    " WHERE casefile_id = ? AND content_hash = ? AND identity_path = ?",
+                    (document.casefile_id, document.content_hash, document.identity_path),
+                ).fetchone()
+                if row is None:
+                    # Raised rather than asserted: an assert is stripped under
+                    # `-O`, and this one is control flow — the next line would
+                    # subscript None.
+                    raise RuntimeError(
+                        f"document {document.id} vanished between its own insert "
+                        "and the read-back in the same transaction"
+                    )
+                stored_id = row["id"]
+                # INSERT OR IGNORE, never OR REPLACE: the first sighting's
+                # timestamp is what the wholeness of the record is judged
+                # against, and the return value is how the caller tells a newly
+                # discovered place from an ordinary reingest of a known one.
+                # OR REPLACE would move the timestamp forward and report every
+                # reingest as a discovery.
+                cursor = self._db.execute(
+                    "INSERT OR IGNORE INTO document_places"
+                    " (document_id, location_path, first_seen_at) VALUES (?, ?, ?)",
+                    (stored_id, location_path, _to_iso(observed_at)),
+                )
+                location_is_new = cursor.rowcount > 0
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
+            # Read back under the same lock the write held. Releasing it first
+            # leaves a window in which another thread deletes the row — the
+            # server runs ingestion in a thread pool beside the REST delete
+            # routes — and the re-read then fails an assertion inside the
+            # storage seam. That is not a `JackRyanError`, so the per-document
+            # handler in `_ingest_work` does not catch it and the whole run
+            # aborts with no record. Under `-O` it is worse: the assert is
+            # stripped and the caller dereferences `None`.
+            #
+            # The aliases are selected here because the caller receives this
+            # document, and a document handed back without them reads as though
+            # its location record were not whole.
+            stored_row = self._db.execute(
+                f"SELECT d.*{_OBSERVATION_ALIASES} FROM documents d WHERE d.id = ?",
+                (stored_id,),
+            ).fetchone()
+            if stored_row is None:
+                raise RuntimeError(
+                    f"document {stored_id} vanished between its commit and the "
+                    "read-back under the same lock"
+                )
+        return _row_to_document(stored_row), location_is_new
 
     def get_document(self, document_id: str) -> Document | None:
         with self._lock:
             row = self._db.execute(
-                "SELECT * FROM documents WHERE id = ?", (document_id,)
+                f"SELECT d.*{_OBSERVATION_ALIASES} FROM documents d WHERE d.id = ?",
+                (document_id,),
             ).fetchone()
         return _row_to_document(row) if row else None
 
@@ -368,14 +490,53 @@ class SqliteStore:
         one folder are one document. For an expansion it is the containment
         path, so the same bytes reached through two containers resolve to two
         documents and each keeps the link to what carried it.
+
+        The observation counts are aliased here because the ingest that calls
+        this decides, from whether the record was already whole, whether a place
+        it is about to record counts as a discovery. Asking afterwards would ask
+        about the record this write has just changed.
         """
         with self._lock:
             row = self._db.execute(
-                "SELECT * FROM documents"
-                " WHERE casefile_id = ? AND content_hash = ? AND identity_path = ?",
+                f"SELECT d.*{_OBSERVATION_ALIASES} FROM documents d"
+                " WHERE d.casefile_id = ? AND d.content_hash = ? AND d.identity_path = ?",
                 (casefile_id, content_hash, identity_path),
             ).fetchone()
         return _row_to_document(row) if row else None
+
+    def document_locations(self, document_id: str, limit: int) -> DocumentLocationSet:
+        """One document's recorded places, bounded, and how many there are.
+
+        Ordered by when each was first observed and then by the path itself, so
+        the ordering is total: two places recorded inside one ingest run can
+        share a timestamp, and a bound falling inside a tie would return a
+        different subset between two calls on an unchanged corpus.
+
+        The earliest is returned first, which is what the wholeness of the
+        record is judged against.
+        """
+        with self._lock:
+            total = self._db.execute(
+                "SELECT COUNT(*) AS total FROM document_places WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()["total"]
+            rows = self._db.execute(
+                "SELECT location_path, first_seen_at"
+                " FROM document_places WHERE document_id = ?"
+                " ORDER BY first_seen_at, location_path"
+                " LIMIT ?",
+                (document_id, int(limit)),
+            ).fetchall()
+        return DocumentLocationSet(
+            locations=[
+                DocumentLocation(
+                    path=r["location_path"],
+                    first_seen_at=_from_iso(r["first_seen_at"]),
+                )
+                for r in rows
+            ],
+            total=total,
+        )
 
     def ancestors(self, document_id: str) -> list[Document]:
         """The chain from the directly ingested file down to this document's parent.
@@ -432,8 +593,9 @@ class SqliteStore:
         pattern = _escape_like(prefix) + "%"
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM documents WHERE casefile_id = ? AND id LIKE ? ESCAPE '\\'"
-                " ORDER BY created_at",
+                f"SELECT d.*{_OBSERVATION_ALIASES} FROM documents d"
+                " WHERE d.casefile_id = ? AND d.id LIKE ? ESCAPE '\\'"
+                " ORDER BY d.created_at",
                 (casefile_id, pattern),
             ).fetchall()
         return [_row_to_document(r) for r in rows]
@@ -485,7 +647,11 @@ class SqliteStore:
             rows = self._db.execute(
                 "SELECT d.*, ("
                 "   SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id"
-                " ) AS child_count"
+                # Same shape and the same order of cost as the child count
+                # already paid, and it is what makes "which documents were
+                # found in several places" answerable by scanning a listing
+                # rather than by opening every document in turn.
+                f" ) AS child_count{_OBSERVATION_ALIASES}"
                 " FROM documents d"
                 " JOIN (SELECT d.id FROM documents d"
                 f"{predicate}{order} LIMIT ? OFFSET ?) chosen ON chosen.id = d.id"

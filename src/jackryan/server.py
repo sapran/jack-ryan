@@ -238,7 +238,21 @@ def create_app(context: Context | None = None) -> FastAPI:
         request: Request, reference: str, document_reference: str
     ) -> dict[str, Any]:
         ctx: Context = request.app.state.context
-        return serialize_document(ctx.ingestion.resolve_document(reference, document_reference))
+        record = ctx.ingestion.document_locations(reference, document_reference)
+        return {
+            **serialize_document(record.document),
+            # The one place REST reports where a document was found. The listing
+            # route reports neither this nor the child marking, which is the
+            # existing asymmetry `rendering.render_document` documents.
+            "found_at": record.document.containment_path,
+            "locations_recorded": record.verdict,
+            "locations": record.recorded.total,
+            "observed_at": [
+                location.path for location in record.observed_at
+            ],
+            "locations_truncated": record.truncated,
+            "locations_note": record.note,
+        }
 
     @app.get("/api/casefiles/{reference}/search")
     async def search(

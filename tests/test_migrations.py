@@ -10,6 +10,7 @@ without noticing.
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
@@ -146,6 +147,13 @@ def test_an_older_store_gains_the_ingest_run_record(tmp_path):
     `test_the_ladder_versions_strictly_increase`, which asserts the property
     instead of consuming the value. This half is here for the behaviour: that a
     store one rung down really does arrive with the table.
+
+    The anchor is the step that creates the table, not the top of the ladder.
+    The two were the same value only while this was the newest rung: taking
+    `max(to_version < SCHEMA_VERSION)` means every rung added above it builds a
+    store already stamped at *this* step's version, which then correctly skips
+    the step the test exists to exercise and fails for a reason that has nothing
+    to do with the run record.
     """
     expected_columns = {
         "id",
@@ -161,8 +169,14 @@ def test_an_older_store_gains_the_ingest_run_record(tmp_path):
         "exhausted_by",
     }
 
+    creates_the_record = min(
+        step.to_version
+        for step in _STEPS
+        if any("ingest_runs" in statement for statement in step.statements)
+    )
     previous = max(
-        step.to_version for step in _STEPS if step.to_version < SCHEMA_VERSION
+        (step.to_version for step in _STEPS if step.to_version < creates_the_record),
+        default=_BASELINE_VERSION,
     )
     at_previous = build_baseline_store(tmp_path / "at-previous.db", version=previous)
     store = SqliteStore(at_previous)
@@ -189,6 +203,108 @@ def test_an_older_store_gains_the_ingest_run_record(tmp_path):
         # And no run is invented for it: a casefile filled before the record
         # existed must read as unaccounted-for, not as clean.
         assert store.ingestion_coverage("c1").runs == 0
+    finally:
+        store.close()
+
+
+def test_a_document_carried_forward_reports_its_locations_as_unknown(tmp_path):
+    """A document that predates the location record must never claim otherwise.
+
+    Its source locations were overwritten by whichever copy was ingested last,
+    and nothing can recover them. Nothing is written for such a document, so it
+    has no observation, so no earliest observation can be no later than its
+    creation — and one recorded afterwards is later than it, which is why a
+    further sighting cannot turn missing history into a whole record.
+    """
+    path = build_baseline_store(tmp_path / "old.db")
+    store = SqliteStore(path)
+    try:
+        store.initialize(IDENTITY, DIMENSIONS)
+
+        document = store.get_document("d1")
+        assert document is not None
+        # No location is invented for it: the only timestamp available is
+        # `created_at`, which is when the document was first ingested and not
+        # when any particular copy was observed.
+        assert store.document_locations("d1", 20).total == 0
+
+        # A later sighting is recorded, and is later than the document. The
+        # store writes it through the one call that also stores the document,
+        # which on a reingest keeps the row it already has.
+        later = datetime.now(timezone.utc)
+        assert later > document.created_at
+        stored, was_new = store.store_document(document, "/dumps/alpha/lease.md", later)
+        assert was_new is True
+
+        recorded = store.document_locations("d1", 20)
+        assert recorded.total == 1
+        assert recorded.locations[0].first_seen_at > stored.created_at, (
+            "an observation recorded after the document was created must stay later "
+            "than it, or the record would read as whole"
+        )
+    finally:
+        store.close()
+
+
+def test_existing_location_records_are_carried_into_observations(tmp_path):
+    """Rung 10 keeps what was recorded, and collapses one place recorded twice.
+
+    The prior key was the ingest root paired with the path within it, so a
+    folder walk and then that folder's nested file named directly wrote two
+    rows for one file. Carrying them across joins each pair into its path,
+    which makes the duplicate a duplicate — and the earliest sighting is the
+    one kept, because that is what the wholeness of the record is judged
+    against.
+    """
+    path = build_baseline_store(tmp_path / "old.db", version=9)
+    conn = sqlite3.connect(path)
+    try:
+        # The shape rung 9 left: a pair-keyed table, holding one place twice
+        # and one place once.
+        conn.execute(
+            "CREATE TABLE document_locations ("
+            " document_id TEXT NOT NULL, source_root TEXT NOT NULL,"
+            " containment_path TEXT NOT NULL, first_seen_at TEXT NOT NULL,"
+            " PRIMARY KEY (document_id, source_root, containment_path))"
+        )
+        conn.execute("ALTER TABLE documents ADD COLUMN locations_recorded INTEGER NOT NULL DEFAULT 0")
+        # The two rows for one place are ordered so that the pair ordering and
+        # the timestamp ordering *disagree*: by (source_root, containment_path)
+        # `/dump` sorts first, and it carries the later sighting. Without that,
+        # grouping by the pair instead of by the path still happens to keep the
+        # earliest, and this test passes while proving nothing — measured, not
+        # supposed.
+        conn.executemany(
+            "INSERT INTO document_locations VALUES (?, ?, ?, ?)",
+            [
+                ("d1", "/dump", "sub/lease.md", "2026-01-03T00:00:00+00:00"),
+                ("d1", "/dump/sub", "lease.md", "2026-01-02T00:00:00+00:00"),
+                ("d1", "/elsewhere", "lease.md", "2026-01-04T00:00:00+00:00"),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = SqliteStore(path)
+    try:
+        store.initialize(IDENTITY, DIMENSIONS)
+        recorded = store.document_locations("d1", 20)
+        assert [location.path for location in recorded.locations] == [
+            "/dump/sub/lease.md",
+            "/elsewhere/lease.md",
+        ], "the two rows for one place did not collapse into it"
+        assert recorded.total == 2
+        # The earliest of the two sightings of that place is the one kept, not
+        # whichever the prior key happened to order first.
+        assert recorded.locations[0].first_seen_at.isoformat() == "2026-01-02T00:00:00+00:00", (
+            "the later sighting of a place recorded twice was kept"
+        )
+        # And the prior record is still there, unrewritten.
+        surviving = store._db.execute(
+            "SELECT COUNT(*) AS n FROM document_locations"
+        ).fetchone()["n"]
+        assert surviving == 3, "the prior record was rewritten rather than kept"
     finally:
         store.close()
 
@@ -386,7 +502,28 @@ def test_a_store_that_cannot_be_backed_up_is_not_migrated(tmp_path):
 
 # --- Mechanical rules ---------------------------------------------------------
 
-EVIDENCE_TABLES = ("documents", "casefiles", "chunks")
+# `document_places` is the live record: rung 11 made it the one table every
+# location observation is written to and read from, and a location is evidence
+# of custody in its own right — where a file was found is a finding, not a
+# derived convenience that could be rebuilt. `chunks` can be recomputed from a
+# document; an observation cannot be recomputed from anything.
+#
+# `document_observations` and `document_locations` are here too, and they are
+# the ones that need the guard most. Rungs 10 and 11 stopped writing them and
+# say in comments that they are kept deliberately, because they hold which root
+# each place was reached through and the spelling each was recorded under, and
+# dropping either would destroy provenance to tidy a representation. This
+# module's own docstring argues that a rule only a comment states is a rule a
+# later change breaks without noticing, and an unwritten table is exactly what
+# a later change tidies up.
+EVIDENCE_TABLES = (
+    "documents",
+    "casefiles",
+    "chunks",
+    "document_places",
+    "document_observations",
+    "document_locations",
+)
 
 
 def test_no_step_is_destructive():

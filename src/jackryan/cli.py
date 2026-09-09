@@ -18,6 +18,7 @@ from .ingestion.legacy_office import converter_status
 from .app import build_context
 from .errors import JackRyanError
 from .rendering import render_casefile, render_document, render_hit, render_report
+from .services.ingestion import locations_verdict
 from .services.search import DEFAULT_CARRIER_PAGE
 from .storage.port import Casefile, Document, SearchHit
 
@@ -40,6 +41,19 @@ def _render_document(document: Document) -> dict[str, Any]:
         row["found_at"] = document.containment_path
     if document.child_count:
         row["children"] = document.child_count
+    # Only when it says something, like `children` above: a document found in
+    # one place is the ordinary case and adding a column of ones would widen
+    # every table for nothing.
+    # Asked of the document rather than computed here: whether its own place
+    # is among the recorded ones depends on when its record began, and a rule
+    # spelled once in the domain object cannot drift between two adapters.
+    if document.additional_locations:
+        row["locations"] = document.location_count
+    # The count alone over-claims where the record began late: its one
+    # observation may be the document's own place, and nothing in the row would
+    # say so. The verdict travels beside the count for that reason — a listing
+    # never builds a location record, so this is its only qualifier.
+        row["locations_recorded"] = locations_verdict(document)
     if document.summary:
         # Added only when present, so a table for a corpus ingested without a
         # summariser keeps the shape it has today. Model-written, so the producer
@@ -236,6 +250,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print("\nThis run did not cover everything it was offered:")
                     for line in report.limitations:
                         print(f"  {line}")
+                # A separate block below the limitations one, and phrased as a
+                # finding rather than a shortfall: the run is still complete.
+                # A copy found somewhere new was read and stored.
+                if report.new_locations:
+                    print(
+                        "\nAlready in this casefile, and now recorded at a "
+                        "location it had not been seen at:"
+                    )
+                    for path in report.new_locations:
+                        print(f"  {path}")
             return 1 if report.failed and not report.ingested else 0
 
         if args.command == "search":
@@ -362,7 +386,39 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "No documents yet. Add some with: jackryan ingest <casefile> <path>",
                 )
             else:
-                _print(_render_document(context.ingestion.resolve_document(args.casefile, args.reference)), args.json)
+                record = context.ingestion.document_locations(
+                    args.casefile, args.reference
+                )
+                row = _render_document(record.document)
+                row["locations_recorded"] = record.verdict
+                # Set unconditionally here, unlike the listing above: this is a
+                # single document's full record, and a person reading it needs
+                # `1` to mean one rather than having to infer it from an absent
+                # key.
+                row["locations"] = record.recorded.total
+                if args.json:
+                    row["observed_at"] = [
+                        location.path for location in record.observed_at
+                    ]
+                    row["locations_truncated"] = record.truncated
+                    if record.note:
+                        row["locations_note"] = record.note
+                    _print(row, True)
+                else:
+                    _print(row, False)
+                    # Every recorded location, each with its root, rather
+                    # than "the others": the document's own path above is
+                    # relative to a root no column holds, so listing only the
+                    # rest would show a different set depending on which copy
+                    # was ingested first.
+                    for location in record.observed_at:
+                        print(f"observed at {location.path}")
+                    if record.truncated:
+                        print(f"… {record.recorded.total} locations recorded in total")
+                    # The wording comes from the record, never written out here:
+                    # one caveat, one spelling, on every surface.
+                    if record.note:
+                        print(record.note)
             return 0
 
         if args.command == "repair":

@@ -16,7 +16,7 @@ from mcp.types import ToolAnnotations
 
 from ... import __version__
 from ...app import Context
-from ...services.ingestion import DEFAULT_DOCUMENT_PAGE
+from ...services.ingestion import DEFAULT_DOCUMENT_PAGE, locations_verdict
 from ...services.search import DEFAULT_CARRIER_PAGE
 from ...storage.port import (
     Casefile,
@@ -134,6 +134,19 @@ def _render_document(document: Document) -> dict[str, Any]:
         # Marked, not expanded: a listing says there is more to reach without
         # returning the forty thousand documents an archive might hold.
         row["children"] = document.child_count
+    # Marked for the same reason the children are: it is a finding rather than
+    # a duplicate to be passed over. What the count means is the analyst's to
+    # decide, so the description states the count and not a conclusion.
+    # Asked of the document rather than computed here, for the same reason the
+    # CLI does: the rule about whether its own place is recorded belongs with
+    # the document, not spelled again in each adapter.
+    if document.additional_locations:
+        row["locations"] = document.location_count
+    # The count alone over-claims where the record began late: its one
+    # observation may be the document's own place, and nothing in the row would
+    # say so. The verdict travels beside the count for that reason — a listing
+    # never builds a location record, so this is its only qualifier.
+        row["locations_recorded"] = locations_verdict(document)
     return row
 
 
@@ -341,7 +354,11 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             "hierarchy and lists every document in the casefile. `total` counts "
             "the rows in this page and `total_matching` the whole selection; "
             "when `truncated` is true, call again with `offset` set to "
-            "`continue_from`."
+            "`continue_from`. A row's `locations` count is how many distinct "
+            "places this instance recorded the same bytes at; one file offered "
+            "twice at one path is one place. It may be shared custody or "
+            "distribution; the count does not decide which. A row's "
+            "`locations_recorded` says whether that count is the whole story."
         ),
         annotations=_annotations_for("case_list_documents"),
     )
@@ -641,7 +658,10 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         name="case_read_document",
         description=(
             "A document's extracted text, bounded. Read late: it is the most expensive call "
-            "here and rarely the fastest route to an answer. Continue with the returned offset."
+            "here and rarely the fastest route to an answer. Continue with the returned offset. "
+            "The provenance block carries the locations recorded for the document, "
+            "bounded, and says `unknown` where the record of where it was found does not "
+            "reach back to when it was stored."
         ),
         annotations=_annotations_for("case_read_document"),
     )
@@ -650,9 +670,10 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         casefile: str, document: str, offset: int = 0, limit: int = MAX_DOCUMENT_CHARS
     ) -> dict[str, Any]:
         resolved = await off_loop(context.casefiles.resolve, casefile)
-        found = await anyio.to_thread.run_sync(
-            context.ingestion.resolve_document, casefile, document
+        record = await anyio.to_thread.run_sync(
+            context.ingestion.document_locations, casefile, document
         )
+        found = record.document
 
         text = found.extracted_text
         start = max(0, int(offset))
@@ -680,6 +701,14 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
                 char_end=end,
                 containment_path=one_line(found.containment_path, 200),
                 text_source=found.text_source,
+                locations_recorded=record.verdict,
+                observed_at=tuple(
+                    one_line(location.path, 200)
+                    for location in record.observed_at
+                ),
+                locations_total=record.recorded.total,
+                locations_truncated=record.truncated,
+                locations_note=record.note,
             ),
             "text": fence(window, nonce),
             "content_notice": NOTICE,

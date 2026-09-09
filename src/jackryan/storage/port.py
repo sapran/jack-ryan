@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Protocol
 
 
@@ -64,6 +65,12 @@ class Document:
     # How many documents were expanded directly out of this one. Carried so a
     # listing can show that there is more to reach without fetching it.
     child_count: int = 0
+    # How many places this document's bytes were observed at, and when the
+    # earliest of them was recorded. Carried so a listing can mark a file found
+    # in several places without fetching them — the `child_count` precedent —
+    # and populated only when a query aliases them.
+    location_count: int = 0
+    first_observed_at: datetime | None = None
 
     @property
     def short_id(self) -> str:
@@ -73,6 +80,87 @@ class Document:
     def is_expanded(self) -> bool:
         """Whether this document came out of another rather than off disk."""
         return self.parent_id is not None
+
+    @property
+    def locations_are_whole(self) -> bool:
+        """Whether every place these bytes were observed at is recorded.
+
+        Derived, and deliberately not stored. It is true exactly when the record
+        has existed since the document was created, which is what comparing the
+        earliest observation against `created_at` establishes.
+
+        A stored claim would be a second copy of this fact, in a different
+        transaction from the rows it describes, and the two can disagree: an
+        instance that wrote the claim and then failed before writing the
+        observation left a document asserting a history it did not have, and one
+        later observation from somewhere else then read as the whole story.
+
+        Answers `False` when nothing is recorded and when nothing was aliased,
+        which is the safe direction: a caller that did not ask for the counts
+        cannot be told the record is whole.
+        """
+        return self.first_observed_at is not None and self.first_observed_at <= self.created_at
+
+    @property
+    def additional_locations(self) -> int:
+        """Recorded places other than the one this document reports.
+
+        One expression for what used to be two thresholds. A document whose
+        record is whole holds a row for its own location, so a second place
+        means two rows; one whose record is not whole has no row for its own, so
+        its first row is already somewhere else. Both are the same statement
+        about additional places, which is why adapters ask this rather than
+        each carrying the arithmetic.
+        """
+        return max(0, self.location_count - (1 if self.locations_are_whole else 0))
+
+
+def join_location(source_root: str, containment_path: str) -> str:
+    """The path a file was observed at: what was ingested, plus the way down.
+
+    One definition, called by the ingest write and by the report it returns, so
+    the two cannot spell a location differently. The result is the location's
+    whole identity — two observations that join to the same path are one place,
+    however each was reached.
+    """
+    return str(PurePosixPath(source_root) / containment_path)
+
+
+@dataclass(frozen=True)
+class DocumentLocation:
+    """One place a document's bytes were observed.
+
+    One path, not a root and a path within it. The pair discriminated
+    observations rather than places: the same file reached by walking a folder
+    and by naming it directly produced two pairs for one file. The path is the
+    place, and it still separates two dumps that each hold one file at their top
+    level, because those paths differ.
+
+    It is absolute, so it is followable by hand — which is the standard the
+    containment path is already held to — and for a document produced by
+    expansion it runs from the top-level file that was ingested down the
+    containment chain to it.
+    """
+
+    path: str
+    first_seen_at: datetime
+
+
+@dataclass(frozen=True)
+class DocumentLocationSet:
+    """A document's recorded source locations, bounded, and how many there are.
+
+    Facts only. Whether the set may be treated as whole is the service layer's
+    rule, and lives with the verdict rather than here — the same split
+    `IngestionCoverage` and `CasefileCoverage` already make.
+    """
+
+    locations: list[DocumentLocation]
+    total: int
+
+    @property
+    def truncated(self) -> bool:
+        return len(self.locations) < self.total
 
 
 @dataclass(frozen=True)
@@ -484,8 +572,27 @@ class StorePort(Protocol):
 
     # -- documents and chunks ---------------------------------------------
 
-    def upsert_document(self, document: Document) -> Document:
-        """Store a document, reusing the identifier of one with the same bytes."""
+    def store_document(
+        self, document: Document, location_path: str, observed_at: datetime
+    ) -> tuple[Document, bool]:
+        """Store a document and where its bytes were observed, in one write.
+
+        Returns the stored document and whether that location was new to it.
+
+        The location is a required parameter rather than a second call or an
+        optional argument, because whether this document's record may be read as
+        whole is answered from that record: a document committed without the
+        observation that opens it asserts a history it does not have, and one
+        later observation from elsewhere then reads as the whole story. A seam
+        that can be used in the wrong order eventually is — the reason this
+        module already gives for writing a chunk's derived rows in the chunk's
+        own call — and an optional one is used wrongly without eventually.
+
+        The document's identifier is reused when the same bytes are already
+        stored, and the observation is kept only if the path is new: the first
+        sighting's timestamp is the fact worth having, and it is what the
+        wholeness of the record is judged against.
+        """
         ...
 
     def get_document(self, document_id: str) -> Document | None: ...
@@ -493,6 +600,10 @@ class StorePort(Protocol):
     def find_document_by_hash(
         self, casefile_id: str, content_hash: str, identity_path: str = ""
     ) -> Document | None: ...
+
+    def document_locations(
+        self, document_id: str, limit: int
+    ) -> DocumentLocationSet: ...
 
     def delete_document(self, document_id: str) -> bool: ...
 

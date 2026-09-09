@@ -1,49 +1,4 @@
-# document-hierarchy Specification
-
-## Purpose
-
-Defines what it means for one document to have come out of another — how
-ancestry is recorded and queried, how it interacts with casefile scoping and
-deletion, and how it reaches an analyst as the path they would follow to find
-the evidence by hand.
-
-## Requirements
-
-### Requirement: A document records the document it came out of
-
-A document SHALL carry a reference to its parent, absent for a document ingested
-directly. Ancestry SHALL be queryable in both directions: the children of a
-document, and the chain of ancestors of a document up to the one that was
-ingested directly.
-
-A child SHALL belong to the same casefile as its parent. Ancestry SHALL NOT
-cross a casefile boundary, because a casefile is a compartment.
-
-#### Scenario: A directly ingested document has no parent
-
-- **WHEN** a file is ingested on its own
-- **THEN** its document records no parent
-
-#### Scenario: Ancestry is queryable in both directions
-
-- **WHEN** a document extracted from a container is stored
-- **THEN** it is listed among its parent's children, and its parent appears in its ancestor chain
-
-#### Scenario: A child shares its parent's casefile
-
-- **WHEN** a container is ingested into a casefile
-- **THEN** every descendant it produces belongs to that same casefile
-
-### Requirement: Deleting a document deletes what came out of it
-
-Deleting a document SHALL delete its descendants and their derived data. A
-descendant SHALL NOT outlive its parent, because a document whose containment
-path no longer resolves cannot be cited.
-
-#### Scenario: Deleting a container removes its descendants
-
-- **WHEN** a document with children is deleted
-- **THEN** its descendants and their chunks are deleted with it
+## MODIFIED Requirements
 
 ### Requirement: A document reports the path it was found at
 
@@ -59,25 +14,10 @@ The path a document reports is the first location its bytes were observed at.
 Where the same bytes were observed at further locations, those additional
 locations SHALL be reportable beside the path the document reports, and the
 disclosure SHALL be bounded: a document found in more places than the bound is
-characterised by how many, not by its next path. Each recorded location SHALL be
-a followable path, carrying the directories above the file as well as the file's
-own name, because a relative path on its own neither distinguishes one dump from
-another nor can be followed to the evidence.
-
-Locations SHALL be counted as distinct places, not as distinct observations. The
-same file offered twice through different ingest roots is one place, and a count
-that reported it as two would tell an analyst a file was duplicated across the
-material when it was not — a false finding, which is worse than an absent one on
-this surface.
-
-Where a listing marks a document as observed at more than one place, it SHALL
-also say whether that count is the whole story. Where the record began after the
-document was stored, nothing identifies which of its rows is the place the
-document itself reports, so a count of one may be that place rather than a
-second — and a listing carries no other qualifier, because it never builds the
-record a single document's disclosure is drawn from. Marking without the
-qualifier states a second place that may not exist; suppressing the mark
-instead would hide a place that does.
+characterised by how many, not by its next path. Each additional location SHALL
+carry the root it was ingested from as well as the path within it, because a
+relative path on its own neither distinguishes one dump from another nor can be
+followed to the evidence.
 
 Where the record cannot answer what those locations were, the disclosure SHALL
 say so rather than presenting the one path it has as the whole set. Presenting a
@@ -103,16 +43,6 @@ a false one.
 
 - **WHEN** a document stored before source locations were recorded is inspected
 - **THEN** the disclosure reports the record as unable to answer rather than presenting its own path as the whole set
-
-#### Scenario: One place offered through two roots is counted once
-
-- **WHEN** a document's bytes were offered twice at one path, reached through two different ingest roots
-- **THEN** it reports one location, and a listing does not mark it as found in several places
-
-#### Scenario: A listing says whether its location count is the whole story
-
-- **WHEN** a document whose record began after it was stored is marked in a listing as observed at more than one place
-- **THEN** the entry also carries whether that count may be read as whole
 
 ### Requirement: Listing returns what was ingested, and reaches expansions on request
 

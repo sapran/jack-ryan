@@ -6,6 +6,17 @@ and why it was parked.
 
 ## Parked
 
+- **~~Schema-10 migration and live ingestion spell location paths differently.~~** Fixed by `migration-safe-location-identity` on 2026-09-09. Reproduced first from genuine old code (`85c24a4`) and again after the fix: rung 10 concatenated the old root and the path within it while every live observation is spelled by `join_location`, so a migrated tar entry held `bundle.tar/./note.txt` and gained `bundle.tar/note.txt` on a reingest of the unchanged archive — one place, two rows, outcome `new`, real MCP reporting `total = 2`. Fixed above rung 10 rather than in it: a rung already applied cannot be corrected by editing it, and editing it would only change what a not-yet-migrated store receives. Rung 11 adds `document_places`, spelled by the runtime's own `join_location` registered on the migrating connection, copying this build's own observations across as they are and re-deriving everything rung 10 built from the raw `document_locations` pairs — the only representation that still says what was meant, because a `/` root concatenates to `//lease.md`, which is already its own normal form. Both older tables are retained, unwritten and unread.
+
+- **A store migrated past this build's version can be stamped backwards, silently.** Found by review of `migration-safe-location-identity` on 2026-09-09 and not fixed there: `storage/migrations.py` refuses a newer store using the version read *outside* the lock, while the re-read under `BEGIN IMMEDIATE` gates only which steps run — the stamp written afterwards is unconditionally this build's `SCHEMA_VERSION`. Two builds sharing a data directory (`docker compose up` on a stale image, `docker compose run cli` on a fresh one, which is the pairing the backup comment already reasons about) can therefore have the older one wake from the lock, find the store ahead of it, apply nothing and stamp it down. `verify_meta` then compares against the value that process just wrote, so nothing is reported, and the older build writes locations to a table the newer one does not read. Pre-existing code, but rung 11 creates the first population where it is reachable, because it needs three schema versions to exist. The shape of a fix is stamping `max(confirmed, SCHEMA_VERSION)` or re-applying the newer-build refusal against the locked re-read; parked because it is a migration-runner concurrency change with its own tests, not a line in a location fix.
+
+- **~~Interrupted first ingestion can lose a root and later claim complete provenance.~~** Fixed by `location-identity-and-atomic-provenance` on 2026-09-09, merged as `76b7bc9`. Reproduced first, then fixed at the root rather than at the rendered warning: `documents.locations_recorded` was a stored claim about rows written in a different transaction from them, so the two could disagree. Wholeness is now derived — the record is whole exactly when its earliest observation is no later than the document's creation — so a corrupted state cannot answer falsely, and `store_document` writes the document with its first observation in one transaction with an explicit rollback, so the state is unreachable going forward. Guarded by `test_a_later_root_cannot_claim_the_history_of_an_interrupted_ingest`, which covers the retry transition and not only the zero-observation state. Original note: Reproduced during task 5 PM verification at `85c24a4`: terminate after `storage/sqlite.py:369` commits the document but before `services/ingestion.py:725` records its location; ingest identical bytes from another root. The zero-location `unknown` record becomes one-location `complete` at `services/ingestion.py:1077-1080`, and MCP omits its locations block, although the first root was never recorded. Task 5 acceptance blocker; parked for a follow-up change because this assignment verifies already-merged work, not repairs it.
+
+- **Migration retry trusts an empty backup left by a failed backup.** Independently reproduced at `85c24a4`: inject a backup failure after the destination file is created; retry opens the old corpus and migrates schema 4 to 9 while its `.v4.bak` remains zero bytes. `storage/migrations.py:447-462` treats any regular backup file as complete. Pre-existing migration safety defect, not introduced by task 5; parked for a separate backup-validity change.
+- **~~Changing the ingest root can report the same physical file as two locations.~~** Fixed by the same change. Resolved as a contract inconsistency rather than as an implementation slip: the published identity permitted it while the scenario *A same-location reingest records no new location* promised it could not happen, and the identity rule was the one that changed. Schema rung 10 keys `document_observations` on the path alone, so one file reached through any root is one place, while two dumps holding one file each remain two places because their paths differ. `document_locations` is retained, unwritten, as the prior record of which root each place was reached through. Original note: Reproduced at `85c24a4`: ingest a folder, then its nested file directly; the declared `(source_root, containment_path)` identity inserts a second row whose joined path is identical, reports `new`, and MCP displays that path twice with `total = 2`. This follows task 5's published identity rule rather than violating it; parked as a contract tradeoff to resolve before treating the count as distinct physical locations.
+- **Identifier-carrier listings omit the duplicate-location count.** Reproduced at `85c24a4`: `case_list_documents` marks a document's locations, but `case_mention_documents` does not. `storage/sqlite.py:669-688` does not select `location_count`; the common renderer silently receives zero. Outside task 5's declared listing scope; parked for a separate surface-consistency change.
+- **~~Location tests retain a description of the removed partial-list design.~~** Fixed on 2026-09-09 in `location-identity-and-atomic-provenance`. The docstring on `test_the_same_bytes_under_two_ingest_roots_keep_both_locations` described `also_found_at` excluding the document's own location, an API the previous change had already removed, and also described the retired root-relative model. Rewritten for what the test now proves: that collapsing locations by path does not merge two custodians whose paths differ. `grep also_found_at` over `src/` and `tests/` now matches nothing. Referenced by test name rather than line number, because the numbers moved twice while this entry was parked. Original note: Parked as test-comment cleanup; the reviewer also identified no permanent tests for large sets or newline paths, both independently exercised successfully in PM disposable MCP smokes.
+
 - **Two tests share a glob of the process-global temporary directory, and one
   of them deletes what it finds there.** Both are in
   `tests/test_evaluate_retrieval.py`, and between them they make the suite fail
@@ -1295,3 +1306,62 @@ and why it was parked.
   closed. The noted downside of the chosen fix was dealt with rather than
   accepted: `/health` and `jackryan status` now report the enforced identity, so
   the value an operator sees is the value that refused them.
+
+- **A first-observed name can describe a later reading.** Surfaced by review of
+  `preserve-duplicate-locations` (2026-09-08) and accepted rather than fixed.
+  Now that `filename` and `containment_path` are first-wins while `media_type`,
+  `extractor`, `extracted_text` and the chunks stay last-wins, one row can carry
+  two readings: identical bytes ingested as `report.docx` and later as
+  `report.zip` — a DOCX *is* a zip — leave a row named `report.docx` whose media
+  type is `application/zip` and whose text is an archive listing, so `case_cite`
+  names a `.docx` for a passage a person opening it in Word will never find. The
+  milder everyday shape is `.txt` then `.md`, which route to different
+  extractors.
+  Neither half can simply switch sides. The name must be stable or a citation
+  moves, which is the defect that change exists to close; the text and its media
+  type must describe what is stored beside them, which is the rule
+  `storage-seam:190-192` states for derived values. So the row is legitimately
+  mixed, and the honest fix is disclosure rather than reconciliation: report on
+  the reingest that produced it, e.g. a `detail` reading "read as
+  application/zip; first observed as report.docx". Parked because it needs its
+  own change — `detail` is currently empty for every successful outcome and both
+  human surfaces render it — and because it is orthogonal to preserving the
+  locations.
+
+- **CLI human output prints location paths raw.** Also from that review, and
+  deliberately left alone. The ingest banner and `document show` interpolate a
+  path whose second half is chosen by whoever laid out the dump, so a directory
+  name containing a newline forges lines in the terminal. It is consistent with
+  the surface as it already stands — `found_at` in `_render_document` and every
+  `limitations` line are printed raw, and `one_line` is imported nowhere in
+  `cli.py` — it never reaches a model, and the `--json` form is JSON-encoded.
+  Collapsing only the two new sites would give this one surface two conventions.
+  If the CLI is ever hardened, all three sites move together.
+
+- **Two cleanup tests snapshot the machine-wide temp directory, so a second
+  jackryan process makes them fail.**
+  `test_the_expansion_workspace_is_removed_afterwards` (`jackryan-expand-*`) and
+  the retrieval-evaluation workspace test (`jackryan-evaluate-*`) share the
+  defect and the fix. Pre-existing; found while gating
+  `preserve-duplicate-locations` (2026-09-08) and deliberately not fixed there,
+  since that change never touches the workspace lifecycle. The test snapshots
+  `tempfile.gettempdir()` — the shared system temp directory — before and after
+  its own ingest and fails on any `jackryan-expand-*` that appeared in between.
+  Any other jackryan process on the same machine therefore fails it: a second
+  test run, a dev instance, or a verification script running alongside.
+  Established rather than guessed. Making the swallowed error loud
+  (`shutil.rmtree(workspace, ignore_errors=False)` in
+  `services/ingestion.py:461`) produced no failure across five full suite runs,
+  so the removal itself is reliable and the surviving directory was never this
+  ingest's. Running a loop that merely creates and deletes `jackryan-expand-*`
+  directories in the shared temp dir alongside the suite reproduces the failure
+  on demand, with two leaked paths instead of one.
+  Both are green when nothing else runs: 777 passed on `940e0d3` twice in
+  succession, and five clean full runs in the instrumented copy. They failed
+  only while parallel verification jobs of my own were running, and each such
+  job leaves its directories behind for the *next* run to trip over, so a stale
+  sweep is part of reproducing a clean result.
+  The fix belongs to the test, not the service: have it learn the workspace path
+  the ingest actually used — the service takes it from `tempfile.mkdtemp`, which
+  a fixture can capture — and assert that one path is gone, rather than that no
+  such directory appeared anywhere on the machine.

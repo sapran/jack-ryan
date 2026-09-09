@@ -69,16 +69,25 @@ def make_casefile(store):
     return store.create_casefile(casefile)
 
 
-def make_document(store, casefile, content_hash="hash-1"):
+def make_document(store, casefile, content_hash="hash-1", location="/dump/a.txt"):
+    """A stored document and the place it was observed, which is one write.
+
+    The location is not optional at this seam: whether a document's record may
+    be read as whole is answered from it, so a fixture that stored a document
+    without one would not be the state an ingest produces.
+    """
     now = datetime.now(timezone.utc)
-    return store.upsert_document(
+    stored, _ = store.store_document(
         Document(
             id=uuid.uuid4().hex, casefile_id=casefile.id, content_hash=content_hash,
             filename="a.txt", media_type="text/plain", byte_size=10,
             extracted_text="some text", extractor="plaintext",
             created_at=now, updated_at=now,
-        )
+        ),
+        location,
+        now,
     )
+    return stored
 
 
 def make_chunk(document, casefile, ordinal=0, text="chunk text"):
