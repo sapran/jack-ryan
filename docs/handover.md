@@ -1662,12 +1662,21 @@ the agent surface and from
   passages. The fixture is a real empty archive, not a deleted chunk row.
 
 **What was verified.** `uv run --no-sync pytest -q` → **830 passed, 3 skipped**
-at `733f456`, against **817 passed, 3 skipped** on `develop` at `1b4413c`.
-Attributed independently of the totals, which is the figure to trust:
-`git diff 1b4413c 733f456 -- tests/ | grep -cE '^\+(async )?def test_'` reports
-**13 added, 0 removed**. `openspec validate --all --strict` → **18 passed, 0
-failed**, one fewer than before the archive because the change is no longer an
-item. `gitleaks detect --no-banner` → no leaks.
+**measured at `1c3c279`**, against **817 passed, 3 skipped** on `develop` at
+`1b4413c`. Attributed independently of the totals, which is the figure to
+trust: `git diff 1b4413c 1c3c279 -- tests/ | grep -cE '^\+(async )?def test_'`
+reports **13 added, 0 removed**.
+
+It says *measured at* rather than *at the tip*, and that is not pedantry: a
+record kept inside the repository can never name the commit that contains it,
+so "the tip" is false the moment the paragraph is committed. Naming the commit
+the figures were taken at stays true forever and is what a reader can check
+against. Everything committed after `1c3c279` for this change is documentation,
+which moves no figure here.
+
+`openspec validate --all --strict` → **18 passed, 0 failed**, one fewer than
+before the archive because the change is no longer an item.
+`gitleaks detect --no-banner` → no leaks.
 
 **These figures were wrong twice, and how they went wrong is the point.** They
 first read 824 and "eleven new tests", measured before the twelfth test
