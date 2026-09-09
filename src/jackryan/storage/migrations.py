@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..errors import ConfigError
+from .port import join_location
 
 _BASELINE_VERSION = 4
 """The shape `_SCHEMA` below creates. Frozen — see the warning on `_SCHEMA`."""
@@ -288,10 +289,16 @@ _STEPS: tuple[_Step, ...] = (
             # Carried across rather than reingested, and the GROUP BY is what
             # repairs a store that already holds one place twice: the earliest
             # observation of each path wins, which is the timestamp worth
-            # keeping. Concatenation agrees with `PurePosixPath` for every path
-            # this tool records, because a resolved absolute directory never
-            # ends in a separator; a file ingested from `/` itself would join to
-            # `//name`, which is not a case worth code but is worth knowing.
+            # keeping.
+            #
+            # This concatenation does *not* always agree with the join the
+            # runtime uses, which is why rung 11 below exists and why nothing
+            # reads this table any more. It is left exactly as it shipped: a
+            # rung already applied to a store cannot be corrected by editing
+            # it, so editing it would only change what a not-yet-migrated
+            # store gets — two populations diverging by which day they were
+            # opened, which is the failure the recorded version exists to
+            # prevent.
             "INSERT OR IGNORE INTO document_observations"
             " (document_id, location_path, first_seen_at)"
             " SELECT document_id, source_root || '/' || containment_path,"
@@ -312,6 +319,98 @@ _STEPS: tuple[_Step, ...] = (
             # earliest observation is no later than the document's creation. The
             # ladder is additive, so the column stays; nothing may start reading
             # it again.
+        ),
+    ),
+    _Step(
+        to_version=11,
+        reason=(
+            "a location carried forward is spelled by the same join live ingestion uses,"
+            " so reingesting unchanged evidence does not record a second place"
+        ),
+        statements=(
+            # Rung 10 built `document_observations` by concatenating the old
+            # root and path with a separator, while every live observation is
+            # spelled by `join_location`, which normalises. The two disagree on
+            # paths a real dump routinely holds — a tar entry named
+            # `./note.txt`, a doubled separator, a source root of `/` — so a
+            # migrated store held `bundle.tar/./note.txt` and then gained
+            # `bundle.tar/note.txt` on a reingest of the unchanged archive:
+            # one place recorded twice, announced as a discovery.
+            #
+            # A new table rather than a repair of that one. The ladder may only
+            # add, and `document_observations` holds evidence — an UPDATE and a
+            # DELETE over it is exactly the rewrite the additive rule and its
+            # guard test forbid. Rung 10 set the precedent when it left
+            # `document_locations` in place: the older representation stays
+            # readable, and the corrected one is derived beside it.
+            "CREATE TABLE IF NOT EXISTS document_places ("
+            " document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,"
+            " location_path TEXT NOT NULL,"
+            " first_seen_at TEXT NOT NULL,"
+            " PRIMARY KEY (document_id, location_path))",
+            # Observations this instance's own code wrote, which are already
+            # spelled by `join_location` and must be carried across as they
+            # are. The NOT EXISTS excludes the rows rung 10 *misspelled*: those
+            # are re-derived below from the raw pairs, which is the only place
+            # the correct spelling can be recovered from. A root of `/` is why —
+            # `//lease.md` is its own normal form, so no amount of
+            # re-normalising the concatenated string recovers `/lease.md`, and
+            # only the pair `('/', 'lease.md')` says what was meant.
+            #
+            # The predicate is deliberately narrower than "this row matches a
+            # pair": it also requires that the pair's concatenation *differs*
+            # from its join, so a row is dropped only when the statement below
+            # will reinsert that same place under a different spelling. Without
+            # the second condition, a row whose concatenation is already normal
+            # is excluded here and re-dated below from the pairs alone —
+            # measured, and it replaced an earlier live sighting with a later
+            # one, which is the mis-dating `min` exists to prevent.
+            "INSERT INTO document_places (document_id, location_path, first_seen_at)"
+            " SELECT o.document_id, o.location_path, MIN(o.first_seen_at)"
+            " FROM document_observations o"
+            " WHERE NOT EXISTS ("
+            "   SELECT 1 FROM document_locations l"
+            "   WHERE l.document_id = o.document_id"
+            "     AND l.source_root || '/' || l.containment_path = o.location_path"
+            "     AND l.source_root || '/' || l.containment_path"
+            "         <> jr_join_location(l.source_root, l.containment_path))"
+            " GROUP BY o.document_id, o.location_path"
+            " ON CONFLICT(document_id, location_path) DO UPDATE SET"
+            "   first_seen_at = min(first_seen_at, excluded.first_seen_at)",
+            # The raw pairs, joined exactly as the runtime joins them, through
+            # the one definition in `port.py` registered on the connection as
+            # `jr_join_location`. Two spellings of one place therefore collapse
+            # here, and `min` keeps the earlier sighting — which is the
+            # timestamp the wholeness of the record is judged against, so
+            # keeping the later one would turn an old record into a young one.
+            #
+            # The unqualified `first_seen_at` on the left of the SET, and inside
+            # the `min`, is the *existing* row's, even though the SELECT's source
+            # table has a column of that name. Measured rather than assumed,
+            # because it reads ambiguously: with a stored row at T1 and a source
+            # row at T2 > T1, the surviving value is T1, and it is T1 whether the
+            # reference is written bare or as `document_places.first_seen_at`.
+            # The rungs are shipped, so the bare form stays;
+            # `test_the_carry_forward_never_re_dates_a_place_to_a_later_sighting`
+            # is what would catch it if that ever stopped being true.
+            "INSERT INTO document_places (document_id, location_path, first_seen_at)"
+            " SELECT document_id, jr_join_location(source_root, containment_path),"
+            " MIN(first_seen_at) FROM document_locations"
+            " GROUP BY document_id, jr_join_location(source_root, containment_path)"
+            " ON CONFLICT(document_id, location_path) DO UPDATE SET"
+            "   first_seen_at = min(first_seen_at, excluded.first_seen_at)",
+            # A legacy `containment_path` is always relative — archive entries
+            # are refused for an absolute name before they can become one, and
+            # a folder walk stores a `relative_to` result. The join relies on
+            # it: `PurePosixPath` discards its left operand when the right is
+            # absolute, so an absolute path here would strip the custodian root
+            # and merge two custodians into one place. The guard is in
+            # `ingestion/containers.py`; this is the one place a violation of
+            # it would become permanent.
+            #
+            # Both older tables stay, unwritten and unread, for the reason rung
+            # 10 gave: they are the record as it was kept, and this rung's own
+            # correctness is checkable against them. Do not clean them up.
         ),
     ),
 )
@@ -444,6 +543,19 @@ def migrate(conn: sqlite3.Connection, path: Path) -> None:
     if not is_new:
         backup_before_migrating(conn, path, recorded)
 
+    # Registered for the ladder, not for the store: rung 11 spells a carried
+    # location with the same function live ingestion spells one with, and
+    # importing it here is what makes that one definition rather than a second
+    # copy in SQL. Deterministic so SQLite may use it inside the GROUP BY it
+    # appears in twice.
+    #
+    # Withdrawn again below, and that is enforcement rather than tidiness: the
+    # caller keeps this connection for the life of the process, so a function
+    # left registered exists on the one boot that migrated and on no boot
+    # afterwards. Anything that came to depend on it would work the day it was
+    # written and raise `no such function` after the next restart.
+    conn.create_function("jr_join_location", 2, join_location, deterministic=True)
+
     try:
         conn.execute("PRAGMA busy_timeout = 30000")
         conn.execute("BEGIN IMMEDIATE")
@@ -477,6 +589,10 @@ def migrate(conn: sqlite3.Connection, path: Path) -> None:
             f"{recorded} to {SCHEMA_VERSION}: {type(exc).__name__}: {exc}."
             + reassurance
         ) from exc
+    finally:
+        # Passing None removes it, so the store's connection leaves this
+        # function exactly as it found it, migration or no migration.
+        conn.create_function("jr_join_location", 2, None)
 
 def backup_before_migrating(
     conn: sqlite3.Connection, path: Path, recorded: int

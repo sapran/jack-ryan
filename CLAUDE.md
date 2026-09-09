@@ -136,6 +136,23 @@ and sharing code with what it checks would defeat that.
 - **Schema changes go through the `_STEPS` ladder, never `_SCHEMA`** — both
   live in `src/jackryan/storage/migrations.py`, and the rules, with why each
   matters, are in `src/jackryan/storage/CLAUDE.md`.
+- **A rung that derives a value the runtime also derives must call the
+  runtime's function, and an applied rung is frozen.** Rung 10 spelled a
+  location by concatenating the old root and path in SQL while live ingestion
+  spells one with `join_location`, which normalises: a migrated tar entry held
+  `bundle.tar/./note.txt` and then gained `bundle.tar/note.txt` on a reingest
+  of the unchanged archive — one place recorded twice and announced to the
+  analyst as a discovery. The correction is rung **11**, not an edit to rung
+  10: a store already stamped at 10 cannot be reached by changing 10, and
+  changing it would only move the not-yet-migrated stores, leaving two
+  populations that differ by the day they were opened. `migrate` registers
+  `join_location` on the connection as `jr_join_location` so the rung uses the
+  one definition in `port.py` rather than a second copy in SQL. Where a legacy
+  spelling is unrecoverable by normalising the stored string — a `/` root
+  concatenates to `//lease.md`, already its own normal form — the rung derives
+  from the raw `document_locations` pairs, which is why those and
+  `document_observations` are both retained unwritten. Locations are read and
+  written at `document_places`; nothing may start reading the older two.
 - **`Context.store` is the port, and no adapter may touch it.** `storage-seam`
   says no adapter reaches a store directly; the agent surface did, at
   `casefile_statistics`, because `CasefileService` had no `statistics` and

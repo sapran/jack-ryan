@@ -142,9 +142,9 @@ def _escape_like(value: str) -> str:
 # that no longer exists.
 _OBSERVATION_ALIASES = (
     ", ("
-    "   SELECT COUNT(*) FROM document_observations o WHERE o.document_id = d.id"
+    "   SELECT COUNT(*) FROM document_places o WHERE o.document_id = d.id"
     " ) AS location_count, ("
-    "   SELECT MIN(first_seen_at) FROM document_observations o"
+    "   SELECT MIN(first_seen_at) FROM document_places o"
     "   WHERE o.document_id = d.id"
     " ) AS first_observed_at"
 )
@@ -408,7 +408,7 @@ class SqliteStore:
                     # from this list, like `created_at` above: they are the
                     # *first* place this document's bytes were observed at, and
                     # a later copy found elsewhere must not overwrite them.
-                    # Every observed place is kept in `document_observations`;
+                    # Every observed place is kept in `document_places`;
                     # this column is the one a citation names, so it has to be
                     # stable or a citation written yesterday points somewhere
                     # else today.
@@ -456,7 +456,7 @@ class SqliteStore:
                 # OR REPLACE would move the timestamp forward and report every
                 # reingest as a discovery.
                 cursor = self._db.execute(
-                    "INSERT OR IGNORE INTO document_observations"
+                    "INSERT OR IGNORE INTO document_places"
                     " (document_id, location_path, first_seen_at) VALUES (?, ?, ?)",
                     (stored_id, location_path, _to_iso(observed_at)),
                 )
@@ -532,12 +532,12 @@ class SqliteStore:
         """
         with self._lock:
             total = self._db.execute(
-                "SELECT COUNT(*) AS total FROM document_observations WHERE document_id = ?",
+                "SELECT COUNT(*) AS total FROM document_places WHERE document_id = ?",
                 (document_id,),
             ).fetchone()["total"]
             rows = self._db.execute(
                 "SELECT location_path, first_seen_at"
-                " FROM document_observations WHERE document_id = ?"
+                " FROM document_places WHERE document_id = ?"
                 " ORDER BY first_seen_at, location_path"
                 " LIMIT ?",
                 (document_id, int(limit)),

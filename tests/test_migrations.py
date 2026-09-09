@@ -502,23 +502,25 @@ def test_a_store_that_cannot_be_backed_up_is_not_migrated(tmp_path):
 
 # --- Mechanical rules ---------------------------------------------------------
 
-# `document_observations` is here beside the three obvious ones because a
-# location is evidence of custody in its own right: where a file was found is
-# a finding, not a derived convenience that could be rebuilt. `chunks` can be
-# recomputed from a document; an observation cannot be recomputed from
-# anything.
+# `document_places` is the live record: rung 11 made it the one table every
+# location observation is written to and read from, and a location is evidence
+# of custody in its own right — where a file was found is a finding, not a
+# derived convenience that could be rebuilt. `chunks` can be recomputed from a
+# document; an observation cannot be recomputed from anything.
 #
-# `document_locations` is here too, and it is the one that needs the guard most.
-# Rung 10 stopped writing it and says in a comment that it is kept deliberately,
-# because it holds which root each place was reached through and dropping it
-# would destroy provenance to tidy a representation. This module's own docstring
-# argues that a rule only a comment states is a rule a later change breaks
-# without noticing, and an unwritten table is exactly what a later change tidies
-# up.
+# `document_observations` and `document_locations` are here too, and they are
+# the ones that need the guard most. Rungs 10 and 11 stopped writing them and
+# say in comments that they are kept deliberately, because they hold which root
+# each place was reached through and the spelling each was recorded under, and
+# dropping either would destroy provenance to tidy a representation. This
+# module's own docstring argues that a rule only a comment states is a rule a
+# later change breaks without noticing, and an unwritten table is exactly what
+# a later change tidies up.
 EVIDENCE_TABLES = (
     "documents",
     "casefiles",
     "chunks",
+    "document_places",
     "document_observations",
     "document_locations",
 )
