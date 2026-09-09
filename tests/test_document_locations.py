@@ -150,20 +150,18 @@ def test_the_same_bytes_in_two_folders_keep_both_locations(context, casefile, tm
 def test_the_same_bytes_under_two_ingest_roots_keep_both_locations(
     context, casefile, tmp_path
 ):
-    """The case a root-relative location cannot express.
+    """The case a relative location cannot express.
 
-    Both files are `ledger.txt` at the top of their own dump, so both have the
-    identical containment path. Only the ingest root distinguishes them, and
-    without it in the key the second observation collides with the first and
-    the second custodian is lost — silently, which is the whole defect.
+    Both files are `ledger.txt` at the top of their own dump, so their paths
+    within what was ingested are identical and only the absolute path
+    distinguishes them. Keyed on the relative path alone the second observation
+    would collide with the first and the second custodian would be lost —
+    silently, which is the whole defect the record exists for.
 
-    This is also the only test that can see how `also_found_at` excludes the
-    document's own location. It does so by position, taking the earliest — and
-    a version comparing `containment_path` against the document's looks
-    identical everywhere except here, where both locations share that path and
-    such a comparison discards *both*. Asserting the recorded set alone left
-    that mutation green, which is why the assertion below is on
-    `also_found_at`.
+    It is also the test that stops the opposite fix going too far. One file
+    reached through two roots is one place, and collapsing by path is what
+    makes that true; this asserts that the same collapse does not merge two
+    custodians whose paths genuinely differ.
     """
     alpha = tmp_path / "custodian-alpha"
     beta = tmp_path / "custodian-beta"
