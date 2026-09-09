@@ -406,14 +406,17 @@ def test_two_passages_sharing_an_ordinal_still_page_in_a_total_order(
     row twice or return them in either order, and every page would still be
     individually well-formed, which is what makes the defect invisible.
 
-    **The later passage is inserted first, and that is the whole of what makes
-    this bite.** The obvious construction — insert them in positional order —
-    was written first and mutation showed it proved nothing: with
-    `, char_start, id` removed from the ordering, SQLite fell back to rowid
-    order, which for that fixture *is* positional order, so the mutation
-    returned the same two rows in the same two pages and reported green.
-    Inserting them in reverse makes rowid order and positional order disagree,
-    which is the only arrangement in which the tiebreak is observable.
+    **Two things about the fixture are load-bearing, and each was got wrong
+    first.** The later passage is inserted first, so that rowid order
+    contradicts positional order: inserted in positional order, removing
+    `, char_start, id` left SQLite falling back to rowid order — which for that
+    fixture *was* positional order — and the mutation reported green. And the
+    later passage carries the *lower* identifier, so identifier order also
+    contradicts positional order: with `earlier` holding `a…` and `later`
+    holding `b…`, dropping `, char_start` alone and keeping `, id` still
+    produced the right sequence, so the test proved that *some* tiebreak
+    existed and not the thing it claims — that the tie is broken by a value of
+    the corpus. Both mutations are in the table separately for that reason.
 
     The outer `ORDER BY` is deliberately not covered, and cannot be through
     this path: the inner subquery already selects exactly one row per page, so
@@ -424,7 +427,7 @@ def test_two_passages_sharing_an_ordinal_still_page_in_a_total_order(
     """
     survey, _, _ = ingested
     later = Chunk(
-        id="b" * 32,
+        id="a" * 32,
         document_id=survey.id,
         casefile_id=survey.casefile_id,
         ordinal=0,
@@ -434,7 +437,7 @@ def test_two_passages_sharing_an_ordinal_still_page_in_a_total_order(
         char_end=136,
     )
     earlier = Chunk(
-        id="a" * 32,
+        id="b" * 32,
         document_id=survey.id,
         casefile_id=survey.casefile_id,
         ordinal=0,
@@ -443,7 +446,10 @@ def test_two_passages_sharing_an_ordinal_still_page_in_a_total_order(
         char_start=0,
         char_end=42,
     )
-    # Stored later-first, so the rowids ascend against the positions.
+    # Stored later-first, so the rowids ascend against the positions; and the
+    # later passage holds the lower id, so the identifiers do too. Only
+    # `char_start` orders these two the way the document does.
+    assert later.id < earlier.id, "the identifiers must contradict the positions"
     context.store.replace_chunks(
         survey.id,
         [later, earlier],
