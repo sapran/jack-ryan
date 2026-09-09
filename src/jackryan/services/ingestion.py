@@ -252,11 +252,11 @@ class DocumentLocationRecord:
         would both be discarded.
 
         And a partial list cannot be rendered symmetrically. The document's own
-        `containment_path` is relative to a root no column records, so a surface
-        showing it beside root-qualified additional locations reports a
-        different visible set depending on which dump was ingested first. The
-        complete list is the same set either way, which is what the identity
-        rule promises.
+        `containment_path` is relative to whatever was ingested, and no column
+        records that, so a surface showing it beside absolute additional
+        locations reports a different visible set depending on which dump was
+        ingested first. The complete list is the same set either way, which is
+        what the identity rule promises.
         """
         return list(self.recorded.locations)
 
