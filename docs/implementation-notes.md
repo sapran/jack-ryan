@@ -201,27 +201,45 @@ and why it was parked.
   stripping and escaping is a change of its own. It is the finding worth landing
   next after the byte bound above.
 
-- **A document reached by listing cannot be cited without a search.**
-  `case_cite` needs a `chunk_id`, and no tool hands one back for a document
-  reached through `case_list_documents`: `case_read_document` returns text and
-  provenance but no chunk identifiers. So the container-navigation journey —
-  list the intake, enter a container, read a child — has to fall back to
-  `case_search` to obtain an id before it can cite what it just read. That
-  partly defeats the point of the capability, whose premise is that a container
-  is exactly where retrieval is least likely to surface the evidence. Parked
-  because closing it means adding chunk identifiers to a read payload, which is
-  a `mcp-tool-surface` contract change and needs its own delta. The journey test
-  is named and documented for what it actually proves — reaching and *reading*
-  without a search — after an earlier version claimed more.
+- **~~A document reached by listing cannot be cited without a search.~~**
+  Closed by `cite-a-document-reached-by-listing`, which added
+  `case_list_passages`: a bounded, paged index of one document's stored
+  passages, each row carrying the `chunk_id` that `case_get_passage` and
+  `case_cite` already take. `tests/test_document_passages.py` proves the whole
+  journey — intake, into a container, into the container inside it, index a
+  child, read a passage, cite it, and check the citation's span against the text
+  the fixture wrote — with `case_search` removed from the server, and
+  `test_an_agent_reaches_and_reads_a_child_without_searching` no longer needs a
+  search to cite either.
 
-  **Narrowed, not closed, by `follow-an-identifier-exhaustively`.**
-  `case_mention_documents` hands back a `chunk_id` per document, so a document
-  reached by *identifier* — the pivot out of `case_mentions` — is now citable
-  with no search: `test_an_agent_cites_a_carrier_without_a_ranked_search`
-  proves it with `case_search` removed from the server. The gap above is
-  unchanged for `case_list_documents`, which is the container-navigation
-  journey and the case this note was written about: a container's child that
-  carries no extracted identifier is still reachable, readable and uncitable.
+  **The fix this note guessed at was rejected, and the reasoning is worth
+  keeping.** "Adding chunk identifiers to a read payload" would have put the
+  passage selection — which passages a span reaches — behind the read bound,
+  which lives in the agent adapter rather than in the service: closing it there
+  meant either moving `MAX_DOCUMENT_CHARS` and its arithmetic into the service,
+  a change to an accepted contract nothing asked for, or feeding a service rule
+  with a span an adapter computed. It would also have made citing one paragraph
+  of a large document cost a read of the window it sits in, and it would have
+  put two independent continuations in one payload, which
+  `mcp-tool-surface` argues against by name. The change's `design.md` records
+  all three.
+
+  Original note: `case_cite` needs a `chunk_id`, and no tool hands one back for
+  a document reached through `case_list_documents`: `case_read_document`
+  returns text and provenance but no chunk identifiers. So the
+  container-navigation journey — list the intake, enter a container, read a
+  child — has to fall back to `case_search` to obtain an id before it can cite
+  what it just read. That partly defeats the point of the capability, whose
+  premise is that a container is exactly where retrieval is least likely to
+  surface the evidence. Parked because closing it means adding chunk
+  identifiers to a read payload, which is a `mcp-tool-surface` contract change
+  and needs its own delta. The journey test is named and documented for what it
+  actually proves — reaching and *reading* without a search — after an earlier
+  version claimed more. **Narrowed, not closed, by
+  `follow-an-identifier-exhaustively`**: `case_mention_documents` hands back a
+  `chunk_id` per document, so a document reached by *identifier* was citable
+  with no search, while a container's child carrying no extracted identifier
+  was still reachable, readable and uncitable.
 
 - **The offset repair skips a document that vanished mid-pass, and no field of
   its report can say so.** `repair_mention_offsets` lists a casefile's document

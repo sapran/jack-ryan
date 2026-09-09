@@ -173,6 +173,35 @@ and sharing code with what it checks would defeat that.
   broken by the passage's ordinal and text. An identifier decides only between
   two passages identical in both, where the order does not matter. Nothing else
   can be reproduced if this is not.
+- **A listing payload carries no corpus prose, and that is what makes it
+  unfenced.** `listing_payload`'s docstring is the promise, and
+  `untrusted-content-boundary` turns it into a rule: a payload built on it "SHALL
+  NOT be used to carry derived text". `case_list_passages` is where that bites
+  hardest, because a clipped opening of each passage is the obvious way to make
+  a passage index selectable — and adding one would either ship corpus text
+  unfenced or force a fence into a shape whose stated reason for not needing one
+  had quietly stopped being true. The index carries identifiers, a position and
+  a size; the words are one call away through `case_get_passage` and `case_cite`.
+  A corpus-derived *heading* or *filename* does reach a listing, collapsed by
+  `one_line`, with the content notice beside it — metadata, not prose.
+- **A paged listing is chosen on a narrow query and widened afterwards.** All
+  three — `list_document_page`, `documents_with_mention` and
+  `list_document_passage_page` — select identifiers and the ordering columns in
+  a subquery and join back for the payload's fields. An `ORDER BY` that needs a
+  sort makes SQLite compute a statement's output columns for every matching row
+  before `LIMIT` can discard any, so `SELECT d.*` puts every document's
+  `extracted_text` through the sorter and `LENGTH(c.text)` reads every passage
+  in the document — the whole corpus in memory to report a page of integers,
+  which is the exact cost these pages exist to avoid.
+- **A document with no stored passages is a real state, not a defect.**
+  `router.extract` refuses to store a document whose text is unusable but
+  exempts a container, "because an archive's value is in its entries" — so an
+  archive holding no entries is stored with no text and no chunks, and a corpus
+  filled before that refusal may hold others. `case_list_passages` says so in
+  words and names `case_list_documents` as the next move; it must never hand
+  back an identifier that resolves to nothing, and it must not report the
+  document's child count, because `resolve_document` aliases no `child_count`
+  and the resolved row reports zero whatever it holds.
 - **A search filter goes inside the retrievers' SQL, never over their results.**
   Both legs are asked for `depth = limit * 5` candidates, so filtering what they
   return discards every matching passage that ranked below that depth

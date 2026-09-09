@@ -1616,6 +1616,67 @@ outcome rather than a working invocation.
 
 ---
 
+## Citing a document reached by browsing — 2026-09-09
+
+`expose-container-contents` let an agent enter an archive and read an
+attachment. It could not cite one. `case_cite` takes a passage identifier, and
+no tool handed one back for a document reached through `case_list_documents` —
+`case_read_document` returns text, spans and provenance and no passage — so the
+journey fell back to `case_search` to recover an id, behind the very mechanism
+container navigation exists to route around. A child carrying no distinctive
+phrase and no extracted identifier was reachable, readable and uncitable.
+
+`cite-a-document-reached-by-listing` adds **`case_list_passages`**: a bounded,
+paged, deterministically ordered index of one document's stored passages, owned
+by `IngestionService.list_document_passage_page` and reachable identically from
+the agent surface and from
+`GET /api/casefiles/{ref}/documents/{doc}/passages`. Each row carries the
+`chunk_id` that `case_get_passage` and `case_cite` already accept.
+
+**Three things about it are decisions rather than details**, and the change's
+`design.md` argues each at length.
+
+- **It is a listing, not passage ids on the read payload** — which is what
+  `docs/implementation-notes.md` had guessed the fix would be. The read bound
+  lives in the agent adapter, so computing a passage index against the returned
+  window means either moving that bound into the service or feeding a service
+  rule with an adapter's arithmetic; citing one paragraph of a large document
+  would cost a read of the region it sits in; and the payload would carry two
+  independent continuations, which `mcp-tool-surface` argues against by name.
+- **It carries no passage text.** `listing_payload` is unfenced on the promise
+  that it holds no corpus prose, and `untrusted-content-boundary` says such a
+  payload is not the one to carry prose. The cost is accepted: in a document
+  with no headings the rows distinguish themselves only by position, and
+  relevance is established by reading a candidate through `case_get_passage` or
+  by matching an offset seen in a read against a row's span. That is asserted,
+  not assumed — the journey test picks its passage exactly that way.
+- **A document with no passages is answered in words.** It is reachable rather
+  than theoretical: `router.extract` exempts a container from the empty-text
+  refusal, so an archive holding no entries is stored with no text and no
+  passages. The fixture is a real empty archive, not a deleted chunk row.
+
+**What was verified.** `uv run --no-sync pytest -q` → **824 passed, 3 skipped**,
+against **813 passed, 3 skipped** at the branch point `2c3afa2` — the eleven new
+tests and no change to any existing count. `openspec validate --all --strict` →
+**19 passed, 0 failed**. `gitleaks detect --no-banner` → no leaks.
+`docker compose build` → `jackryan:latest` built, both services. The journey was
+then driven through a real `jackryan serve-mcp` stdio process with `case_search`
+removed from the served catalogue, on disposable synthetic data, and the
+citation's span checked character-for-character against the text the fixture
+wrote.
+
+**What it does not settle.** No real corpus was read or written; the change
+writes nothing, embeds nothing and reads no setting that decides what a vector
+means, so no existing store is refused for it and no corpus needs reingesting to
+gain the capability — but that is an argument, and the only corpora exercised
+are synthetic. Retrieval quality is untouched and was not re-measured: this path
+ranks nothing. `characters` is read from the stored text rather than derived
+from the span, which matters only on a corpus written before the chunker
+recorded the trimmed span; no such corpus was constructed, so that branch is
+argued rather than measured.
+
+---
+
 ## What this environment could not do, so you should not trust it was checked
 
 - **~~No model weights.~~ Settled 2026-08-26.** PDF extraction and the real
