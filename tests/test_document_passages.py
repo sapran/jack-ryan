@@ -398,43 +398,57 @@ def test_two_passages_sharing_an_ordinal_still_page_in_a_total_order(
     fall inside a tie, and the port declaration makes it a SHALL. `ordinal`
     alone does not satisfy it: `chunks` enforces no uniqueness on
     `(document_id, ordinal)` — the chunker happens to emit them sequentially,
-    which is why review found that dropping `, char_start, id` from both
-    orderings left the whole suite green.
+    so nothing in the suite reaches the case.
 
     So the tie is built rather than waited for. `replace_chunks` stores whatever
     chunks it is given, so two passages share ordinal 0 here, and the document
-    is paged one row at a time: without a tiebreak SQLite may return the same
-    row for both pages or neither, and every page would still be individually
-    well-formed, which is what makes the defect invisible without this test.
+    is paged one row at a time: without a tiebreak the two pages may return one
+    row twice or return them in either order, and every page would still be
+    individually well-formed, which is what makes the defect invisible.
 
-    A `text` of different lengths, so `characters` distinguishes the two rows
-    even if their spans did not.
+    **The later passage is inserted first, and that is the whole of what makes
+    this bite.** The obvious construction — insert them in positional order —
+    was written first and mutation showed it proved nothing: with
+    `, char_start, id` removed from the ordering, SQLite fell back to rowid
+    order, which for that fixture *is* positional order, so the mutation
+    returned the same two rows in the same two pages and reported green.
+    Inserting them in reverse makes rowid order and positional order disagree,
+    which is the only arrangement in which the tiebreak is observable.
+
+    The outer `ORDER BY` is deliberately not covered, and cannot be through
+    this path: the inner subquery already selects exactly one row per page, so
+    the outer ordering has nothing to reorder. That is the same accepted
+    position `_document_selection` records for `list_document_page`'s repeated
+    ordering — insurance against a query plan SQLite is free to change, which
+    no test through the public path can reach.
     """
     survey, _, _ = ingested
-    tied = [
-        Chunk(
-            id="a" * 32,
-            document_id=survey.id,
-            casefile_id=survey.casefile_id,
-            ordinal=0,
-            heading_path="First",
-            text="the earlier of two passages at one ordinal",
-            char_start=0,
-            char_end=42,
-        ),
-        Chunk(
-            id="b" * 32,
-            document_id=survey.id,
-            casefile_id=survey.casefile_id,
-            ordinal=0,
-            heading_path="Second",
-            text="the later one, longer than the first",
-            char_start=100,
-            char_end=136,
-        ),
-    ]
+    later = Chunk(
+        id="b" * 32,
+        document_id=survey.id,
+        casefile_id=survey.casefile_id,
+        ordinal=0,
+        heading_path="Second",
+        text="the later one, longer than the first",
+        char_start=100,
+        char_end=136,
+    )
+    earlier = Chunk(
+        id="a" * 32,
+        document_id=survey.id,
+        casefile_id=survey.casefile_id,
+        ordinal=0,
+        heading_path="First",
+        text="the earlier of two passages at one ordinal",
+        char_start=0,
+        char_end=42,
+    )
+    # Stored later-first, so the rowids ascend against the positions.
     context.store.replace_chunks(
-        survey.id, tied, [[0.5] * context.config.contract.embed_dimensions] * 2, []
+        survey.id,
+        [later, earlier],
+        [[0.5] * context.config.contract.embed_dimensions] * 2,
+        [],
     )
 
     seen: list[str] = []
@@ -444,7 +458,9 @@ def test_two_passages_sharing_an_ordinal_still_page_in_a_total_order(
         assert len(page.passages) == 1
         seen.append(page.passages[0].id)
 
-    assert seen == ["a" * 32, "b" * 32], "the tie was not broken by the passage's place"
+    assert seen == [earlier.id, later.id], (
+        "the tie was not broken by the passage's place in the document"
+    )
     assert len(set(seen)) == 2, "one page boundary inside a tie repeated a passage"
 
 
