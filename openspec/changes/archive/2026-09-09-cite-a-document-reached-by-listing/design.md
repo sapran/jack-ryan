@@ -30,10 +30,19 @@ index is for — and `case_get_passage` then reads exactly the one passage chose
 **Two continuations in one payload.** `case_read_document` already carries
 `truncated` and `continue_from` for its text. A passage index inside it that can
 also be cut needs a second, independent continuation in the same payload, and
-this surface has none. `mcp-tool-surface` asks for one continuation contract
-"rather than two" precisely so an agent that has learned to follow a truncated
-read need not learn a second spelling; a payload with two of them at once is the
-shape that requirement argues against.
+this surface has none.
+
+**The objection is ours, not the spec's, and an earlier draft of this section
+overstated it.** What `mcp-tool-surface` actually says is: "One continuation
+contract across the surface rather than two: an agent that has learned to follow
+a truncated read should not have to learn a second spelling to follow a
+truncated listing." That forbids a second *vocabulary* across the surface — it
+does not forbid two continuations coexisting in one payload, and a reader who
+checks would find the citation broader than the text. The reason to avoid it is
+plainer and is this change's own: two `continue_from` values in one response are
+ambiguous to follow, because nothing in the payload says which of them a bare
+"call again with the offset" advances, and the two advance different things at
+different rates. The listing avoids the question entirely by being its own call.
 
 The listing, by contrast, is the third instance of a shape the surface already
 has twice — `case_list_documents` and `case_mention_documents` — with the same

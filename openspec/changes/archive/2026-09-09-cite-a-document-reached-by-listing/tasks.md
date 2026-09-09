@@ -138,10 +138,23 @@ every pre-existing top-level call still answering, the empty archive reporting
 that it has nothing to cite, and a page past the end saying something
 different. Re-run after the `develop` merge, with the same result.
 
-**Mutation table: 20 red, 2 green, both green ones explained.** Control **29
+**Mutation table: 22 red, 3 green, every green one explained.** Control **29
 passed** on every node, with the copied tree's editable `.pth` repointed into
 the copy and the import asserted to resolve inside it — without which every
 mutation reports green because the copy imports the original `src`.
+
+**The verdict is read from pytest's summary line, never from the exit code**,
+and that was got wrong first. This suite segfaults at interpreter teardown on a
+*passing* node — the control returned `exit=-11` after reporting `29 passed` —
+so the first isolation run scored a fully green control as a failure and
+refused to proceed. Read from the exit code, the more dangerous direction is
+the silent one: a mutated tree that passed every test and then crashed at
+teardown would have been recorded RED with no failing test in it. The harness
+now scores RED only when the summary reports `failed` or `error`, keeps the
+exit-4 collection-error guard, and was self-tested against four summary shapes
+— a teardown segfault, a genuine failure, a collection error, and a pass with
+skips. `docs/handover.md` records the same trap for the task-1 harness, which
+is where it should have been read from first.
 
 | # | Mutation | Verdict |
 |---|---|---|
@@ -163,7 +176,9 @@ mutation reports green because the copy imports the original `src`.
 | 16 | `characters` measures the heading | RED |
 | 17 | `characters` is `char_end - char_start` | **GREEN by construction** |
 | 18 | `heading_path` is aliased from the identifier | RED |
-| 19 | the inner ordering drops its tiebreak | RED |
+| 19 | the inner ordering drops both tiebreaks | RED |
+| 19a | the inner ordering drops only `char_start` | RED |
+| 19b | the inner ordering drops only `id` | **GREEN, correct** |
 | 20 | the outer ordering drops its tiebreak | **GREEN, accepted** |
 | 21 | a row gains a clipped preview | RED |
 | 22 | REST drops the passage short id | RED |
@@ -181,6 +196,18 @@ the outer ordering has nothing to reorder — the same accepted position
 `_document_selection` records for `list_document_page`'s repeated ordering,
 which is insurance against a query plan SQLite is free to change rather than a
 guard a test can reach.
+
+Number **19b** is green because it should be: `id` is the last resort in the
+ordering, reached only where two passages share both an ordinal and a start —
+two passages at the same place in the same document, which `hybrid-search`
+itself calls the exception because "whichever is returned first, the caller is
+reading the same words at the same place". **19a is the node that matters**, and
+it only reddens because the fixture was rebuilt twice: the tied passages are
+stored later-first, so rowid order contradicts position, *and* the later one
+carries the lower identifier, so identifier order contradicts it too. With
+either agreement left in place the test proved that some tiebreak existed
+rather than that a value of the corpus decides, which is what its docstring and
+the store's comment claim.
 
 **Four mutations were refused by the harness before any verdict**, and each
 refusal was a defect in the mutation rather than in the guard: two anchors

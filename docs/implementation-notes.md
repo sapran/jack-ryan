@@ -255,9 +255,15 @@ and why it was parked.
   a change to an accepted contract nothing asked for, or feeding a service rule
   with a span an adapter computed. It would also have made citing one paragraph
   of a large document cost a read of the window it sits in, and it would have
-  put two independent continuations in one payload, which
-  `mcp-tool-surface` argues against by name. The change's `design.md` records
-  all three.
+  put two independent continuations in one payload, which are ambiguous to
+  follow: nothing in such a payload says which of them a bare "call again with
+  the offset" advances. **That last objection is the change's own, and an
+  earlier version of this entry attributed it to `mcp-tool-surface`, which it
+  should not have.** That spec asks for one continuation *vocabulary* across
+  the surface — "an agent that has learned to follow a truncated read should
+  not have to learn a second spelling" — and says nothing about two
+  continuations coexisting in one response. The change's `design.md` records
+  all three arguments and this correction.
 
   Original note: `case_cite` needs a `chunk_id`, and no tool hands one back for
   a document reached through `case_list_documents`: `case_read_document`

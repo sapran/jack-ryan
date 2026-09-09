@@ -1642,7 +1642,13 @@ the agent surface and from
   window means either moving that bound into the service or feeding a service
   rule with an adapter's arithmetic; citing one paragraph of a large document
   would cost a read of the region it sits in; and the payload would carry two
-  independent continuations, which `mcp-tool-surface` argues against by name.
+  independent continuations, which are ambiguous to follow — nothing in such a
+  payload says which of them a bare "call again with the offset" advances, and
+  the two advance different things at different rates. That objection is this
+  change's own: an earlier draft attributed it to `mcp-tool-surface`, which
+  actually asks for one continuation *vocabulary* across the surface rather
+  than forbidding two continuations in one payload. The citation was broader
+  than the text and is corrected here.
 - **It carries no passage text.** `listing_payload` is unfenced on the promise
   that it holds no corpus prose, and `untrusted-content-boundary` says such a
   payload is not the one to carry prose. The cost is accepted: in a document
@@ -1655,21 +1661,33 @@ the agent surface and from
   refusal, so an archive holding no entries is stored with no text and no
   passages. The fixture is a real empty archive, not a deleted chunk row.
 
-**What was verified.** `uv run --no-sync pytest -q` → **825 passed, 3 skipped**
-at `9f85d9f`, against **813 passed, 3 skipped** at the branch point `2c3afa2` —
-the twelve new tests and no change to any existing count. That figure was
-written as 824 first and corrected here: the suite had been measured before the
-twelfth test was added, which is exactly why the honest attribution is the test
-delta rather than the total —
-`git diff 2c3afa2 9f85d9f -- tests/ | grep -cE '^\+(async )?def test_'` reports
-**12 added, 0 removed**, and that number survives concurrent work on the branch
-where a suite total does not. `openspec validate --all --strict` →
-**19 passed, 0 failed**. `gitleaks detect --no-banner` → no leaks.
-`docker compose build` → `jackryan:latest` built, both services. The journey was
-then driven through a real `jackryan serve-mcp` stdio process with `case_search`
-removed from the served catalogue, on disposable synthetic data, and the
-citation's span checked character-for-character against the text the fixture
-wrote.
+**What was verified.** `uv run --no-sync pytest -q` → **830 passed, 3 skipped**
+at `733f456`, against **817 passed, 3 skipped** on `develop` at `1b4413c`.
+Attributed independently of the totals, which is the figure to trust:
+`git diff 1b4413c 733f456 -- tests/ | grep -cE '^\+(async )?def test_'` reports
+**13 added, 0 removed**. `openspec validate --all --strict` → **18 passed, 0
+failed**, one fewer than before the archive because the change is no longer an
+item. `gitleaks detect --no-banner` → no leaks.
+
+**These figures were wrong twice, and how they went wrong is the point.** They
+first read 824 and "eleven new tests", measured before the twelfth test
+existed. Corrected to 825 at `9f85d9f` — and then `develop` moved under the
+change, gaining PR #36 (`migration-safe-location-identity`, schema rung 11) and
+PR #37, which reset the baseline from 813 to 817 and the tip to 830, while a
+thirteenth test arrived with the review round. The archived record and the PM
+record were updated and this paragraph was not, so `develop` briefly shipped two
+permanent records disagreeing about one change — in the file this document is
+the one a reader is told to trust. A suite total is the wrong unit for a
+permanent record: it decays on every concurrent merge, which is why the test
+delta above is stated beside it and named with the commits it spans.
+
+`docker compose build` → `jackryan:latest` built, both services, its exit code
+read directly rather than through a pipe. The journey was then driven through a
+real `jackryan serve-mcp`-shaped stdio process, in a separate process with the
+writer closed first so the store was genuinely reopened, with `case_search`
+removed from the served catalogue: 37 checks, all passing, and the citation's
+span checked character-for-character against the text the harness authored.
+Re-run after the `develop` merge with the same result.
 
 **What it does not settle.** No real corpus was read or written; the change
 writes nothing, embeds nothing and reads no setting that decides what a vector
