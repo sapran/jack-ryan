@@ -16,7 +16,7 @@ from mcp.types import ToolAnnotations
 
 from ... import __version__
 from ...app import Context
-from ...services.ingestion import DEFAULT_DOCUMENT_PAGE
+from ...services.ingestion import DEFAULT_DOCUMENT_PAGE, locations_verdict
 from ...services.search import DEFAULT_CARRIER_PAGE
 from ...storage.port import (
     Casefile,
@@ -137,12 +137,16 @@ def _render_document(document: Document) -> dict[str, Any]:
     # Marked for the same reason the children are: it is a finding rather than
     # a duplicate to be passed over. What the count means is the analyst's to
     # decide, so the description states the count and not a conclusion.
-    # A pre-record document has no row for its own location, so `> 1` would
-    # mark it one location too late: its first recorded location is already an
-    # additional one. The flag is on every listing row because the query
-    # selects `d.*`, so this costs no extra read.
-    if document.location_count > (1 if document.locations_recorded else 0):
+    # Asked of the document rather than computed here, for the same reason the
+    # CLI does: the rule about whether its own place is recorded belongs with
+    # the document, not spelled again in each adapter.
+    if document.additional_locations:
         row["locations"] = document.location_count
+    # The count alone over-claims where the record began late: its one
+    # observation may be the document's own place, and nothing in the row would
+    # say so. The verdict travels beside the count for that reason — a listing
+    # never builds a location record, so this is its only qualifier.
+        row["locations_recorded"] = locations_verdict(document)
     return row
 
 
@@ -351,9 +355,10 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             "the rows in this page and `total_matching` the whole selection; "
             "when `truncated` is true, call again with `offset` set to "
             "`continue_from`. A row's `locations` count is how many distinct "
-            "ingest locations this instance recorded the same bytes at. It may be "
-            "shared custody or distribution, or the same material ingested twice "
-            "from different paths; the count does not decide which."
+            "places this instance recorded the same bytes at; one file offered "
+            "twice at one path is one place. It may be shared custody or "
+            "distribution; the count does not decide which. A row's "
+            "`locations_recorded` says whether that count is the whole story."
         ),
         annotations=_annotations_for("case_list_documents"),
     )
@@ -655,8 +660,8 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
             "A document's extracted text, bounded. Read late: it is the most expensive call "
             "here and rarely the fastest route to an answer. Continue with the returned offset. "
             "The provenance block carries the locations recorded for the document, "
-            "bounded, and says `unknown` where the document was ingested before locations "
-            "were recorded."
+            "bounded, and says `unknown` where the record of where it was found does not "
+            "reach back to when it was stored."
         ),
         annotations=_annotations_for("case_read_document"),
     )
@@ -698,7 +703,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
                 text_source=found.text_source,
                 locations_recorded=record.verdict,
                 observed_at=tuple(
-                    one_line(location.full_path, 200)
+                    one_line(location.path, 200)
                     for location in record.observed_at
                 ),
                 locations_total=record.recorded.total,

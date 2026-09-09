@@ -79,6 +79,18 @@ LOCATIONS_COMPLETE = "complete"
 LOCATIONS_UNKNOWN = "unknown"
 
 
+def locations_verdict(document: Document) -> str:
+    """The word every surface uses for whether a document's places are all recorded.
+
+    The rule is the document's own `locations_are_whole`; this is only the
+    vocabulary, and it lives here because the vocabulary is this layer's. Both
+    listing adapters and the single-document record ask for it rather than
+    mapping the boolean to a word themselves, so the two cannot come to
+    disagree about which word means what.
+    """
+    return LOCATIONS_COMPLETE if document.locations_are_whole else LOCATIONS_UNKNOWN
+
+
 @dataclass(frozen=True)
 class IngestOutcome:
     """What happened to one file."""
@@ -93,9 +105,8 @@ class IngestOutcome:
     # "known", "new", "unknown", or empty for an outcome that never got that
     # far — a failed document.
     location: str = ""
-    # The followable path this run observed the document at: the ingest root
-    # joined to the containment path. Carried already joined so the report and
-    # the query path cannot spell one location two ways.
+    # The followable path this run observed the document at. Carried already
+    # joined so the report and the query path cannot spell one place two ways.
     location_path: str = ""
 
 
@@ -183,9 +194,9 @@ class IngestReport:
         was offered. Folding this into `limitations` would flip `complete` to
         false and report a discovery as a shortfall.
 
-        Each is the followable path — the ingest root joined to the containment
-        path — because the root is the whole of what distinguishes the second
-        custodian's copy from the first's.
+        Each is the followable path the place was observed at, which is the
+        whole of its identity: two paths that differ are two places, and one
+        path reached two ways is one.
         """
         return [o.location_path for o in self.outcomes if o.location == LOCATION_NEW]
 
@@ -226,7 +237,7 @@ class DocumentLocationRecord:
 
     @property
     def observed_at(self) -> list[DocumentLocation]:
-        """Every recorded location, earliest first, each carrying its root.
+        """Every recorded place, earliest first, each an absolute path.
 
         The whole set rather than "the ones other than the document's own", and
         the difference matters twice.
@@ -261,13 +272,20 @@ class DocumentLocationRecord:
         `ingestion-coverage` gives about coverage reasons: two renderings of a
         caveat a caller weighs before trusting the corpus are free to diverge,
         and the divergence is invisible.
+
+        It states the effect and not a cause. It used to say the document "was
+        ingested before source locations were recorded", which is one reason a
+        record can start late and not the only one — a write that stored the
+        document and lost the observation opening its record produces the same
+        state, and attributing that to an older schema would be asserting
+        something this instance cannot know.
         """
         if self.verdict == LOCATIONS_COMPLETE:
             return ""
         return (
-            "this document was ingested before source locations were recorded, "
-            "so the locations shown may be incomplete and any others were "
-            "overwritten"
+            "the record of where this document was found does not reach back to "
+            "when it was stored, so the places shown may be incomplete and any "
+            "others cannot be recovered"
         )
 
 
@@ -681,17 +699,12 @@ class IngestionService:
                 parent_id=work.parent_id,
                 containment_path=work.containment_path,
                 identity_path=identity_path,
-                # Ignored by the upsert on conflict, deliberately: a document
-                # migrated in from an older schema keeps its `False` however
-                # often it is reingested, because the copies it lost are still
-                # lost. Only an insert can honestly claim the record is whole.
-                locations_recorded=True,
             )
             # Everything that can fail happens before anything is written.
             #
             # `document.id` is already settled above — it is the existing row's
             # id on a reingest and a fresh one otherwise — so chunking and
-            # summarising need no stored row, and `upsert_document` keeps the id
+            # summarising need no stored row, and `store_document` keeps the id
             # it is given. That is what lets the whole fallible sequence run
             # first.
             #
@@ -710,20 +723,20 @@ class IngestionService:
                 summary_by=self._summariser.name if document_summary else "",
             )
 
-            stored = self._store.upsert_document(document)
-            # Recorded after the row exists, so the foreign key resolves, and
-            # before the chunks, so a document that reached this point has its
-            # location whatever happens next.
+            observed_at_path = join_location(work.source_root, work.containment_path)
+            # The document and the observation that opens its record are one
+            # write. Two writes left a window in which the document survived
+            # asserting a whole history with nothing recorded — and the next
+            # ingest from a different root then supplied the only place the
+            # record held, so it read as the whole story while the place this
+            # document actually came from was never written and never could be.
             #
-            # Do not reorder this below `replace_chunks` to close the window
-            # below: that opens the worse one, a document with chunks and no
-            # location. The window this leaves is that a run aborting between
-            # here and the end loses the one-time "recorded at a location it
-            # had not been seen at" banner — the retry sees the row already
-            # present and reports `known`. The row itself is on every read
-            # surface, so what is lost is the notification, not the evidence.
-            location_is_new = self._store.record_document_location(
-                stored.id, work.source_root, work.containment_path, now
+            # Whether the record was already whole is read from `existing`,
+            # before this write changes it: nothing may be called a discovery
+            # for a document whose earlier history is missing.
+            existing_record_was_whole = existing is not None and existing.locations_are_whole
+            stored, location_is_new = self._store.store_document(
+                document, observed_at_path, now
             )
             # Mentions travel with the chunks rather than in a later call:
             # `replace_chunks` mints every chunk id afresh, so a separate write
@@ -731,10 +744,12 @@ class IngestionService:
             self._store.replace_chunks(stored.id, prepared, embeddings, mentions)
             if existing is None:
                 location = LOCATION_FIRST
-            elif not existing.locations_recorded:
-                # The document predates the record. This path may well be the
-                # one it was originally ingested from, so calling it a discovery
-                # would be a finding this instance cannot support.
+            elif not existing_record_was_whole:
+                # The record cannot answer for this document — it predates the
+                # record, or the write that should have opened it did not
+                # complete. This place may well be one it was already observed
+                # at, so calling it a discovery would be a finding this instance
+                # cannot support.
                 location = LOCATION_UNKNOWN
             elif location_is_new:
                 location = LOCATION_NEW
@@ -748,9 +763,7 @@ class IngestionService:
                     chunks=len(prepared),
                     containment_path=work.containment_path,
                     location=location,
-                    location_path=join_location(
-                        work.source_root, work.containment_path
-                    ),
+                    location_path=observed_at_path,
                 ),
                 stored,
                 extraction,
@@ -1060,25 +1073,29 @@ class IngestionService:
         """Where one document's bytes were observed, bounded, with a verdict.
 
         The verdict is a rule of this layer rather than of the store, the same
-        way a casefile's coverage verdict is: the store holds counts, and what
-        those counts may be claimed to mean is domain reasoning. Resolution goes
+        way a casefile's coverage verdict is: the store holds the rows, and what
+        those rows may be claimed to mean is domain reasoning. Resolution goes
         through `resolve_document`, so casefile scoping and 8-character prefixes
         are inherited rather than restated.
 
-        A whole record needs both the flag and at least one row. The two writes
-        are separate commits, so a process death between them leaves the flag
-        raised over an empty table — and a `complete` verdict with nothing in it
-        renders exactly like a document found in one place, which is the one
-        reading that is certainly wrong. Calling it unanswerable makes the
-        contradiction visible and gives it the caveat it needs.
+        A record is whole exactly when it has existed since the document was
+        created, which is what comparing the earliest observation against
+        `created_at` establishes. Derived rather than read from a stored claim,
+        because a stored claim is a second copy of this fact written in a
+        different transaction from the rows it describes, and the two can
+        disagree — which is how a document that lost its first observation came
+        to report the one place a later ingest happened to find as its whole
+        history.
+
+        The rule itself lives on the document, as `locations_are_whole`, and is
+        asked rather than restated here. Spelling it in both places is the
+        two-copies-can-disagree defect that retiring the stored claim was meant
+        to end, one level up — so every query that returns a document for a
+        caller to judge selects what the rule needs.
         """
         document = self.resolve_document(casefile_reference, reference)
         recorded = self._store.document_locations(document.id, MAX_DOCUMENT_LOCATIONS)
-        verdict = (
-            LOCATIONS_COMPLETE
-            if document.locations_recorded and recorded.total
-            else LOCATIONS_UNKNOWN
-        )
+        verdict = locations_verdict(document)
         return DocumentLocationRecord(
             verdict=verdict, document=document, recorded=recorded
         )

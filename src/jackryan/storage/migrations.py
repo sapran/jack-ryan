@@ -266,6 +266,54 @@ _STEPS: tuple[_Step, ...] = (
             "ALTER TABLE documents ADD COLUMN locations_recorded INTEGER NOT NULL DEFAULT 0",
         ),
     ),
+    _Step(
+        to_version=10,
+        reason=(
+            "a location is one path, so a file reached through two ingest roots is one"
+            " place rather than two, and the records already kept are carried across"
+        ),
+        statements=(
+            # `document_locations` keyed a location on the ingest root paired
+            # with the path within it, which discriminates *observations* rather
+            # than *places*: a folder walk and then that folder's nested file
+            # named directly yield ("/dump", "sub/note.txt") and
+            # ("/dump/sub", "note.txt") for one file. The path alone is the
+            # place, and it still separates two dumps that each hold one file at
+            # their top level, because those paths differ.
+            "CREATE TABLE IF NOT EXISTS document_observations ("
+            " document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,"
+            " location_path TEXT NOT NULL,"
+            " first_seen_at TEXT NOT NULL,"
+            " PRIMARY KEY (document_id, location_path))",
+            # Carried across rather than reingested, and the GROUP BY is what
+            # repairs a store that already holds one place twice: the earliest
+            # observation of each path wins, which is the timestamp worth
+            # keeping. Concatenation agrees with `PurePosixPath` for every path
+            # this tool records, because a resolved absolute directory never
+            # ends in a separator; a file ingested from `/` itself would join to
+            # `//name`, which is not a case worth code but is worth knowing.
+            "INSERT OR IGNORE INTO document_observations"
+            " (document_id, location_path, first_seen_at)"
+            " SELECT document_id, source_root || '/' || containment_path,"
+            " MIN(first_seen_at) FROM document_locations"
+            " GROUP BY document_id, source_root || '/' || containment_path",
+            # `document_locations` is deliberately left in place and is no
+            # longer written. It is the prior record of which root each place was
+            # reached through, and dropping it to tidy up would destroy
+            # provenance in order to improve a representation. Do not clean it
+            # up.
+            #
+            # `documents.locations_recorded` is likewise no longer written or
+            # read. It stored a claim about these rows — whether the record was
+            # whole — in a different transaction from the rows themselves, so the
+            # two could disagree, and they did: a document written before its
+            # first observation kept the claim and lost the row. Whether a
+            # record is whole is now derived from it, by asking whether the
+            # earliest observation is no later than the document's creation. The
+            # ladder is additive, so the column stays; nothing may start reading
+            # it again.
+        ),
+    ),
 )
 """The ladder, in order. Every step may only ADD.
 

@@ -65,17 +65,12 @@ class Document:
     # How many documents were expanded directly out of this one. Carried so a
     # listing can show that there is more to reach without fetching it.
     child_count: int = 0
-    # Whether this document's source locations were recorded from the moment it
-    # was created. False for every row that predates the location record: its
-    # `containment_path` is one location it was observed at, and any others were
-    # overwritten before they could be kept. A surface that treated the recorded
-    # rows as the whole set for such a document would be asserting something it
-    # cannot know.
-    locations_recorded: bool = False
-    # How many source locations are recorded for this document. Carried so a
-    # listing can mark a file found in several places without fetching them —
-    # the `child_count` precedent, and populated only when a query aliases it.
+    # How many places this document's bytes were observed at, and when the
+    # earliest of them was recorded. Carried so a listing can mark a file found
+    # in several places without fetching them — the `child_count` precedent —
+    # and populated only when a query aliases them.
     location_count: int = 0
+    first_observed_at: datetime | None = None
 
     @property
     def short_id(self) -> str:
@@ -86,12 +81,47 @@ class Document:
         """Whether this document came out of another rather than off disk."""
         return self.parent_id is not None
 
+    @property
+    def locations_are_whole(self) -> bool:
+        """Whether every place these bytes were observed at is recorded.
+
+        Derived, and deliberately not stored. It is true exactly when the record
+        has existed since the document was created, which is what comparing the
+        earliest observation against `created_at` establishes.
+
+        A stored claim would be a second copy of this fact, in a different
+        transaction from the rows it describes, and the two can disagree: an
+        instance that wrote the claim and then failed before writing the
+        observation left a document asserting a history it did not have, and one
+        later observation from somewhere else then read as the whole story.
+
+        Answers `False` when nothing is recorded and when nothing was aliased,
+        which is the safe direction: a caller that did not ask for the counts
+        cannot be told the record is whole.
+        """
+        return self.first_observed_at is not None and self.first_observed_at <= self.created_at
+
+    @property
+    def additional_locations(self) -> int:
+        """Recorded places other than the one this document reports.
+
+        One expression for what used to be two thresholds. A document whose
+        record is whole holds a row for its own location, so a second place
+        means two rows; one whose record is not whole has no row for its own, so
+        its first row is already somewhere else. Both are the same statement
+        about additional places, which is why adapters ask this rather than
+        each carrying the arithmetic.
+        """
+        return max(0, self.location_count - (1 if self.locations_are_whole else 0))
+
 
 def join_location(source_root: str, containment_path: str) -> str:
-    """The path a person follows to find a document's bytes by hand.
+    """The path a file was observed at: what was ingested, plus the way down.
 
-    One definition, called by both the query path and the ingest report, so the
-    two cannot spell a location differently.
+    One definition, called by the ingest write and by the report it returns, so
+    the two cannot spell a location differently. The result is the location's
+    whole identity — two observations that join to the same path are one place,
+    however each was reached.
     """
     return str(PurePosixPath(source_root) / containment_path)
 
@@ -100,21 +130,20 @@ def join_location(source_root: str, containment_path: str) -> str:
 class DocumentLocation:
     """One place a document's bytes were observed.
 
-    Two fields rather than one path, because a containment path is relative to
-    whatever was ingested. `source_root` is what the analyst pointed at — the
-    folder for a walk, the file's own directory for a named file, and for a
-    document produced by expansion the root of the top-level file it came out
-    of, so that the two together are always followable from one end to the
-    other.
+    One path, not a root and a path within it. The pair discriminated
+    observations rather than places: the same file reached by walking a folder
+    and by naming it directly produced two pairs for one file. The path is the
+    place, and it still separates two dumps that each hold one file at their top
+    level, because those paths differ.
+
+    It is absolute, so it is followable by hand — which is the standard the
+    containment path is already held to — and for a document produced by
+    expansion it runs from the top-level file that was ingested down the
+    containment chain to it.
     """
 
-    source_root: str
-    containment_path: str
+    path: str
     first_seen_at: datetime
-
-    @property
-    def full_path(self) -> str:
-        return join_location(self.source_root, self.containment_path)
 
 
 @dataclass(frozen=True)
@@ -543,8 +572,27 @@ class StorePort(Protocol):
 
     # -- documents and chunks ---------------------------------------------
 
-    def upsert_document(self, document: Document) -> Document:
-        """Store a document, reusing the identifier of one with the same bytes."""
+    def store_document(
+        self, document: Document, location_path: str, observed_at: datetime
+    ) -> tuple[Document, bool]:
+        """Store a document and where its bytes were observed, in one write.
+
+        Returns the stored document and whether that location was new to it.
+
+        The location is a required parameter rather than a second call or an
+        optional argument, because whether this document's record may be read as
+        whole is answered from that record: a document committed without the
+        observation that opens it asserts a history it does not have, and one
+        later observation from elsewhere then reads as the whole story. A seam
+        that can be used in the wrong order eventually is — the reason this
+        module already gives for writing a chunk's derived rows in the chunk's
+        own call — and an optional one is used wrongly without eventually.
+
+        The document's identifier is reused when the same bytes are already
+        stored, and the observation is kept only if the path is new: the first
+        sighting's timestamp is the fact worth having, and it is what the
+        wholeness of the record is judged against.
+        """
         ...
 
     def get_document(self, document_id: str) -> Document | None: ...
@@ -552,31 +600,6 @@ class StorePort(Protocol):
     def find_document_by_hash(
         self, casefile_id: str, content_hash: str, identity_path: str = ""
     ) -> Document | None: ...
-
-    def record_document_location(
-        self,
-        document_id: str,
-        source_root: str,
-        containment_path: str,
-        first_seen_at: datetime,
-    ) -> bool:
-        """Record where a document's bytes were observed. True when it was new.
-
-        Recorded for every document, including one produced by expansion.
-
-        An expansion has one location per root its container was ingested from
-        — not one location full stop. Its containment path counts toward
-        identity but carries no root, so the same archive ingested from two
-        dumps expands to one document with two locations. Synthesising an
-        expansion's single location from its containment path instead of
-        recording it would therefore lose the second custodian for every
-        archived file, silently.
-
-        Uniform on purpose: a caller asking where a document was found gets one
-        answer shape, and no surface has to branch on how the document came to
-        exist.
-        """
-        ...
 
     def document_locations(
         self, document_id: str, limit: int

@@ -18,6 +18,7 @@ from .ingestion.legacy_office import converter_status
 from .app import build_context
 from .errors import JackRyanError
 from .rendering import render_casefile, render_document, render_hit, render_report
+from .services.ingestion import locations_verdict
 from .services.search import DEFAULT_CARRIER_PAGE
 from .storage.port import Casefile, Document, SearchHit
 
@@ -43,12 +44,16 @@ def _render_document(document: Document) -> dict[str, Any]:
     # Only when it says something, like `children` above: a document found in
     # one place is the ordinary case and adding a column of ones would widen
     # every table for nothing.
-    # A pre-record document has no row for its own location, so `> 1` would
-    # mark it one location too late: its first recorded location is already an
-    # additional one. The flag is on every listing row because the query
-    # selects `d.*`, so this costs no extra read.
-    if document.location_count > (1 if document.locations_recorded else 0):
+    # Asked of the document rather than computed here: whether its own place
+    # is among the recorded ones depends on when its record began, and a rule
+    # spelled once in the domain object cannot drift between two adapters.
+    if document.additional_locations:
         row["locations"] = document.location_count
+    # The count alone over-claims where the record began late: its one
+    # observation may be the document's own place, and nothing in the row would
+    # say so. The verdict travels beside the count for that reason — a listing
+    # never builds a location record, so this is its only qualifier.
+        row["locations_recorded"] = locations_verdict(document)
     if document.summary:
         # Added only when present, so a table for a corpus ingested without a
         # summariser keeps the shape it has today. Model-written, so the producer
@@ -393,7 +398,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 row["locations"] = record.recorded.total
                 if args.json:
                     row["observed_at"] = [
-                        location.full_path for location in record.observed_at
+                        location.path for location in record.observed_at
                     ]
                     row["locations_truncated"] = record.truncated
                     if record.note:
@@ -407,7 +412,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     # rest would show a different set depending on which copy
                     # was ingested first.
                     for location in record.observed_at:
-                        print(f"observed at {location.full_path}")
+                        print(f"observed at {location.path}")
                     if record.truncated:
                         print(f"… {record.recorded.total} locations recorded in total")
                     # The wording comes from the record, never written out here:

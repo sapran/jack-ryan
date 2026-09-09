@@ -85,11 +85,13 @@ def provenance(
     provenance block for a document's own text never asserts a producer.
 
     The `locations` block carries every place the same bytes were observed, each
-    joined to the root it was ingested from — the whole set, earliest first,
-    not the ones other than `found_at`. A relative path cannot say which dump
-    it came from, so a block naming the document's own location relatively
-    beside root-qualified others would report a different set depending on
-    which copy was ingested first. `total` counts the record's whole set and
+    one absolute and followable — the whole set, earliest first, not the ones
+    other than `found_at`. A place is a path and nothing else: one file offered
+    twice at one path is one place however each offer reached it, and two dumps
+    holding one file each are two places because their paths differ. The whole
+    set rather than the others, because `found_at` is relative to a root no
+    column holds, so naming only the rest would report a different set
+    depending on which copy was ingested first. `total` counts the record's whole set and
     `observed_at` is bounded. It is emitted only when it says something — more
     than one location, or a record that cannot answer — so a document found in
     one place produces exactly the block it produced before this existed. Every
@@ -116,9 +118,8 @@ def provenance(
     if len(observed_at) > 1 or locations_note:
         locations: dict[str, Any] = {
             "recorded": locations_recorded,
-            # Every location the record holds, earliest first, each carrying
-            # the root it was ingested from. `found_at` above stays the one a
-            # citation names.
+            # Every place the record holds, earliest first, each an absolute
+            # path. `found_at` above stays the one a citation names.
             "observed_at": list(observed_at),
             "total": locations_total,
             "truncated": locations_truncated,

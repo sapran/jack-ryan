@@ -165,20 +165,27 @@ against it. The set of places one file was found is evidence of shared custody
 and distribution in its own right, and it is the deduplication that makes that
 set discoverable rather than something to be traded away for it.
 
-A recorded source location SHALL be the root that was ingested together with
-the path within it, and the two together SHALL be what makes one location
-distinct from another. A containment path is relative to whatever was ingested,
-so two dumps each holding one file at their top level yield the same relative
-path; keyed on that path alone the second observation would be indistinguishable
-from the first and the second custodian would be lost — which is the case this
-record exists for. The two together SHALL also be followable by hand, which a
-path relative to an unrecorded root is not.
+**A recorded location SHALL be the path the bytes were observed at, and that
+path alone SHALL be what makes one location distinct from another.** Two
+observations that name the same path SHALL be one location, however each was
+reached. The path SHALL be followable by hand, so it SHALL carry the directories
+above the file as well as the file's own name: a path relative to a root that is
+not recorded neither distinguishes one dump from another nor leads anyone to the
+evidence, which is why two dumps each holding one file at their top level are two
+locations.
 
-For a document produced by expansion the root SHALL be that of the top-level
-file it came out of, and SHALL NOT be any working directory its bytes were
-materialised into while it was read. Such a directory is created afresh on every
-run, so recording it would make each reingest of one container report locations
-it had never seen.
+Keying a location on the ingested root paired with the path within it SHALL NOT
+be done, because the same file reached through two different roots yields two
+pairs denoting one place — a folder walk and then that folder's nested file named
+directly produce `(dump, sub/note.txt)` and `(dump/sub, note.txt)`. Both name the
+same file, and recording them separately reports a discovery where nothing was
+discovered and counts one physical location twice.
+
+For a document produced by expansion the recorded path SHALL begin at the
+top-level file that was ingested and follow the containment chain to it, and
+SHALL NOT name any working directory its bytes were materialised into while it
+was read. Such a directory is created afresh on every run, so recording it would
+make each reingest of one container report locations it had never seen.
 
 A document's own filename and containment path SHALL be the first location its
 bytes were observed at, and SHALL NOT be overwritten by a later copy found
@@ -189,6 +196,22 @@ An ingest result SHALL distinguish a copy found somewhere not previously
 recorded from a reingest of a location already known. The two are the same
 document either way, but only one of them is something the analyst has just
 learned.
+
+**Whether a document's location record is whole SHALL be derived from when
+recording began, and SHALL NOT be asserted by a stored claim of its own.** The
+record is whole exactly when it has existed since the document was created,
+which is what comparing the earliest recorded observation against the document's
+creation establishes. A separately stored claim is a second copy of that fact
+and can disagree with it: an instance that wrote the claim and then failed
+before writing the observation carries a document asserting a whole record it
+does not have.
+
+**A later observation SHALL NOT turn missing history into a whole record.**
+Where recording began after the document was created — because the document
+predates the record, or because the write that should have opened its record did
+not complete — the record SHALL report itself unable to answer, and SHALL keep
+doing so however many further observations are added. Recording a location this
+instance can see is not evidence about the locations it cannot.
 
 Where a document was stored before its source locations were recorded, the
 record SHALL be reported as unable to answer rather than presented as whole. Such
@@ -224,7 +247,7 @@ instance cannot know.
 #### Scenario: Identical bytes under two ingest roots keep both locations
 
 - **WHEN** two separately ingested roots each hold identical bytes at the same path within them
-- **THEN** both locations are recorded, distinguished by the root each was ingested from
+- **THEN** both locations are recorded, because the paths they were observed at differ
 
 #### Scenario: Reingesting a container records no new location for its entries
 
@@ -255,6 +278,16 @@ instance cannot know.
 
 - **WHEN** a document stored before source locations were recorded is reingested
 - **THEN** its location record is reported as unable to answer, and no location is invented for the copy that was overwritten
+
+#### Scenario: One file reached through two ingest roots is one location
+
+- **WHEN** a folder is ingested and then a file inside it is ingested directly, by naming that file or its own folder
+- **THEN** one location is recorded for that file, and no run reports it as newly discovered
+
+#### Scenario: An interrupted first ingest leaves the history unable to answer
+
+- **WHEN** a document is stored but the write that opens its location record does not complete, and identical bytes are later ingested from a different root
+- **THEN** the record reports itself unable to answer rather than whole, and says so however many further locations are added
 
 ### Requirement: Ingestion refuses what it cannot safely read
 
