@@ -31,6 +31,21 @@ one no test can catch, which is why its one-line form stays in the root
   `documents`, `casefiles` or `chunks` destructively, never change a uniqueness
   constraint, and never make a step idempotent by catching "duplicate column" —
   that turns a version row that lies into a silent success.
+- **A rung already applied is frozen, so a wrong rung is corrected by the next
+  one.** Rung 10 spelled a location by concatenating in SQL what the runtime
+  spells with `join_location`, and rung 11 exists because editing 10 could not
+  reach a store already stamped at 10 — it would only move the stores that had
+  not migrated yet, leaving two populations that differ by the day they were
+  first opened. The corollary: a rung that derives a value the runtime also
+  derives must call the runtime's function, registered on the connection by
+  `migrate` (`jr_join_location`) and withdrawn afterwards, rather than
+  reimplementing it in SQL.
+- **`document_places` is the live location table; the other two are kept
+  fossils.** Nothing may start reading or writing `document_observations` or
+  `document_locations` — they are the record as it was kept, and rung 11's
+  correctness is checkable against them. All three are in `EVIDENCE_TABLES` in
+  `tests/test_migrations.py`, which is what stops a later rung deleting from
+  the one that holds custody evidence.
 - **A step that changes the FTS column list must drop and recreate the delete
   trigger in the same transaction.** The trigger names the columns it feeds to
   FTS5's `'delete'`; a column it does not name leaves its tokens in the index on
