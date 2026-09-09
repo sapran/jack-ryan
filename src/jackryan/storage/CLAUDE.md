@@ -40,12 +40,23 @@ one no test can catch, which is why its one-line form stays in the root
   derives must call the runtime's function, registered on the connection by
   `migrate` (`jr_join_location`) and withdrawn afterwards, rather than
   reimplementing it in SQL.
+  **The corollary has a price, and it is the same split.** Rung 11's output
+  depends on whichever `join_location` the migrating build carried, and the rung
+  cannot be re-run, so changing `join_location` (`storage/port.py`) is itself a
+  schema event: stores migrated before the change and after it would hold
+  different spellings under one stamped version. Such a change needs a further
+  rung re-deriving `document_places`, in the same commit.
 - **`document_places` is the live location table; the other two are kept
-  fossils.** Nothing may start reading or writing `document_observations` or
-  `document_locations` — they are the record as it was kept, and rung 11's
-  correctness is checkable against them. All three are in `EVIDENCE_TABLES` in
-  `tests/test_migrations.py`, which is what stops a later rung deleting from
-  the one that holds custody evidence.
+  fossils.** No runtime path may write `document_observations` or
+  `document_locations`, or read either as the record — they are the record as it
+  was kept. Tests and a repair may read them, and that is the point: rung 11's
+  correctness is checkable against them, and the fixtures in
+  `tests/test_document_locations.py` build an older store by writing them. (The
+  names alone are not the rule: `StorePort.document_locations` and
+  `IngestionService.document_locations` are methods that read
+  `document_places`.) All three tables are in `EVIDENCE_TABLES` in
+  `tests/test_migrations.py`, which is what stops a later rung deleting from the
+  one that holds custody evidence.
 - **A step that changes the FTS column list must drop and recreate the delete
   trigger in the same transaction.** The trigger names the columns it feeds to
   FTS5's `'delete'`; a column it does not name leaves its tokens in the index on
