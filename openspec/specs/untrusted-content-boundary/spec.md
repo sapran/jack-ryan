@@ -47,14 +47,15 @@ that bound exists to prevent; a citation must name one path a person can follow
 by hand, which a list cannot. Those tools carry the containment path alone, as
 they did before locations were recorded. The cost is that an agent reading a
 quotation is not told the same bytes sit elsewhere, and the disclosure is one
-call away on the document itself. A location is the ingested root joined to the path within it,
-and the second half is chosen by whoever laid out the material — an archive
-entry name or a directory name inside a dump — so it is attacker-controlled to
-exactly the degree the containment path is, and reaches the same line-oriented
-block. The root half is operator-chosen rather than document-derived, which
-makes it no safer to emit unsanitised: it is a filesystem path, it can carry a
-newline, and one rule over the whole joined location is one fewer place for the
-weaker half to be missed.
+call away on the document itself.
+
+A location is one path, and the part of it below whatever was ingested is chosen
+by whoever laid out the material — an archive entry name or a directory name
+inside a dump — so it is attacker-controlled to exactly the degree the
+containment path is, and reaches the same line-oriented block. The leading part
+is operator-chosen rather than document-derived, which makes it no safer to emit
+unsanitised: it is a filesystem path, it can carry a newline, and one rule over
+the whole path is one fewer place for the weaker part to be missed.
 
 #### Scenario: Returned corpus text is fenced and attributed
 
