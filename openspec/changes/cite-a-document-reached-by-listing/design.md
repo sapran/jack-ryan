@@ -119,6 +119,27 @@ matching row, so `LENGTH(text)` in a single-statement form would read every
 passage's text in the document to report a page of integers — the cost this shape
 exists to avoid.
 
+**The field is provably redundant on any corpus this code writes, and that was
+measured rather than argued.** The sweep first tried to assert that some
+passage's stored length differs from `char_end - char_start`, so that the value
+would be checked against something the span could not supply. It fails for
+every passage: `a-chunk-begins-where-its-text-does` made
+`source[char_start:char_end] == text` an invariant of the chunker, so the two
+are equal for every row the current pipeline produces. Two consequences, both
+recorded rather than quietly absorbed:
+
+- The mutation replacing `LENGTH(c.text)` with the span is **GREEN by
+  construction**, not an unguarded field. The mutation table says so instead of
+  listing it as a gap, which is what the mutation guidance asks for when a
+  redundancy is proved.
+- The field earns its place only on a corpus written before that invariant, and
+  none is constructed here. It stays because those rows exist in the real
+  corpus — `CLAUDE.md` records that they name the untrimmed window — and
+  because `characters` is what a caller would receive if it read the passage,
+  which is the question the field answers. The sweep asserts the equality in
+  that direction, which still catches a length aliased to a constant or to
+  another column.
+
 ## Decision 6: a document with no stored passages is answered, not empty
 
 A document can hold no passages, and it is reachable rather than theoretical.

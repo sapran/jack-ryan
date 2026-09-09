@@ -292,6 +292,10 @@ def create_app(context: Context | None = None) -> FastAPI:
             "passages": [
                 {
                     "chunk_id": passage.id,
+                    # As REST document rows carry theirs, through
+                    # `render_document`: a remote caller is entitled to the
+                    # same 8-character handle the agent surface gets.
+                    "short_id": passage.short_id,
                     "document_id": passage.document_id,
                     "ordinal": passage.ordinal,
                     "heading_path": passage.heading_path,

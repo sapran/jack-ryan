@@ -1655,9 +1655,15 @@ the agent surface and from
   refusal, so an archive holding no entries is stored with no text and no
   passages. The fixture is a real empty archive, not a deleted chunk row.
 
-**What was verified.** `uv run --no-sync pytest -q` → **824 passed, 3 skipped**,
-against **813 passed, 3 skipped** at the branch point `2c3afa2` — the eleven new
-tests and no change to any existing count. `openspec validate --all --strict` →
+**What was verified.** `uv run --no-sync pytest -q` → **825 passed, 3 skipped**
+at `9f85d9f`, against **813 passed, 3 skipped** at the branch point `2c3afa2` —
+the twelve new tests and no change to any existing count. That figure was
+written as 824 first and corrected here: the suite had been measured before the
+twelfth test was added, which is exactly why the honest attribution is the test
+delta rather than the total —
+`git diff 2c3afa2 9f85d9f -- tests/ | grep -cE '^\+(async )?def test_'` reports
+**12 added, 0 removed**, and that number survives concurrent work on the branch
+where a suite total does not. `openspec validate --all --strict` →
 **19 passed, 0 failed**. `gitleaks detect --no-banner` → no leaks.
 `docker compose build` → `jackryan:latest` built, both services. The journey was
 then driven through a real `jackryan serve-mcp` stdio process with `case_search`

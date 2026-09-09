@@ -48,8 +48,10 @@ from fastapi.testclient import TestClient
 from jackryan.errors import NotFoundError
 from jackryan.ingestion.chunker import chunk_text
 from jackryan.interfaces.mcp.server import build_mcp_server
+from jackryan.interfaces.mcp.shapes import one_line
 from jackryan.server import create_app
 from jackryan.services.ingestion import MAX_DOCUMENT_OFFSET, MAX_PASSAGE_PAGE
+from jackryan.storage.port import Chunk
 
 # Long enough for several passages at the test contract's 400-character chunks,
 # under two headings so `heading_path` is exercised rather than defaulted, and
@@ -161,12 +163,19 @@ def ingested(context, casefile, dump, message):
 
 
 @pytest.fixture
-def expected_spans(context, ingested):
-    """The passage spans the chunker produced, in the order it produced them.
+def expected_passages(context, ingested):
+    """Every field of the index the chunker decides, in the order it decided them.
 
-    An oracle from the writing side of the pipeline. The listing under test is
-    on the reading side, so this cannot be satisfied by a query that agrees with
-    itself.
+    An oracle from the *writing* side of the pipeline: `chunk_text` is what
+    produced the rows, and the listing under test only reads them, so this
+    cannot be satisfied by a query that agrees with itself.
+
+    It carries the span, the stored length and the heading path — not the span
+    alone, which is what it carried first. Review established that with only
+    spans asserted, aliasing `LENGTH(c.text)` to `0` or to `c.char_end`, or
+    aliasing `heading_path` to any non-empty column, left every test in this
+    file green: the two derived values were returned by the query and compared
+    against nothing but themselves.
     """
     survey, _, _ = ingested
     pieces = chunk_text(
@@ -174,23 +183,30 @@ def expected_spans(context, ingested):
         max_chars=context.config.contract.chunk_max_chars,
         overlap_chars=context.config.contract.chunk_overlap_chars,
     )
-    return [(piece.char_start, piece.char_end) for piece in pieces]
+    return [
+        (piece.char_start, piece.char_end, len(piece.text), piece.heading_path)
+        for piece in pieces
+    ]
 
 
 # -- the service ----------------------------------------------------------
 
 
 def test_the_pages_together_carry_every_passage_exactly_once(
-    context, casefile, ingested, expected_spans
+    context, casefile, ingested, expected_passages
 ):
     """Paged to its end, the listing reproduces the chunker's own sequence.
+
+    Every field the chunker decided is compared, not the spans alone: the
+    stored length and the heading path are derived by the query and would
+    otherwise be checked against nothing but themselves.
 
     Bounded for the reason the document sweep is: a `total_matching` counted
     under a wider predicate than the rows keeps `truncated` true forever, and a
     test that hangs reports nothing.
     """
     survey, _, _ = ingested
-    seen: list[tuple[int, int]] = []
+    seen: list[tuple[int, int, int, str]] = []
     ordinals: list[int] = []
     identifiers: list[str] = []
     offset, calls = 0, 0
@@ -199,10 +215,13 @@ def test_the_pages_together_carry_every_passage_exactly_once(
             casefile.short_id, survey.short_id, offset, 2
         )
         calls += 1
-        assert page.total_matching == len(expected_spans)
+        assert page.total_matching == len(expected_passages)
         assert page.document is not None and page.document.id == survey.id
         assert len(page.passages) <= 2
-        seen.extend((p.char_start, p.char_end) for p in page.passages)
+        seen.extend(
+            (p.char_start, p.char_end, p.characters, p.heading_path)
+            for p in page.passages
+        )
         ordinals.extend(p.ordinal for p in page.passages)
         identifiers.extend(p.id for p in page.passages)
         if not page.truncated:
@@ -213,8 +232,28 @@ def test_the_pages_together_carry_every_passage_exactly_once(
         raise AssertionError(f"the listing never ended after {calls} calls")
 
     assert calls > 1, "a fixture that fits in one page cannot exercise a boundary"
-    assert seen == expected_spans
-    assert ordinals == list(range(len(expected_spans)))
+    assert seen == expected_passages
+    assert ordinals == list(range(len(expected_passages)))
+    # A premise of the heading comparison: an all-empty heading path would not
+    # distinguish that column from any other empty one.
+    assert any(heading for *_, heading in expected_passages), (
+        "the fixture must hold a heading or `heading_path` proves nothing"
+    )
+    # **`characters` cannot be distinguished from the span here, and that is
+    # measured rather than assumed.** Asserting that some passage's stored
+    # length differs from `char_end - char_start` was tried and fails for every
+    # passage: `a-chunk-begins-where-its-text-does` made
+    # `source[char_start:char_end] == text` an invariant of the chunker, so the
+    # two are equal for every row this pipeline writes. It is asserted in that
+    # direction instead, which is the honest claim and still catches a length
+    # aliased to a constant or to another column — and it is why the mutation
+    # table records the `LENGTH(text)` → span mutation as GREEN by construction
+    # rather than as an unguarded field. The field earns its place only on a
+    # corpus written before that invariant, whose rows describe the untrimmed
+    # window, and no such corpus is constructed here.
+    assert all(
+        characters == end - start for start, end, characters, _ in expected_passages
+    ), "the chunker no longer records the trimmed span"
     # The id set from a different code path, so a query that lost or duplicated
     # a row is caught even where its spans happen to line up.
     assert sorted(identifiers) == sorted(
@@ -224,7 +263,7 @@ def test_the_pages_together_carry_every_passage_exactly_once(
 
 
 def test_the_count_is_of_this_document_and_not_the_casefile(
-    context, casefile, ingested, expected_spans
+    context, casefile, ingested, expected_passages
 ):
     """`total_matching` counts this document's passages, not the casefile's.
 
@@ -242,7 +281,7 @@ def test_the_count_is_of_this_document_and_not_the_casefile(
             casefile.short_id, include_expanded=True
         )
     )
-    assert page.total_matching == len(expected_spans)
+    assert page.total_matching == len(expected_passages)
     assert casefile_wide > page.total_matching, (
         "the fixture must hold passages outside this document or the count proves nothing"
     )
@@ -348,6 +387,65 @@ def test_the_store_floors_its_own_bounds(context, ingested):
     assert negative.offset == 0
     assert negative.continue_from == 2
     assert [p.ordinal for p in negative.passages] == [0, 1]
+
+
+def test_two_passages_sharing_an_ordinal_still_page_in_a_total_order(
+    context, casefile, ingested
+):
+    """The ordering ends in a tiebreak, and this is what can see it.
+
+    `mcp-tool-surface` requires an ordering in which a page boundary cannot
+    fall inside a tie, and the port declaration makes it a SHALL. `ordinal`
+    alone does not satisfy it: `chunks` enforces no uniqueness on
+    `(document_id, ordinal)` — the chunker happens to emit them sequentially,
+    which is why review found that dropping `, char_start, id` from both
+    orderings left the whole suite green.
+
+    So the tie is built rather than waited for. `replace_chunks` stores whatever
+    chunks it is given, so two passages share ordinal 0 here, and the document
+    is paged one row at a time: without a tiebreak SQLite may return the same
+    row for both pages or neither, and every page would still be individually
+    well-formed, which is what makes the defect invisible without this test.
+
+    A `text` of different lengths, so `characters` distinguishes the two rows
+    even if their spans did not.
+    """
+    survey, _, _ = ingested
+    tied = [
+        Chunk(
+            id="a" * 32,
+            document_id=survey.id,
+            casefile_id=survey.casefile_id,
+            ordinal=0,
+            heading_path="First",
+            text="the earlier of two passages at one ordinal",
+            char_start=0,
+            char_end=42,
+        ),
+        Chunk(
+            id="b" * 32,
+            document_id=survey.id,
+            casefile_id=survey.casefile_id,
+            ordinal=0,
+            heading_path="Second",
+            text="the later one, longer than the first",
+            char_start=100,
+            char_end=136,
+        ),
+    ]
+    context.store.replace_chunks(
+        survey.id, tied, [[0.5] * context.config.contract.embed_dimensions] * 2, []
+    )
+
+    seen: list[str] = []
+    for offset in (0, 1):
+        page = context.store.list_document_passage_page(survey.id, offset, 1)
+        assert page.total_matching == 2
+        assert len(page.passages) == 1
+        seen.append(page.passages[0].id)
+
+    assert seen == ["a" * 32, "b" * 32], "the tie was not broken by the passage's place"
+    assert len(set(seen)) == 2, "one page boundary inside a tie repeated a passage"
 
 
 # -- the agent surface ----------------------------------------------------
@@ -533,14 +631,24 @@ async def test_an_empty_index_explains_itself_rather_than_denying_the_document(
 
 
 @pytest.mark.anyio
-async def test_the_index_carries_no_passage_text(context, casefile, ingested):
+async def test_the_index_carries_no_passage_text(
+    context, casefile, ingested, expected_passages
+):
     """A payload unfenced because it carries no prose must carry none.
 
     `listing_payload` is unfenced on exactly that promise, and
     `untrusted-content-boundary` says such a payload is not the one to carry
-    corpus text. Checked against the document's own sentences rather than
-    against a list of expected keys: a row that gained a `preview` under any
-    name would still be caught.
+    corpus text.
+
+    **Two hand-picked sentences were not enough, and the first version of this
+    test said they were.** Review established that a clipped opening of each
+    passage — the exact defect `CLAUDE.md` and the change's `design.md` call
+    "the obvious way to make a passage index selectable" — passes a
+    whole-sentence probe as long as the clip is shorter than the sentence, so a
+    thirty-character `preview` under any key went uncaught. Two assertions
+    close it: the row's key set is pinned exactly, and each passage's own
+    opening characters are probed, taken from the chunker's oracle rather than
+    chosen by hand.
     """
     survey, _, _ = ingested
     server = build_mcp_server(context)
@@ -551,6 +659,26 @@ async def test_the_index_carries_no_passage_text(context, casefile, ingested):
         {"casefile": casefile.short_id, "document": survey.id, "limit": MAX_PASSAGE_PAGE},
     )
     rendered = json.dumps(index, ensure_ascii=False)
+    for row in index["results"]:
+        assert set(row) == {
+            "chunk_id",
+            "short_id",
+            "document_id",
+            "ordinal",
+            "heading_path",
+            "char_start",
+            "char_end",
+            "characters",
+        }, f"the row gained a field: {sorted(row)}"
+    # The opening of every passage, at a length a clipped preview would exceed.
+    # A heading path is corpus-derived metadata and legitimately appears, so the
+    # probe skips the passages whose text begins with their own heading.
+    for start, end, _, heading in expected_passages:
+        opening = survey.extracted_text[start : start + 24]
+        if opening in heading:
+            continue
+        assert opening in survey.extracted_text, "the probe must be text of the document"
+        assert opening not in rendered, f"the index returned passage text: {opening!r}"
     for sentence in ("Dredging line 3 of the survey record.", DISTINCTIVE):
         assert sentence in survey.extracted_text, "the probe must be text of the document"
         assert sentence not in rendered, "the index returned the passage's words"
@@ -595,6 +723,15 @@ async def test_rest_and_the_agent_surface_agree_on_a_middle_page(
     for rest_row, tool_row in zip(rest_page["passages"], tool_page["results"]):
         for field in ("document_id", "ordinal", "char_start", "char_end", "characters"):
             assert rest_row[field] == tool_row[field], f"the surfaces disagree on {field}"
+        assert rest_row["short_id"] == tool_row["short_id"]
+        # Stated as a relationship rather than as equality, because it is one:
+        # REST returns corpus values raw, as it does for a filename, and the
+        # agent surface collapses them. A heading path may be up to
+        # `MAX_HEADING_PATH_CHARS` (512) long, so asserting equality would be
+        # true of this fixture and false in general — and comparing nothing,
+        # which is what this test did first, lets the two surfaces silently
+        # read different columns.
+        assert tool_row["heading_path"] == one_line(rest_row["heading_path"], 200)
 
 
 @pytest.mark.anyio

@@ -201,6 +201,37 @@ and why it was parked.
   stripping and escaping is a change of its own. It is the finding worth landing
   next after the byte bound above.
 
+  **The surface is wider than this note first enumerated.**
+  `cite-a-document-reached-by-listing` added `case_list_passages`, whose rows
+  carry a corpus-derived `heading_path` through the same helper at 200
+  characters and again at 60 in `formatted`, and whose payload echoes a resolved
+  document's `filename` and `found_at` through it as well. So the sinks are now
+  four fields on four tools rather than the three named above. Found by the
+  security review of that change, which also established two limits worth
+  recording: a heading path cannot forge a *row*, because
+  `chunker._heading_trails` builds it from `splitlines(keepends=True)` output
+  that is stripped, so no line separator can enter one by construction; and
+  `search_payload` passes `heading_path` to `provenance()` **uncollapsed**, so
+  the pre-existing search path is looser with the same value than either
+  listing is. The exposure remains terminal manipulation and extension
+  spoofing, not row forging, and grants no additional data access. Still one
+  sanitiser, still its own change.
+
+- **`content_notice` rides on payloads that contain no fence, and its wording
+  names one.** `NOTICE` opens "The fenced text below is material from the
+  corpus", and `case_mentions`, `case_mention_documents` and now
+  `case_list_passages` attach it to `listing_payload`, which by construction
+  emits no nonce and no delimiters. The intent is right — those payloads do
+  carry corpus-derived headings, identifiers and filenames, and
+  `untrusted-content-boundary` wants that said — and the alternative
+  `case_list_documents` takes, emitting the same corpus values with no notice at
+  all, is worse. The residual risk is a model shown a notice whose first clause
+  is false of its payload learning to weight the notice less where it is
+  load-bearing. Parked: the fix is a second, shorter constant for prose-free
+  payloads, which is a change to a published untrusted-content claim rather than
+  a wording tweak. Raised by the security review of
+  `cite-a-document-reached-by-listing`; the pattern predates it by two tools.
+
 - **~~A document reached by listing cannot be cited without a search.~~**
   Closed by `cite-a-document-reached-by-listing`, which added
   `case_list_passages`: a bounded, paged index of one document's stored

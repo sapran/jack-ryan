@@ -45,6 +45,16 @@ own words are one call away through the tools that return a passage and a
 citation. A payload whose stated reason for needing no fence is that it carries
 no corpus prose SHALL NOT be the payload that carries prose.
 
+An entry MAY carry the heading path of the section the passage came from, and
+that is the only corpus-derived value an entry carries. It is metadata of the
+same kind as the filename a document listing already carries, collapsed to one
+line on the same terms, and it is what makes a structured document navigable by
+its own divisions rather than by position alone. Stating the permission
+explicitly is deliberate: without it, a reader holding this requirement alone
+could either strip the heading path as a violation or admit a clipped opening of
+the passage as "not the passage's text", and the second reading is the one the
+requirement exists to forbid.
+
 #### Scenario: A document reached by listing is cited with no search
 
 - **WHEN** a document is reached only by listing a container's contents, its passages are enumerated, and one of them is cited
@@ -68,4 +78,4 @@ no corpus prose SHALL NOT be the payload that carries prose.
 #### Scenario: The enumeration carries no passage prose
 
 - **WHEN** a document's passages are enumerated
-- **THEN** every entry carries identifiers, a position and a size, and none carries the passage's text
+- **THEN** every entry carries identifiers, a position, a size and at most the heading path of its section, and none carries the passage's text
