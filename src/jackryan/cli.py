@@ -17,7 +17,15 @@ from .ingestion.containers import rar_status
 from .ingestion.legacy_office import converter_status
 from .app import build_context
 from .errors import JackRyanError
-from .rendering import render_casefile, render_document, render_hit, render_report
+from .rendering import (
+    location_paths,
+    render_carrier_page,
+    render_casefile,
+    render_document,
+    render_hit,
+    render_location_record,
+    render_report,
+)
 from .services.ingestion import locations_verdict
 from .services.search import DEFAULT_CARRIER_PAGE
 from .storage.port import Casefile, Document, SearchHit
@@ -316,24 +324,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             page = context.search.mention_documents(
                 args.casefile, args.mention, args.offset, args.limit
             )
-            envelope = {
-                "mention": args.mention,
-                "kind": page.kind,
-                "value": page.value,
-                "total": len(page.carriers),
-                "offset": page.offset,
-                "total_matching": page.total_matching,
-                "truncated": page.truncated,
-                "continue_from": page.continue_from,
-                "documents": [
-                    {
-                        **_render_document(carrier.document),
-                        "mentions": carrier.mentions,
-                        "chunk_id": carrier.chunk_id,
-                    }
-                    for carrier in page.carriers
-                ],
-            }
+            envelope = render_carrier_page(
+                page, args.mention, render_row=_render_document
+            )
             if args.json:
                 # The envelope, not a bare row list as `mentions` prints: the
                 # paging counts are the point of a paged command, and a list
@@ -390,29 +383,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.casefile, args.reference
                 )
                 row = _render_document(record.document)
-                row["locations_recorded"] = record.verdict
-                # Set unconditionally here, unlike the listing above: this is a
-                # single document's full record, and a person reading it needs
-                # `1` to mean one rather than having to infer it from an absent
-                # key.
-                row["locations"] = record.recorded.total
+                block = render_location_record(record, drop_empty_note=True)
                 if args.json:
-                    row["observed_at"] = [
-                        location.path for location in record.observed_at
-                    ]
-                    row["locations_truncated"] = record.truncated
-                    if record.note:
-                        row["locations_note"] = record.note
+                    row.update(block)
                     _print(row, True)
                 else:
+                    # Two of the block's five keys, never the block itself:
+                    # the other three are printed as their own lines below,
+                    # and a row carrying them as well would say each thing
+                    # twice. Read off the block rather than off the record, so
+                    # a person's two columns and the JSON payload's cannot
+                    # come to disagree.
+                    row["locations_recorded"] = block["locations_recorded"]
+                    row["locations"] = block["locations"]
                     _print(row, False)
                     # Every recorded location, each with its root, rather
                     # than "the others": the document's own path above is
                     # relative to a root no column holds, so listing only the
                     # rest would show a different set depending on which copy
                     # was ingested first.
-                    for location in record.observed_at:
-                        print(f"observed at {location.path}")
+                    # Through the shared rendering, so these lines and the
+                    # JSON block above cannot come to name different places.
+                    for path in location_paths(record):
+                        print(f"observed at {path}")
                     if record.truncated:
                         print(f"… {record.recorded.total} locations recorded in total")
                     # The wording comes from the record, never written out here:

@@ -815,6 +815,55 @@ def test_the_two_human_surfaces_return_the_same_ingest_result(
     assert any("failed to be read" in line for line in cli_payload["limitations"])
 
 
+# The three keys of the location detail block, which now have exactly one
+# spelling. `locations_recorded` and `locations` are deliberately not here: the
+# CLI's *listing* adds both as its own qualifiers, taken off the document rather
+# than off a location record, and REST's listing route reports neither — so
+# those two spellings in `cli.py` are not a copy of this block. The argument is
+# in `cli._render_document`.
+LOCATION_DETAIL_KEYS = ("observed_at", "locations_truncated", "locations_note")
+
+# The package directory, reached through an adapter module rather than built out
+# of this file's own path, so moving the tests cannot leave the guard below
+# scanning nothing.
+PACKAGE = Path(cli.__file__).resolve().parent
+
+
+def test_only_the_shared_renderer_spells_the_location_detail_keys():
+    """A third human surface cannot re-copy a block it cannot see the keys of.
+
+    Both human surfaces built this five-key block by hand, and the parity tests
+    here and in `tests/test_document_locations.py` compared the two that
+    existed. Neither could have caught a third — and "how many places was this
+    found" is exactly the sort of thing a next REST route reports. So the
+    spelling is now the thing under test: the keys live in `rendering.py` and
+    appear nowhere in either adapter, which leaves calling the renderer as the
+    only way to emit them.
+
+    Scanned as text rather than by importing anything, because what is
+    forbidden is a spelling and an import cannot see one. The adapters are held
+    to the bare substring, which is stricter than a quoted key: a comment
+    naming one fails too, deliberately, because a re-copied block usually
+    arrives with a comment explaining itself.
+    """
+    rendering = (PACKAGE / "rendering.py").read_text(encoding="utf-8")
+    spelled = [key for key in LOCATION_DETAIL_KEYS if f'"{key}"' in rendering]
+    assert spelled == list(LOCATION_DETAIL_KEYS), (
+        "the shared renderer does not spell the location keys, so the scan below "
+        f"would pass against an adapter that had copied every one: found {spelled}"
+    )
+
+    for name in ("cli.py", "server.py"):
+        source = (PACKAGE / name).read_text(encoding="utf-8")
+        copied = sorted(key for key in LOCATION_DETAIL_KEYS if key in source)
+        assert copied == [], (
+            f"{name} spells {copied}, which `render_location_record` already "
+            "returns. Two renderings of the caveat a caller weighs before "
+            "trusting the corpus are free to diverge, and the divergence is "
+            "invisible — which is why the block moved to one place."
+        )
+
+
 # -- the exhaustive path out of the inventory --------------------------------
 
 # Hand-counted from the `identified` fixture's own text: `invoice.md` writes the

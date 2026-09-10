@@ -1,6 +1,6 @@
 """What the two human surfaces agree on when they describe a domain object.
 
-The CLI and the REST route render the same three objects for the same kind of
+The CLI and the REST route render the same objects for the same kind of
 reader — a person, or a script a person wrote. They had written those renderings
 twice, and the copies had drifted: identical for a casefile, differing by a
 rounding call for a search hit, and by five fields for a document. Nothing
@@ -20,11 +20,11 @@ differences look like drift and invite someone to "fix" them.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from .ingestion.quality_gate import read_as
-from .services.ingestion import IngestReport
-from .storage.port import Casefile, Document, SearchHit
+from .services.ingestion import DocumentLocationRecord, IngestReport
+from .storage.port import Casefile, Document, MentionDocumentPage, SearchHit
 
 
 def render_casefile(casefile: Casefile) -> dict[str, Any]:
@@ -163,4 +163,107 @@ def render_hit(hit: SearchHit, *, round_scores: bool) -> dict[str, Any]:
         # different word, and a quotation from a scan can be fluent and wrong.
         "read_as": read_as(hit.document.text_source),
         "text": hit.text,
+    }
+
+
+def location_paths(record: DocumentLocationRecord) -> list[str]:
+    """Every recorded place, as the paths a payload carries and a person reads.
+
+    Its own function because two callers need this list — the block below, and
+    the CLI's line-by-line text output. Rendering it in both places is how
+    every other pair in this module came to disagree, and it would also put
+    the block's key names back into an adapter, which
+    `tests/test_result_shape.py` now forbids.
+    """
+    return [location.path for location in record.observed_at]
+
+
+def render_location_record(
+    record: DocumentLocationRecord, *, drop_empty_note: bool
+) -> dict[str, Any]:
+    """Where a document was observed, as both human surfaces report it.
+
+    Five keys in one place rather than two hand-built copies. A caller weighs
+    this block before trusting the corpus — it says whether the record reaches
+    back to when the document was stored — and two renderings of that caveat
+    are free to diverge invisibly, which is the argument the record's own
+    `note` already makes for wording the sentence once.
+
+    The verdict and the count are unconditional, unlike the CLI *listing*
+    qualifiers that share their names: this is one document's full record, and
+    a person reading it needs `1` to mean one rather than having to infer it
+    from an absent key.
+
+    `drop_empty_note` is the one thing the two surfaces disagree about. REST
+    always carries `locations_note`, because a JSON consumer branching on a
+    missing key is worse served than one branching on an empty string — the
+    same reason `server.serialize_document` always carries a summary. The CLI
+    omits it, so a person is never shown an empty caveat. A parameter rather
+    than a second copy, exactly as `render_hit`'s rounding is, because
+    preserving both payloads byte-identically is the point of moving them here.
+    """
+    block: dict[str, Any] = {
+        "locations_recorded": record.verdict,
+        "locations": record.recorded.total,
+        "observed_at": location_paths(record),
+        "locations_truncated": record.truncated,
+    }
+    if record.note or not drop_empty_note:
+        # Absent rather than present-and-empty where a surface asked for that.
+        # The CLI's payload has never carried an empty caveat, and a change
+        # that claims to move a payload is not the place to start.
+        block["locations_note"] = record.note
+    return block
+
+
+def render_carrier_page(
+    page: MentionDocumentPage,
+    mention: str,
+    *,
+    render_row: Callable[[Document], dict[str, Any]],
+) -> dict[str, Any]:
+    """One page of the documents carrying an identifier, as both surfaces return it.
+
+    The envelope is where the two surfaces had nothing to disagree about and
+    everything to lose: its four paging scalars are what separates "this is
+    all of them" from "this is the first page", and a surface computing one of
+    them its own way agrees on every row while misleading about coverage.
+    `tests/test_result_shape.py` compares all four across every surface for
+    that reason; this makes two of them one definition rather than two that
+    happen to match.
+
+    `mention` is passed in rather than read off the page because it is what the
+    caller asked for, while `page.value` beside it is the normalised form the
+    counts are grouped by. Echoing the request is how a caller sees the two
+    differ.
+
+    `render_row` is passed in because the row is the one thing the two
+    surfaces genuinely differ on: the CLI's comes from `cli._render_document`
+    and REST's from `server.serialize_document`, which is `render_document`
+    plus REST's own extras. A parameter rather than a flag, so a third surface
+    brings its own row along instead of adding a branch here.
+    """
+    return {
+        "mention": mention,
+        "kind": page.kind,
+        "value": page.value,
+        # This page's rows, beside the whole carrier set below. A caller that
+        # cannot tell the two apart reports the first page as coverage.
+        "total": len(page.carriers),
+        "offset": page.offset,
+        "total_matching": page.total_matching,
+        "truncated": page.truncated,
+        "continue_from": page.continue_from,
+        "documents": [
+            {
+                **render_row(carrier.document),
+                # The two values that belong to the identifier rather than to
+                # the document: how many times this document carries it, and
+                # the passage that makes the document citable with no ranked
+                # search having run.
+                "mentions": carrier.mentions,
+                "chunk_id": carrier.chunk_id,
+            }
+            for carrier in page.carriers
+        ],
     }
