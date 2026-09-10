@@ -16,12 +16,7 @@ from mcp.types import ToolAnnotations
 
 from ... import __version__
 from ...app import Context
-from ...services.ingestion import (
-    DEFAULT_DOCUMENT_PAGE,
-    DEFAULT_PASSAGE_PAGE,
-    locations_verdict,
-)
-from ...services.search import DEFAULT_CARRIER_PAGE
+from ...services.ingestion import DEFAULT_LISTING_PAGE, locations_verdict
 from ...storage.port import (
     Casefile,
     Document,
@@ -486,7 +481,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         parent: str = "",
         expanded: bool = False,
         offset: int = 0,
-        limit: int = DEFAULT_DOCUMENT_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> dict[str, Any]:
         # Positional, and that is load-bearing for the same reason `case_search`
         # states at its own call: `anyio.to_thread.run_sync` forwards only
@@ -555,7 +550,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         casefile: str,
         document: str,
         offset: int = 0,
-        limit: int = DEFAULT_PASSAGE_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> dict[str, Any]:
         # Positional, and load-bearing for the reason `case_search` states at
         # its own call: `anyio.to_thread.run_sync` forwards no keywords, so a
@@ -667,7 +662,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         casefile: str,
         mention: str,
         offset: int = 0,
-        limit: int = DEFAULT_CARRIER_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> dict[str, Any]:
         # Positional, and load-bearing for the reason `case_search` states at
         # its own call: `anyio.to_thread.run_sync` forwards no keywords, so a

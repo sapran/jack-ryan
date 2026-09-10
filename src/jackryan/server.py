@@ -19,8 +19,7 @@ from . import __version__
 from .ingestion.containers import rar_status
 from .ingestion.legacy_office import converter_status
 from .app import Context, build_context
-from .services.ingestion import DEFAULT_DOCUMENT_PAGE, DEFAULT_PASSAGE_PAGE
-from .services.search import DEFAULT_CARRIER_PAGE
+from .services.ingestion import DEFAULT_LISTING_PAGE
 from .rendering import (
     render_carrier_page,
     render_casefile,
@@ -214,7 +213,7 @@ def create_app(context: Context | None = None) -> FastAPI:
         parent: str = "",
         expanded: bool = False,
         offset: int = 0,
-        limit: int = DEFAULT_DOCUMENT_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> dict[str, Any]:
         ctx: Context = request.app.state.context
         # Off the event loop, like the search and mention routes beside it: this
@@ -265,7 +264,7 @@ def create_app(context: Context | None = None) -> FastAPI:
         reference: str,
         document_reference: str,
         offset: int = 0,
-        limit: int = DEFAULT_PASSAGE_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> dict[str, Any]:
         """One document's stored passages, a bounded page at a time.
 
@@ -361,7 +360,7 @@ def create_app(context: Context | None = None) -> FastAPI:
         reference: str,
         mention: str,
         offset: int = 0,
-        limit: int = DEFAULT_CARRIER_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> dict[str, Any]:
         """Every document carrying one identifier, a bounded page at a time."""
         ctx: Context = request.app.state.context

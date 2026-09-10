@@ -53,7 +53,7 @@ from jackryan.interfaces.mcp.server import (
     build_mcp_server,
 )
 from jackryan.server import create_app
-from jackryan.services.ingestion import MAX_DOCUMENT_PAGE
+from jackryan.services.ingestion import MAX_LISTING_PAGE
 from jackryan.storage.port import (
     Document,
     DocumentPage,
@@ -228,8 +228,8 @@ def test_an_over_large_limit_is_clamped_rather_than_refused(context, casefile, c
         casefile.short_id, container.short_id, limit=10_000
     )
 
-    assert page.limit == MAX_DOCUMENT_PAGE
-    assert len(page.documents) <= MAX_DOCUMENT_PAGE
+    assert page.limit == MAX_LISTING_PAGE
+    assert len(page.documents) <= MAX_LISTING_PAGE
     assert len(page.documents) == 6
 
 

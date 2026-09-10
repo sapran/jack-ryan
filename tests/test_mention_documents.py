@@ -44,7 +44,7 @@ import pytest
 from jackryan.errors import ValidationError
 from jackryan.interfaces.mcp.server import build_mcp_server
 from jackryan.mentions import MENTION_KINDS
-from jackryan.services.search import MAX_CARRIER_PAGE
+from jackryan.services.ingestion import MAX_LISTING_PAGE
 
 # The identifier under test, and one that normalises to a different value while
 # differing from it by a single character.
@@ -225,7 +225,7 @@ def carriers(context, casefile, tmp_path):
         assert report.failed == 0, f"the fixture failed to ingest {name}"
 
     stored = context.ingestion.list_document_page(
-        casefile.short_id, offset=0, limit=MAX_CARRIER_PAGE
+        casefile.short_id, offset=0, limit=MAX_LISTING_PAGE
     )
     # Vacuity guards. Every assertion below is about sixty-three carriers among
     # sixty-six documents; a fixture that quietly stopped producing either would
@@ -352,7 +352,7 @@ def test_an_occurrence_inside_a_chunk_overlap_is_one_occurrence(
     while staying green. The sibling in `tests/test_mentions.py` asserts the
     same premise for the same reason; this file's copy had dropped it.
     """
-    pages = _sweep(context, casefile, CARRIED, MAX_CARRIER_PAGE)
+    pages = _sweep(context, casefile, CARRIED, MAX_LISTING_PAGE)
     found = {c.document.filename: c for page in pages for c in page.carriers}
     overlap = found[OVERLAP]
 
@@ -431,13 +431,13 @@ def test_the_callers_spelling_is_normalised_before_matching(
 def test_a_kinded_enumeration_matches_only_that_kind(context, casefile, carriers):
     """A named kind narrows; the wrong kind is empty, not refused."""
     matched = context.search.mention_documents(
-        casefile.short_id, f"email:{CARRIED}", limit=MAX_CARRIER_PAGE
+        casefile.short_id, f"email:{CARRIED}", limit=MAX_LISTING_PAGE
     )
     assert matched.total_matching == EXPECTED_CARRIERS
     assert matched.kind == "email"
 
     other = context.search.mention_documents(
-        casefile.short_id, f"iban:{CARRIED}", limit=MAX_CARRIER_PAGE
+        casefile.short_id, f"iban:{CARRIED}", limit=MAX_LISTING_PAGE
     )
     assert other.carriers == []
     assert other.total_matching == 0
@@ -493,10 +493,10 @@ def test_the_enumeration_is_confined_to_its_casefile(context, casefile, carriers
     assert not context.ingestion.ingest(other.short_id, folder).failed
 
     mine = context.search.mention_documents(
-        casefile.short_id, CARRIED, limit=MAX_CARRIER_PAGE
+        casefile.short_id, CARRIED, limit=MAX_LISTING_PAGE
     )
     theirs = context.search.mention_documents(
-        other.short_id, CARRIED, limit=MAX_CARRIER_PAGE
+        other.short_id, CARRIED, limit=MAX_LISTING_PAGE
     )
 
     assert mine.total_matching == EXPECTED_CARRIERS
@@ -546,7 +546,7 @@ def test_a_mention_naming_another_casefiles_document_is_not_a_carrier(
     context.store._db.commit()
 
     page = context.search.mention_documents(
-        casefile.short_id, CARRIED, limit=MAX_CARRIER_PAGE
+        casefile.short_id, CARRIED, limit=MAX_LISTING_PAGE
     )
 
     assert hidden.filename not in _names(page), (
@@ -568,13 +568,13 @@ def test_an_over_large_limit_is_clamped_rather_than_refused(context, casefile, c
     """The reported bound is the one applied, and it is the ceiling.
 
     Asserted on `page.limit` rather than on the row count: the fixture holds
-    fewer carriers than `MAX_CARRIER_PAGE`, so a row count of
-    `min(EXPECTED_CARRIERS, MAX_CARRIER_PAGE)` is just `EXPECTED_CARRIERS` and
+    fewer carriers than `MAX_LISTING_PAGE`, so a row count of
+    `min(EXPECTED_CARRIERS, MAX_LISTING_PAGE)` is just `EXPECTED_CARRIERS` and
     holds with no clamp at all.
     """
     page = context.search.mention_documents(casefile.short_id, CARRIED, limit=10_000)
 
-    assert page.limit == MAX_CARRIER_PAGE
+    assert page.limit == MAX_LISTING_PAGE
     assert len(page.carriers) == EXPECTED_CARRIERS
 
 

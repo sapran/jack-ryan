@@ -26,8 +26,7 @@ from .rendering import (
     render_location_record,
     render_report,
 )
-from .services.ingestion import locations_verdict
-from .services.search import DEFAULT_CARRIER_PAGE
+from .services.ingestion import DEFAULT_LISTING_PAGE, locations_verdict
 from .storage.port import Casefile, Document, SearchHit
 
 
@@ -175,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     carriers.add_argument("casefile")
     carriers.add_argument("mention", metavar="KIND:VALUE")
     carriers.add_argument("--offset", type=int, default=0)
-    carriers.add_argument("--limit", type=int, default=DEFAULT_CARRIER_PAGE)
+    carriers.add_argument("--limit", type=int, default=DEFAULT_LISTING_PAGE)
 
     document = sub.add_parser("document", help="inspect ingested documents").add_subparsers(
         dest="document_command", required=True

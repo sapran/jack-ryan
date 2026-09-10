@@ -50,7 +50,7 @@ from jackryan.ingestion.chunker import chunk_text
 from jackryan.interfaces.mcp.server import build_mcp_server
 from jackryan.interfaces.mcp.shapes import one_line
 from jackryan.server import create_app
-from jackryan.services.ingestion import MAX_DOCUMENT_OFFSET, MAX_PASSAGE_PAGE
+from jackryan.services.ingestion import MAX_DOCUMENT_OFFSET, MAX_LISTING_PAGE
 from jackryan.storage.port import Chunk
 
 # Long enough for several passages at the test contract's 400-character chunks,
@@ -304,9 +304,9 @@ def test_both_bounds_are_clamped_at_both_ends(context, casefile, ingested):
     assert len(zero.passages) == 1, "a limit of 0 must be floored to one row"
 
     over = context.ingestion.list_document_passage_page(
-        casefile.short_id, survey.id, 0, MAX_PASSAGE_PAGE * 10
+        casefile.short_id, survey.id, 0, MAX_LISTING_PAGE * 10
     )
-    assert over.limit == MAX_PASSAGE_PAGE
+    assert over.limit == MAX_LISTING_PAGE
     assert len(over.passages) == total
 
     negative = context.ingestion.list_document_passage_page(
@@ -678,7 +678,7 @@ async def test_the_index_carries_no_passage_text(
     index = await _call(
         server,
         "case_list_passages",
-        {"casefile": casefile.short_id, "document": survey.id, "limit": MAX_PASSAGE_PAGE},
+        {"casefile": casefile.short_id, "document": survey.id, "limit": MAX_LISTING_PAGE},
     )
     rendered = json.dumps(index, ensure_ascii=False)
     for row in index["results"]:
