@@ -327,10 +327,13 @@ def test_no_adapter_reaches_the_store():
 
 # -- the seam's vocabulary: what a port method may hand back --------------
 
+import ast
+from typing import NamedTuple
 
 #: Containers with no field names of their own. A `tuple` is refused in every
-#: form; a `dict` is refused unless it is a keyed batch of domain objects, for
-#: which see below.
+#: form — bare, subscripted, behind a `| None`, or held inside another
+#: container — while a `dict` is refused unless it is a keyed batch of domain
+#: objects, for which see below.
 _UNNAMED_CONTAINERS = {"dict", "tuple"}
 
 #: A floor, not the exact count, so removing a method does not fail this for
@@ -338,6 +341,183 @@ _UNNAMED_CONTAINERS = {"dict", "tuple"}
 #: methods are declared today, and a scan that inspects fewer than this has
 #: stopped reading the protocol rather than found it clean.
 _FEWEST_PLAUSIBLE_PORT_METHODS = 25
+
+#: The same kind of floor for the allow-list a mapping's values are judged
+#: against: `port.py` declares eighteen dataclasses today. A derivation that
+#: collected none of them would not go quiet — it would refuse `get_chunks`,
+#: the one mapping the port legitimately declares — but it would fail for a
+#: reason that has nothing to do with the rule, and a reader would go looking
+#: at `get_chunks`. This separates the two failures in the message.
+_FEWEST_PLAUSIBLE_DOMAIN_TYPES = 12
+
+#: A seam written wrong, for the positive control below: a bare pair, a pair
+#: behind the `| None` that four real port methods already use, that pair
+#: inside two different containers, and a mapping of a class whose field names
+#: are strings. Every one of the last four passed the first version of this
+#: guard, which judged the outermost annotation node only and took every class
+#: in the module for a domain type. The clean shapes are here too, so the
+#: control also shows the detector is not simply refusing everything.
+_A_SEAM_WRITTEN_WRONG = '''
+from dataclasses import dataclass
+from typing import Protocol, Sequence, TypedDict
+
+
+@dataclass(frozen=True)
+class Casefile:
+    id: str
+
+
+@dataclass(frozen=True)
+class Chunk:
+    id: str
+
+
+class StatisticsRow(TypedDict):
+    ingested: int
+
+
+class StorePort(Protocol):
+    def get_casefile(self) -> Casefile | None: ...
+
+    def list_casefiles(self) -> list[Casefile]: ...
+
+    def get_chunks(self) -> dict[str, Chunk]: ...
+
+    def store_document(self) -> tuple[Casefile, bool]: ...
+
+    def store_document_or_none(self) -> tuple[Casefile, bool] | None: ...
+
+    def list_pairs(self) -> list[tuple[str, int]]: ...
+
+    def sequence_pairs(self) -> Sequence[tuple[str, int]]: ...
+
+    def casefile_statistics(self) -> dict[str, StatisticsRow]: ...
+'''
+
+
+class _SeamReading(NamedTuple):
+    """One reading of a `StorePort` declaration, in named parts.
+
+    Named rather than positional for the reason the guard below enforces: two
+    lists of strings are interchangeable by type, so a reordering would change
+    what every assertion here means while nothing failed.
+    """
+
+    inspected: list[str]
+    offences: list[str]
+    domain_types: set[str]
+
+
+def _decorator_names(node: ast.ClassDef) -> set[str]:
+    """The last name component of each of a class's decorators.
+
+    Structural rather than a spelling: `@dataclass`, `@dataclass(frozen=True)`,
+    `@dataclasses.dataclass` and its called form all yield `dataclass`.
+    """
+    names = set()
+    for decorator in node.decorator_list:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if isinstance(target, ast.Name):
+            names.add(target.id)
+        elif isinstance(target, ast.Attribute):
+            names.add(target.attr)
+    return names
+
+
+def _read_the_seam(source: str) -> _SeamReading:
+    """Read one module's `StorePort` and judge what every method hands back.
+
+    The judgement recurses, because the defect nests. `tuple[Document, bool]`
+    is the shape this rule was written for, and `tuple[Document, bool] | None`,
+    `list[tuple[str, int]]` and `Sequence[tuple[str, int]]` are the same
+    unnamed pair one node further in — the caller still unpacks by position. So
+    a union is judged on both sides, and a subscript whose head is neither
+    `tuple` nor `dict` is judged through to what it holds.
+
+    The allow-list a mapping's values are judged against is derived from the
+    module's `@dataclass` classes, not from every class it declares. A
+    `TypedDict` is a row with its field names moved into strings, which is
+    exactly what this rule refuses; a derivation over every `ClassDef` would
+    have admitted one as a mapping value on the day someone wrote it. The
+    derivation stays structural — no list of type names lives here, so a domain
+    type added tomorrow needs no edit to this test.
+    """
+    module = ast.parse(source)
+    protocol = next(
+        (
+            node
+            for node in module.body
+            if isinstance(node, ast.ClassDef) and node.name == "StorePort"
+        ),
+        None,
+    )
+    assert protocol is not None, (
+        "StorePort was renamed or moved out of port.py; this guard inspected "
+        "nothing, which is how it goes blind rather than red"
+    )
+
+    domain_types = {
+        node.name
+        for node in module.body
+        if isinstance(node, ast.ClassDef) and "dataclass" in _decorator_names(node)
+    }
+
+    def what_is_wrong_with(annotation) -> str:
+        """Why this return annotation is unnamed, or empty if it is fine."""
+        if isinstance(annotation, ast.Name) and annotation.id in _UNNAMED_CONTAINERS:
+            return f"a bare `{annotation.id}`, which carries no field names at all"
+        if isinstance(annotation, ast.BinOp):
+            # `X | None` is already the shape of four port methods, so
+            # `tuple[...] | None` is the most plausible next spelling of this
+            # defect. Either side condemns the whole annotation.
+            return what_is_wrong_with(annotation.left) or what_is_wrong_with(
+                annotation.right
+            )
+        if isinstance(annotation, ast.Subscript):
+            head = annotation.value.id if isinstance(annotation.value, ast.Name) else ""
+            # `dict[K, V]` parses its subscript as a tuple of two nodes; the
+            # value is the last, so a one-argument `dict[...]` is read as its
+            # own value and still judged.
+            inner = annotation.slice
+            held = list(inner.elts) if isinstance(inner, ast.Tuple) else [inner]
+            if head == "tuple":
+                return "a tuple, whose positions are named only where they are unpacked"
+            if head == "dict":
+                for key in held[:-1]:
+                    wrong = what_is_wrong_with(key)
+                    if wrong:
+                        return wrong
+                value = held[-1]
+                if not (isinstance(value, ast.Name) and value.id in domain_types):
+                    return (
+                        "a mapping of something other than a domain object, which "
+                        "puts the field names into strings"
+                    )
+                return ""
+            for element in held:
+                wrong = what_is_wrong_with(element)
+                if wrong:
+                    return wrong
+        return ""
+
+    inspected, offences = [], []
+    for node in protocol.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        inspected.append(node.name)
+        assert node.returns is not None, (
+            f"StorePort.{node.name} declares no return type, so this guard cannot "
+            "read what the seam hands back"
+        )
+        wrong = what_is_wrong_with(node.returns)
+        if wrong:
+            offences.append(
+                f"StorePort.{node.name} -> {ast.unparse(node.returns)}: {wrong}"
+            )
+
+    return _SeamReading(
+        inspected=inspected, offences=offences, domain_types=domain_types
+    )
 
 
 def test_the_port_hands_back_named_values_never_tuples_or_rows():
@@ -357,10 +537,11 @@ def test_the_port_hands_back_named_values_never_tuples_or_rows():
     `dict[str, Chunk]` — chunks keyed by their identifier, which is how a batch
     lookup answers, and every value is still a domain object with named fields.
     So `dict[K, V]` passes exactly when `V` is one of this module's own
-    declared classes; `dict[str, str]` or `dict[str, Any]` does not. The
-    allowed set is derived from `port.py`'s top-level classes rather than
-    written out here, so a domain type added tomorrow needs no edit to this
-    test.
+    `@dataclass` classes; `dict[str, str]`, `dict[str, Any]` and
+    `dict[str, SomeTypedDict]` do not. The allowed set is derived, not written
+    out here, so a domain type added tomorrow needs no edit — and it is derived
+    from the decorator rather than from `ClassDef`, because "every class in
+    `port.py`" would have let the next `TypedDict` in as a mapping value.
 
     **The oracle is the declaration, not a call.** This parses the annotation
     in the source; it never constructs a store and never asks one what it
@@ -373,92 +554,99 @@ def test_the_port_hands_back_named_values_never_tuples_or_rows():
     passes, and passing is exactly how it goes blind instead of red — renaming
     `StorePort`, or moving it to another module, would otherwise leave this
     reporting success over an empty list forever. So the protocol must be
-    found, `store_document` must be among what was read, and the count must
-    reach a plausible floor.
+    found, `store_document` must be among what was read, the method count must
+    reach a plausible floor, and the derived allow-list must too.
 
     What this does not catch, stated so nobody trusts it further than it goes.
-    A method returning a `TypedDict` passes: the annotation is a class name and
-    this reads names, not their definitions. A method returning a domain object
-    that itself wraps an unnamed tuple passes — `IngestionCoverage` already
-    holds a `tuple[str, ...]` field, legitimately, and nothing here inspects a
-    returned type's own fields. So does an alias (`Pair = tuple[Document,
-    bool]`) and the `typing.Tuple`/`typing.Dict` spellings, which this
-    repository does not use. It catches the shape written at the seam, which is
-    the shape a reader copies when adding the next method.
+    A class returned *directly* is read as a name and passes whatever it is, so
+    `-> StatisticsRow` on a `TypedDict` is invisible here; the derivation
+    governs what a mapping may hold, not what a method may name. A domain
+    object that itself wraps an unnamed tuple passes — `IngestionCoverage`
+    already holds a `tuple[str, ...]` field, legitimately, and nothing here
+    inspects a returned type's own fields. So does an alias (`Pair =
+    tuple[Document, bool]`), a quoted annotation, and any mapping spelled with
+    a head this does not know: only the built-in `dict` is held to the
+    domain-object rule, so `Mapping[str, str]` is judged as an ordinary
+    container and its two clean names pass. `typing.Dict` and `typing.Tuple`
+    are the same gap, and this repository uses none of these spellings. It
+    catches the shape written at the seam, which is the shape a reader copies
+    when adding the next method.
     """
-    import ast
     from pathlib import Path
 
     port = Path(__file__).resolve().parents[1] / "src" / "jackryan" / "storage" / "port.py"
     assert port.is_file(), "port.py moved; this guard now checks nothing"
 
-    module = ast.parse(port.read_text(encoding="utf-8"))
-    protocol = next(
-        (
-            node
-            for node in module.body
-            if isinstance(node, ast.ClassDef) and node.name == "StorePort"
-        ),
-        None,
-    )
-    assert protocol is not None, (
-        "StorePort was renamed or moved out of port.py; this guard inspected "
-        "nothing, which is how it goes blind rather than red"
-    )
+    reading = _read_the_seam(port.read_text(encoding="utf-8"))
 
-    domain_types = {
-        node.name
-        for node in module.body
-        if isinstance(node, ast.ClassDef) and node.name != protocol.name
-    }
-
-    def what_is_wrong_with(annotation) -> str:
-        """Why this return annotation is unnamed, or empty if it is fine."""
-        if isinstance(annotation, ast.Name) and annotation.id in _UNNAMED_CONTAINERS:
-            return f"a bare `{annotation.id}`, which carries no field names at all"
-        if isinstance(annotation, ast.Subscript) and isinstance(annotation.value, ast.Name):
-            if annotation.value.id == "tuple":
-                return "a tuple, whose positions are named only where they are unpacked"
-            if annotation.value.id == "dict":
-                # `dict[K, V]` parses its subscript as a tuple of two nodes; the
-                # value is the last, so a one-argument `dict[...]` is read as
-                # its own value and still judged.
-                inner = annotation.slice
-                value = inner.elts[-1] if isinstance(inner, ast.Tuple) else inner
-                if not (isinstance(value, ast.Name) and value.id in domain_types):
-                    return (
-                        "a mapping of something other than a domain object, which "
-                        "puts the field names into strings"
-                    )
-        return ""
-
-    inspected, offences = [], []
-    for node in protocol.body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        inspected.append(node.name)
-        assert node.returns is not None, (
-            f"StorePort.{node.name} declares no return type, so this guard cannot "
-            "read what the seam hands back"
-        )
-        wrong = what_is_wrong_with(node.returns)
-        if wrong:
-            offences.append(
-                f"StorePort.{node.name} -> {ast.unparse(node.returns)}: {wrong}"
-            )
-
-    assert "store_document" in inspected, (
+    assert "store_document" in reading.inspected, (
         "the method this rule was written for was not inspected; the walk found "
         "the protocol but not its methods"
     )
-    assert len(inspected) >= _FEWEST_PLAUSIBLE_PORT_METHODS, (
-        f"only {len(inspected)} StorePort methods were inspected, fewer than the "
-        f"{_FEWEST_PLAUSIBLE_PORT_METHODS} this protocol plausibly declares; the "
-        "walk is reading almost nothing and would pass whatever the port did"
+    assert len(reading.inspected) >= _FEWEST_PLAUSIBLE_PORT_METHODS, (
+        f"only {len(reading.inspected)} StorePort methods were inspected, fewer "
+        f"than the {_FEWEST_PLAUSIBLE_PORT_METHODS} this protocol plausibly "
+        "declares; the walk is reading almost nothing and would pass whatever the "
+        "port did"
     )
-    assert not offences, (
+    assert len(reading.domain_types) >= _FEWEST_PLAUSIBLE_DOMAIN_TYPES, (
+        f"only {len(reading.domain_types)} domain types were derived from port.py "
+        f"({', '.join(sorted(reading.domain_types)) or 'none at all'}), fewer than "
+        f"the {_FEWEST_PLAUSIBLE_DOMAIN_TYPES} its dataclasses plausibly declare. "
+        "The allow-list a mapping's values are judged against has nearly emptied, "
+        "so any failure below names a mapping that is in fact legitimate."
+    )
+    assert not reading.offences, (
         "a port method hands back an unnamed value, which `port.py` forbids: "
-        + "; ".join(offences)
+        + "; ".join(reading.offences)
         + ". Return a named domain object instead, so the fields cannot be "
         "reordered or misspelled without something failing."
     )
+
+
+def test_the_seam_reading_refuses_every_shape_it_names():
+    """A positive control: the same reading, pointed at a seam written wrong.
+
+    The guard above is silent when `port.py` is clean, which is every day, so
+    on its own it never demonstrates that it can still speak. Four of these
+    five shapes were passed by its first version and were found only by
+    mutating a copy of the tree by hand; running them here keeps them proven on
+    every run, which is the difference between a guard proven once and one that
+    stays proven.
+
+    `StatisticsRow` is asserted absent from the derived types *here* rather
+    than against `port.py`, so widening the derivation back to every `ClassDef`
+    fails this test without anyone having to add a `TypedDict` to the real
+    module to discover it.
+    """
+    reading = _read_the_seam(_A_SEAM_WRITTEN_WRONG)
+
+    assert {"Casefile", "Chunk"} <= reading.domain_types, (
+        "the control's own dataclasses were not derived, so its clean shapes "
+        "prove nothing: " + (", ".join(sorted(reading.domain_types)) or "nothing")
+    )
+    assert "StatisticsRow" not in reading.domain_types, (
+        "a `TypedDict` was taken for a domain type, so a mapping of rows now "
+        "passes as a mapping of domain objects; the derivation has widened back "
+        "to every class in the module"
+    )
+
+    report = "; ".join(reading.offences)
+    for method in (
+        "store_document",
+        "store_document_or_none",
+        "list_pairs",
+        "sequence_pairs",
+        "casefile_statistics",
+    ):
+        assert f"StorePort.{method} ->" in report, (
+            f"{method}'s return shape was not refused, so the guard above is "
+            "blind to a shape it claims to catch. What it did refuse: "
+            + (report or "nothing at all")
+        )
+    for method in ("get_casefile", "list_casefiles", "get_chunks"):
+        assert f"StorePort.{method} ->" not in report, (
+            f"{method}'s return shape was refused, but it is one the port "
+            "legitimately declares; the detector now refuses everything and "
+            "would fail on port.py for the wrong reason: " + report
+        )

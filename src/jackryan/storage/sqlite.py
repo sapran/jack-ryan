@@ -487,7 +487,9 @@ class SqliteStore:
                     f"document {stored_id} vanished between its commit and the "
                     "read-back under the same lock"
                 )
-        return StoredDocument(_row_to_document(stored_row), location_is_new)
+        return StoredDocument(
+            document=_row_to_document(stored_row), location_is_new=location_is_new
+        )
 
     def get_document(self, document_id: str) -> Document | None:
         with self._lock:

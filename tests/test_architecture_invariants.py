@@ -9,12 +9,26 @@ while still passing.
 Every guard reads source with `ast` and imports nothing it inspects. An oracle
 computed by the code it guards moves with the defect; a parsed declaration does
 not. It also matters concretely for the first rule below, where what an import
-binds *is* the defect.
+binds *is* the defect. Where a comparison needs a value from somewhere else,
+that neighbour is imported — `services/search.MAX_LIMIT`, below — but never the
+module whose text is being judged.
 
-Every guard asserts that its own scan reached its subject, and every one carries
-a positive control: the same detector is pointed at a file that legitimately
-holds what it hunts for, and must find it there. A guard that inspected nothing
-passes, and that is how a guard goes blind rather than red.
+Every guard asserts that its own scan reached its subject, and every one but a
+named exception carries a positive control: the same detector is pointed at a
+file that legitimately holds what it hunts for, and must find it there. A guard
+that inspected nothing passes, and that is how a guard goes blind rather than
+red.
+
+The exception is `test_the_agent_search_bound_is_not_the_listing_bound`, and it
+is its shape rather than an omission. Every other guard here hunts an absence —
+no re-export, no parser, no from-import, no duplicate signature, no import of
+the shared renderers, no coverage ground the sentence ladder fails to word — and
+an absence is precisely what a detector reading the wrong file reports too, so
+each of those needs a place where the same detector must succeed. That one hunts
+a presence and then judges it: it requires exactly one `MAX_SEARCH_RESULTS`
+assignment before it reads anything off that assignment, so a scan finding
+nothing fails the guard rather than passing it. Pointing its detector at a
+second file would add a ritual, not a check.
 """
 
 from __future__ import annotations
@@ -165,6 +179,44 @@ def _imports_module(tree: ast.Module, module: str) -> list[tuple[int, str]]:
                     if alias.name == module:
                         found.append((node.lineno, f"from {source} import {module}"))
     return found
+
+
+def _module_level_names_matching(tree: ast.Module, prefix: str) -> dict[str, int]:
+    """Module-level assignments whose name starts with `prefix`, to their lines.
+
+    `tree.body` rather than `ast.walk`, deliberately: a name bound inside a
+    function is a local, and a local is not something another module can import,
+    so counting one would report a constant no surface could ever have worded.
+    """
+    found: dict[str, int] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id.startswith(prefix):
+                    found.setdefault(target.id, node.lineno)
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id.startswith(prefix)
+        ):
+            found.setdefault(node.target.id, node.lineno)
+    return found
+
+
+def _names_loaded(tree: ast.Module) -> set[str]:
+    """Every bare name a module reads, as distinct from the names it binds.
+
+    This and `_bound_names` answer different questions, and a rule about a
+    constant travelling between two modules needs both halves: an import binds
+    without reading, so a name bound and never read is a dead import, while a
+    name read and never bound is a `NameError` waiting for the branch that
+    reaches it.
+    """
+    return {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
 
 
 # -- 1. the window budget has one name ------------------------------------
@@ -528,16 +580,22 @@ def test_the_agent_search_bound_is_not_the_listing_bound():
     clamped maximum from 50 to 200 — four times the prose an agent asked for,
     with nothing in the payload saying so.
 
-    Two assertions, because either alone is passable. The numeric one catches a
-    value raised past the service limit. The literal one catches the coupling
-    itself: `MAX_SEARCH_RESULTS = DEFAULT_LISTING_PAGE` is 50 today and would
-    satisfy every numeric check, while making the search clamp move silently the
-    next time a listing bound is retuned.
+    Two assertions, because either alone is passable. The literal one catches the
+    coupling itself: `MAX_SEARCH_RESULTS = DEFAULT_LISTING_PAGE` is 50 today and
+    would satisfy every numeric check, while making the search clamp move
+    silently the next time a listing bound is retuned. The numeric one catches a
+    value raised past the service limit. The literal one runs first because the
+    numeric one reads its value off that parsed literal: `MAX_LIMIT` is imported
+    from `services/search.py`, which this guard does not parse, and the clamp is
+    never imported from the module it does.
 
     This guard exists because the mutation proved it was needed: raising the
     constant to 200 left the entire suite green.
+
+    What it does not catch: a clamp that is a literal, is below `MAX_LIMIT`, and
+    is still the wrong number for a payload. The rule it holds is that the agent
+    surface decides its own bound, not that 50 is the right one.
     """
-    from jackryan.interfaces.mcp.server import MAX_SEARCH_RESULTS
     from jackryan.services.search import MAX_LIMIT
 
     module = _package() / _AGENT_SURFACE
@@ -557,15 +615,140 @@ def test_the_agent_search_bound_is_not_the_listing_bound():
         f"found {len(assignments)}; the bound moved and this guard is blind"
     )
 
-    assert MAX_SEARCH_RESULTS < MAX_LIMIT, (
-        f"{_SEARCH_CLAMP} is {MAX_SEARCH_RESULTS}, not below the service's own "
-        f"MAX_LIMIT of {MAX_LIMIT}: the agent surface's bound is deliberately "
-        "the tighter of the two, because a search result carries prose"
-    )
     assert isinstance(assignments[0].value, ast.Constant) and isinstance(
         assignments[0].value.value, int
     ), (
         f"{_where(module)}:{assignments[0].lineno} sets {_SEARCH_CLAMP} from an "
         "expression rather than a literal, which couples the search clamp to "
         "whatever it names; a listing bound retuned later would move it too"
+    )
+
+    # Read off the parsed literal rather than imported from the module under
+    # inspection. An import would bind whatever `server.py` computes, so
+    # `MAX_SEARCH_RESULTS = DEFAULT_LISTING_PAGE` would be compared using the
+    # very value this guard exists to keep the clamp independent of — and the
+    # comparison would pass while the coupling it forbids was in place.
+    clamp = assignments[0].value.value
+    assert clamp < MAX_LIMIT, (
+        f"{_SEARCH_CLAMP} is {clamp}, not below the service's own MAX_LIMIT of "
+        f"{MAX_LIMIT}: the agent surface's bound is deliberately the tighter of "
+        "the two, because a search result carries prose"
+    )
+
+
+# -- the grounds a verdict rests on, and the sentences that speak them -------
+
+_GROUND_SERVICE = "services/casefiles.py"
+_GROUND_PREFIX = "GROUND_"
+
+#: The one `GROUND_*` name that owes no sentence: it marks a verdict that is not
+#: `unknown`, so the ladder reaches its per-ground branches only when the ground
+#: is something else.
+_GROUND_ABSENT = "GROUND_NONE"
+
+#: One ground checked on both sides as this guard's positive control. The oldest
+#: of the three, and the one every casefile predating the capability reads, so
+#: the least likely to be legitimately absent from either side.
+_GROUND_CONTROL = "GROUND_NO_RUNS"
+
+#: The grounds `openspec/specs/ingestion-coverage/spec.md:135` fixes — "unknown
+#: on any of three grounds". Written out here rather than derived from either
+#: side: an expectation read off the service would agree with a fourth ground the
+#: moment one was declared, and one read off the adapter would agree with a
+#: sentence quietly dropped. What makes this a guard is that both sides must
+#: match a third thing neither of them can move.
+_COVERAGE_GROUNDS = frozenset(
+    {"GROUND_NO_RUNS", "GROUND_CONTINUITY_BREAK", "GROUND_DOCUMENTS_PREDATE"}
+)
+
+
+def test_every_coverage_ground_has_a_sentence_in_the_agent_surface():
+    """Every ground the service can name SHALL be worded by the agent surface.
+
+    Declared at `src/jackryan/services/casefiles.py:29-32` — the ground exists so
+    that "a surface selects its sentence from this decision instead of
+    re-deriving one from the counts" — and fixed at three by
+    `openspec/specs/ingestion-coverage/spec.md:135`: "The verdict SHALL be
+    unknown on any of three grounds".
+
+    Until this guard the coupling was prose alone, and the mutation is cheap:
+    add a fourth `GROUND_*` to the service, give it a disjunct in
+    `CasefileService.coverage`, leave `interfaces/mcp/server.py` alone. The suite
+    stays green. Every casefile resting on the new ground is then worded by the
+    ladder's `else` — "the record cannot account for what this casefile holds",
+    true, deliberately vague, and silently not the fact the new ground was added
+    to disclose. That branch was written to make an unreachable case fail safely
+    rather than confidently; it was never meant to become a destination.
+
+    So the count is load-bearing in three places at once. A fourth ground is a
+    change to the service that names it, to the requirement that fixes how many
+    there are, and to the sentence an agent reads — and this guard is what makes
+    those simultaneous rather than hoped for. Whichever of the three an author
+    edits first, the other two are named in a failure before it can land.
+
+    What it does not catch: that a branch reading a ground prints a sentence
+    about *that* ground. A ladder pairing `GROUND_DOCUMENTS_PREDATE` with the
+    continuity-break wording passes here; `tests/test_mcp_surface.py`
+    parametrises ground against the phrase each must produce, and the pairing
+    lives there. It does not read the spec either, so it cannot see the
+    requirement itself drift away from three — it can only make the code and the
+    requirement fail together once one of them moves. And it reads declarations:
+    a ground reached by `getattr`, or built inside a function, is invisible to
+    it.
+    """
+    package = _package()
+
+    service_path = package / _GROUND_SERVICE
+    declared = _module_level_names_matching(_parsed(service_path), _GROUND_PREFIX)
+    grounds = {
+        name: lineno for name, lineno in declared.items() if name != _GROUND_ABSENT
+    }
+
+    surface_path = package / _AGENT_SURFACE
+    surface = _parsed(surface_path)
+    bound = _bound_names(surface)
+    read = _names_loaded(surface)
+
+    # Positive control, on one ground and on both sides. Neither collector can
+    # make this guard pass by finding nothing — an empty ground set fails the
+    # exact-set assertion and an empty surface scan fails the pairing below —
+    # but a collector reading the wrong body would then be reported as a broken
+    # rule, which sends the next reader to the wrong file.
+    assert _GROUND_CONTROL in grounds, (
+        f"{_where(service_path)} no longer declares {_GROUND_CONTROL} at module "
+        "level; this guard's ground collector is reading the wrong body"
+    )
+    assert _GROUND_CONTROL in bound and _GROUND_CONTROL in read, (
+        f"{_where(surface_path)} does not both import and read "
+        f"{_GROUND_CONTROL}: either the sentence ladder has lost that ground — "
+        "this guard's own subject, reported here because the control shares its "
+        "name — or these two collectors are reading the wrong file"
+    )
+    # And the surface scan reached the service import block rather than an empty
+    # tree. These two travel the same way as the grounds and are read in the same
+    # ladder, so seeing both proves the collectors agree about a name that is not
+    # itself a ground.
+    assert {"COVERAGE_COMPLETE", "COVERAGE_INCOMPLETE"} <= set(bound) & read, (
+        f"{_where(surface_path)} no longer imports and reads the coverage "
+        "verdicts; this guard is not reading what it thinks it is"
+    )
+
+    assert set(grounds) == _COVERAGE_GROUNDS, (
+        f"{_where(service_path)} names {sorted(grounds)} as the grounds an "
+        f"`unknown` verdict may rest on, not {sorted(_COVERAGE_GROUNDS)}: "
+        "openspec/specs/ingestion-coverage/spec.md:135 fixes the count at three, "
+        "so this is a change to that requirement and to the agent surface's "
+        "sentence ladder as much as to the service"
+    )
+
+    unspoken = [
+        f"{name} ({_where(service_path)}:{grounds[name]})"
+        for name in sorted(grounds)
+        if name not in bound or name not in read
+    ]
+    assert not unspoken, (
+        f"{_where(surface_path)} does not word every ground the service can "
+        "name, so a casefile resting on one falls to the ladder's `else` and is "
+        "disclosed with the vague sentence instead of the fact that ground "
+        "exists to state: " + ", ".join(unspoken)
     )
