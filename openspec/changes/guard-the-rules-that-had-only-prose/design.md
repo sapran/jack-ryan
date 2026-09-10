@@ -140,11 +140,21 @@ A guard whose expectation is computed by the code it guards is blind. Each guard
 here parses a declaration rather than calling the thing it protects:
 
 - **Port speaks in domain objects** — walk `StorePort`'s method definitions in
-  the AST of `port.py` and reject a return annotation that is a bare `dict`,
-  `tuple`, or a subscripted `dict[...]`/`tuple[...]`. The oracle is the
-  declaration itself, which no implementation change can move, and the guard
-  fails on a *new* method with the old shape rather than only on the one being
-  fixed.
+  the AST of `port.py` and reject a return annotation that is a tuple in any
+  form, a bare `dict`, or a `dict[K, V]` whose value type is not a domain class
+  declared in `port.py` itself. The oracle is the declaration, which no
+  implementation change can move, and the guard fails on a *new* method with the
+  old shape rather than only on the one being fixed.
+
+  The dict clause is narrower than "reject every subscripted `dict`", which was
+  this design's first wording, and the narrowing is deliberate: `get_chunks`
+  returns `dict[str, Chunk]`, a keyed batch of domain objects, and the pitfall
+  this rule exists for is a dict standing in for a *row* — field names living in
+  strings, where a typo is a `KeyError` at the surface and a rename is silent.
+  `dict[str, str]` and `dict[str, Any]` still fail. The permitted value types are
+  derived from the module's own top-level class definitions rather than from a
+  list in the test, so adding a domain type does not require editing the guard
+  and cannot quietly widen it either.
 - **The absence guards** (`MAX_RESPONSE_CHARS` re-export, `CorpusIdentity.parse`,
   `from .migrations import`, `rendering` imported by `interfaces/`) — parse the
   module and assert the name is absent. Each must be mutation-proved by adding
