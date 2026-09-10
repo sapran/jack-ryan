@@ -241,8 +241,14 @@ def _nothing_listed(page: DocumentPage) -> str:
     this casefile" said of a container's empty contents, or of a page past the
     end, is the same class of false negative as an empty result standing in for
     an unknown facet kind.
+
+    The decision is `page.beyond_the_end`, the page's own, exactly as it is at
+    `_no_carriers` below: this helper re-derived it from `offset` and
+    `total_matching` while its two siblings read the property, which is two
+    definitions of one question with only a convention keeping them agreed.
+    Only the wording is this adapter's.
     """
-    if page.offset and page.total_matching:
+    if page.beyond_the_end:
         return (
             f"No documents at offset {page.offset}; "
             f"{page.total_matching} in this selection."
