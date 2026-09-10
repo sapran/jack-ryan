@@ -41,6 +41,7 @@ from .port import (
     MentionDocumentPage,
     MentionFacet,
     PassageReference,
+    StoredDocument,
 )
 
 
@@ -361,7 +362,7 @@ class SqliteStore:
 
     def store_document(
         self, document: Document, location_path: str, observed_at: datetime
-    ) -> tuple[Document, bool]:
+    ) -> StoredDocument:
         # One lock, one transaction, one commit. The document row and the
         # observation that opens its record are written together because the
         # record is what answers whether the document's history is whole: a
@@ -486,7 +487,9 @@ class SqliteStore:
                     f"document {stored_id} vanished between its commit and the "
                     "read-back under the same lock"
                 )
-        return _row_to_document(stored_row), location_is_new
+        return StoredDocument(
+            document=_row_to_document(stored_row), location_is_new=location_is_new
+        )
 
     def get_document(self, document_id: str) -> Document | None:
         with self._lock:

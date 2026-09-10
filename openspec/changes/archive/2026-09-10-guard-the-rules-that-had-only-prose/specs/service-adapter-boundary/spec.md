@@ -1,15 +1,4 @@
-# service-adapter-boundary Specification
-
-## Purpose
-
-Defines where business logic lives and what an adapter may do. Every rule is
-written once in the service layer; REST, CLI, and the agent surface translate
-and nothing more, so no surface can enforce a different version of the domain.
-Where the two human surfaces present the same value they also share one
-rendering of it; the agent surface renders its own, because its payloads are
-fenced and shaped for a model rather than for a person.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Business logic lives in the service layer
 
@@ -52,57 +41,7 @@ an adapter reads the decision and chooses only how to say it.
 - **WHEN** the service layer reports a coverage verdict it could not establish
 - **THEN** it also names which of the grounds produced that verdict, and the adapter selects only the wording; an adapter applying a precedence of its own among those grounds is a second definition of the verdict
 
-### Requirement: The service layer raises typed errors that adapters translate
-
-The service layer SHALL raise typed errors — validation, not-found, ambiguous
-reference, conflict, and configuration — and SHALL NOT raise adapter-specific
-exceptions. Every adapter SHALL translate them into its own idiom in exactly one
-place rather than per route or per command, so a new route or command inherits
-the mapping instead of restating it.
-
-One place means one, and it is checkable. An adapter that repeats the same
-translation once per entry point satisfies the letter of "every failure is
-translated" while failing this requirement: the rule is then enforced as many
-times as there are entry points, and a new one inherits nothing. The agent
-surface is where this matters most, because it has no request-validation layer
-above it and its entry points are added one tool at a time.
-
-#### Scenario: REST maps each typed error to a status code
-
-- **WHEN** the service layer raises a validation, not-found, or conflict error
-- **THEN** the REST adapter responds 400, 404, or 409 respectively, with the error code in the body
-
-#### Scenario: The CLI reports the typed code and exits non-zero
-
-- **WHEN** a command fails with a typed error
-- **THEN** the CLI prints the error code and message to stderr and exits non-zero
-
-#### Scenario: The agent surface translates through one place, not one per tool
-
-- **WHEN** the agent surface's tools are inspected
-- **THEN** every tool translates a typed error through the same single translation, so a tool added without restating it still returns a typed payload
-
-### Requirement: The CLI reaches services directly
-
-The CLI SHALL call the service layer in-process rather than over HTTP, so it
-works against an instance that is not serving. This is a deliberate divergence
-from the REST adapter, which exists to serve remote callers.
-
-#### Scenario: The CLI runs with no server process
-
-- **WHEN** a CLI command runs and no server is listening
-- **THEN** the command succeeds against the store directly
-
-### Requirement: Composition happens in one place
-
-Wiring configuration to a store to the service layer SHALL happen in a single
-composition root. An adapter SHALL obtain a configured context from it rather
-than assembling its own.
-
-#### Scenario: Adapters share one wiring
-
-- **WHEN** the REST and CLI adapters start
-- **THEN** both obtain their services from the same composition root
+## ADDED Requirements
 
 ### Requirement: The human surfaces share one rendering of what they agree on
 

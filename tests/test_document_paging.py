@@ -40,14 +40,28 @@ from __future__ import annotations
 
 import json
 import zipfile
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 
 from jackryan.errors import NotFoundError
-from jackryan.interfaces.mcp.server import build_mcp_server
+from jackryan.interfaces.mcp.server import (
+    _no_carriers,
+    _no_passages,
+    _nothing_listed,
+    build_mcp_server,
+)
 from jackryan.server import create_app
-from jackryan.services.ingestion import MAX_DOCUMENT_PAGE
+from jackryan.services.ingestion import MAX_LISTING_PAGE
+from jackryan.storage.port import (
+    Document,
+    DocumentPage,
+    DocumentPassagePage,
+    MentionCarrier,
+    MentionDocumentPage,
+    PassageReference,
+)
 
 # Five plain entries and one nested archive: six direct children. Odd and even
 # page shapes are both exercised below — six over a limit of two is three full
@@ -214,8 +228,8 @@ def test_an_over_large_limit_is_clamped_rather_than_refused(context, casefile, c
         casefile.short_id, container.short_id, limit=10_000
     )
 
-    assert page.limit == MAX_DOCUMENT_PAGE
-    assert len(page.documents) <= MAX_DOCUMENT_PAGE
+    assert page.limit == MAX_LISTING_PAGE
+    assert len(page.documents) <= MAX_LISTING_PAGE
     assert len(page.documents) == 6
 
 
@@ -594,3 +608,177 @@ def test_the_default_rest_call_still_lists_intake_only(context, casefile, contai
     assert body["truncated"] is False
     assert body["continue_from"] is None
     assert body["parent_id"] is None
+
+
+# -- one continuation rule, three listings ---------------------------------
+#
+# These build the page types directly: no store, no service, no casefile. What
+# is under test is arithmetic the page owns, and the claim is that the three
+# paged listings answer it identically for the same shape — a claim about the
+# types, cheapest and clearest to make about the types. Reaching it through
+# the store would establish only that the shapes one query happens to produce
+# satisfy the rule, and the shape that matters most, a page that began past
+# the end, is one the store reaches only when asked an odd question.
+#
+# The expected answers are written out rather than computed from `offset`,
+# `total_matching` and the entry count. Computing them would be the property's
+# own expression a second time, which stays green for whatever the property
+# does.
+
+# A name, the entries on the page, its offset, its limit, the total in the
+# store — then the three answers the rule must give for that shape.
+PAGE_SHAPES = (
+    ("a full page with more behind it", 2, 0, 2, 6, True, 2, False),
+    ("a full page in the middle", 2, 2, 2, 6, True, 4, False),
+    ("a final page shorter than the limit", 2, 4, 4, 6, False, None, False),
+    ("a final page exactly the limit", 2, 4, 2, 6, False, None, False),
+    ("an empty first page", 0, 0, 10, 0, False, None, False),
+    ("a page that began past the end", 0, 10, 10, 6, False, None, True),
+)
+
+
+def _a_document(n):
+    """A document with nothing distinguishing about it: the rule counts, never reads."""
+    stamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    return Document(
+        id=f"document-{n}",
+        casefile_id="casefile",
+        content_hash=f"hash-{n}",
+        filename=f"entry-{n}.txt",
+        media_type="text/plain",
+        byte_size=1,
+        extracted_text="text",
+        extractor="test",
+        created_at=stamp,
+        updated_at=stamp,
+    )
+
+
+def _document_page(count, offset, limit, total):
+    return DocumentPage(
+        documents=[_a_document(n) for n in range(count)],
+        total_matching=total,
+        offset=offset,
+        limit=limit,
+        selection="all",
+    )
+
+
+def _carrier_page(count, offset, limit, total):
+    return MentionDocumentPage(
+        carriers=[
+            MentionCarrier(document=_a_document(n), mentions=1, chunk_id=f"chunk-{n}")
+            for n in range(count)
+        ],
+        total_matching=total,
+        offset=offset,
+        limit=limit,
+        kind="email",
+        value="someone@example.test",
+    )
+
+
+def _passage_page(count, offset, limit, total):
+    return DocumentPassagePage(
+        passages=[
+            PassageReference(
+                id=f"chunk-{n}",
+                document_id="document",
+                ordinal=n,
+                heading_path="",
+                char_start=n,
+                char_end=n + 1,
+                characters=1,
+            )
+            for n in range(count)
+        ],
+        total_matching=total,
+        offset=offset,
+        limit=limit,
+    )
+
+
+# Each bounded listing, with the agent-surface helper that explains one of its
+# empty pages. The helper travels with the page because the message and the
+# page must not come to different conclusions about the same shape.
+BOUNDED_PAGES = (
+    ("DocumentPage", _document_page, _nothing_listed),
+    ("MentionDocumentPage", _carrier_page, _no_carriers),
+    ("DocumentPassagePage", _passage_page, _no_passages),
+)
+PAGE_IDS = [row[0] for row in BOUNDED_PAGES]
+SHAPE_IDS = [row[0] for row in PAGE_SHAPES]
+
+
+@pytest.mark.parametrize("shape", PAGE_SHAPES, ids=SHAPE_IDS)
+@pytest.mark.parametrize("build", [row[1] for row in BOUNDED_PAGES], ids=PAGE_IDS)
+def test_three_listings_answer_one_continuation_rule(build, shape):
+    """Same shape, same three answers, whatever the page is a page of."""
+    _, count, offset, limit, total, truncated, continue_from, beyond = shape
+    page = build(count, offset, limit, total)
+
+    assert page.truncated is truncated
+    assert page.continue_from == continue_from
+    assert page.beyond_the_end is beyond
+
+
+def test_the_document_listing_answers_beyond_the_end_too():
+    """The one question `DocumentPage` could not be asked.
+
+    The other two listings each carried their own `beyond_the_end`; this one
+    carried none, so its surface re-derived the answer inline. Asserted
+    separately from the table above because it is the property that was
+    missing, and a table can be trimmed to the pages that already had it
+    without anything else here noticing.
+    """
+    assert _document_page(0, 10, 10, 6).beyond_the_end is True
+    # An empty casefile is not a page past the end, and the difference is the
+    # whole point: one is an absence, the other is a caller who overshot.
+    assert _document_page(0, 0, 10, 0).beyond_the_end is False
+    assert _document_page(2, 2, 2, 6).beyond_the_end is False
+
+
+@pytest.mark.parametrize("shape", PAGE_SHAPES, ids=SHAPE_IDS)
+@pytest.mark.parametrize("row", BOUNDED_PAGES, ids=PAGE_IDS)
+def test_an_empty_page_explanation_decides_from_the_page(row, shape):
+    """The message follows the page's answer, never arithmetic of its own.
+
+    Two of these helpers read `page.beyond_the_end` and the third re-derived
+    it from `offset` and `total_matching`. The two agree wherever the call
+    site reaches them, which is why nothing caught the divergence: the
+    re-derived form ignores whether the page has entries, and the call site
+    only ever hands it an empty one. It is still two definitions of one
+    question held together by a convention, and this asks all three the same
+    thing directly.
+
+    The assertion is on the fragment naming the offset, which is the only
+    thing the two branches do not share — so it identifies the branch taken
+    without pinning the wording of either message.
+    """
+    name, build, explain = row
+    _, count, offset, limit, total, _, _, beyond = shape
+    page = build(count, offset, limit, total)
+
+    says_past_the_end = f"at offset {offset}" in explain(page)
+    assert says_past_the_end is beyond, f"{name} explained the page as though it were not {beyond}"
+
+
+def test_the_shapes_exercise_the_states_the_rule_exists_for():
+    """A trimmed table must not leave the tests above passing over nothing.
+
+    Asked of the constructed pages rather than of the expected-answer columns,
+    so this reddens for a shape that stopped producing the state it was
+    written for as well as for one that was deleted outright.
+    """
+    for name, build, _ in BOUNDED_PAGES:
+        pages = [
+            build(count, offset, limit, total)
+            for _, count, offset, limit, total, *_ in PAGE_SHAPES
+        ]
+        assert any(p.truncated for p in pages), f"{name}: no shape leaves anything unreturned"
+        assert any(p.beyond_the_end for p in pages), f"{name}: no shape begins past the end"
+        # The shape that tells a page's own answer apart from arithmetic over
+        # `offset` and `total_matching`: entries in hand, past the first page.
+        assert any(
+            p.entries and p.offset and p.total_matching for p in pages
+        ), f"{name}: no shape carries entries at a non-zero offset"

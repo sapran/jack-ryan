@@ -26,6 +26,15 @@ COVERAGE_COMPLETE = "complete"
 COVERAGE_INCOMPLETE = "incomplete"
 COVERAGE_UNKNOWN = "unknown"
 
+# Which ground produced an `unknown` verdict. The verdict says the record
+# cannot answer; the ground says why, so a surface selects its sentence from
+# this decision instead of re-deriving one from the counts — a second
+# precedence, in another module, free to disagree with this one.
+GROUND_NONE = ""  # the verdict is not `unknown`
+GROUND_NO_RUNS = "no-runs"
+GROUND_CONTINUITY_BREAK = "continuity-break"
+GROUND_DOCUMENTS_PREDATE = "documents-predate-first-run"
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -46,12 +55,19 @@ def slugify(title: str) -> str:
 class CasefileCoverage:
     """What may be claimed about a casefile's contents, and the record behind it.
 
-    Two fields rather than a flattened copy of `IngestionCoverage`: the counts
-    are the store's, the verdict is this layer's rule, and restating the counts
-    here would be a second place they could drift.
+    Three fields rather than a flattened copy of `IngestionCoverage`: the counts
+    are the store's, the verdict and the ground are this layer's rules, and
+    restating the counts here would be a second place they could drift.
+
+    `ground` names which of the three grounds produced an `unknown` verdict and
+    is `GROUND_NONE` otherwise. It is here so that a surface printing one
+    sentence per ground does not decide which ground it was from the counts:
+    that is a second precedence over one set of numbers, and the one an agent
+    reads would be the copy in the adapter.
     """
 
     verdict: str
+    ground: str
     recorded: IngestionCoverage
 
 
@@ -182,6 +198,10 @@ class CasefileService:
         ground, an abort after any clean run left the casefile reading
         `complete` while offered files were missing — the one answer this whole
         capability exists to prevent.
+
+        Which of the three it was is decided here too, and returned as
+        `ground`, so that a surface with a sentence per ground selects one
+        rather than working the reason out again from the same counts.
         """
         casefile = self.resolve(reference)
         recorded = self._store.ingestion_coverage(casefile.id)
@@ -195,7 +215,32 @@ class CasefileService:
             verdict = COVERAGE_UNKNOWN
         else:
             verdict = COVERAGE_COMPLETE
-        return CasefileCoverage(verdict=verdict, recorded=recorded)
+        # The verdict above is a disjunction, so it needs no order: any one
+        # ground makes the word `unknown`, and which one it was does not change
+        # it. The ground needs an order, because a casefile can carry two at
+        # once while a surface prints a single sentence. A corpus that predates
+        # the record *and* a record that stops accounting for it is the pair a
+        # real store produces, and the break is the sharper fact — it says a
+        # run happened and vanished, where documents at the start say only that
+        # the record began late. No record at all is asked first because it
+        # makes the other two unsayable: there is no first run to predate and
+        # no pair of runs to break between, so any counts arriving beside it
+        # describe runs the record does not have.
+        #
+        # These three mirror the three disjuncts above, deliberately. A fourth
+        # disjunct owes a fourth ground here; without one the verdict leaves
+        # with no ground named, which a surface renders as a ground it cannot
+        # name — never as one of these three, which would be a specific claim
+        # about a casefile nobody checked.
+        ground = GROUND_NONE
+        if verdict == COVERAGE_UNKNOWN:
+            if recorded.runs == 0:
+                ground = GROUND_NO_RUNS
+            elif recorded.continuity_breaks:
+                ground = GROUND_CONTINUITY_BREAK
+            elif recorded.documents_before_first_run:
+                ground = GROUND_DOCUMENTS_PREDATE
+        return CasefileCoverage(verdict=verdict, ground=ground, recorded=recorded)
 
     def resolve(self, reference: str) -> Casefile:
         """Resolve a casefile from a full id, an 8-char id prefix, or a slug.

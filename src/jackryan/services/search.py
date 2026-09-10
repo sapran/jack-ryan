@@ -16,7 +16,7 @@ from ..storage.port import (
     Window,
 )
 from .casefiles import CasefileService
-from .ingestion import MAX_DOCUMENT_OFFSET
+from .ingestion import DEFAULT_LISTING_PAGE, MAX_DOCUMENT_OFFSET, MAX_LISTING_PAGE
 from .windowing import DEFAULT_WINDOW_MAX_CHARS, Windower
 
 MAX_LIMIT = 100
@@ -39,11 +39,6 @@ RRF_K = 60
 
 DEFAULT_FACET_LIMIT = 50
 MAX_FACET_LIMIT = 500
-
-DEFAULT_CARRIER_PAGE = 50
-# Matches `MAX_DOCUMENT_PAGE`: the rows are document metadata of the same
-# weight.
-MAX_CARRIER_PAGE = 200
 
 
 def _parsed_mention(reference: str) -> tuple[str, str]:
@@ -358,7 +353,7 @@ class SearchService:
         casefile_reference: str,
         mention: str,
         offset: int = 0,
-        limit: int = DEFAULT_CARRIER_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> MentionDocumentPage:
         """Every document carrying one identifier, a bounded page at a time.
 
@@ -396,7 +391,7 @@ class SearchService:
                 "an identifier is required. Write <kind>:<value>, or a value "
                 "alone to match any kind; take one from the identifier inventory."
             )
-        bounded = max(1, min(int(limit), MAX_CARRIER_PAGE))
+        bounded = max(1, min(int(limit), MAX_LISTING_PAGE))
         start = min(max(0, int(offset)), MAX_DOCUMENT_OFFSET)
         return self._store.documents_with_mention(
             casefile.id, kind, value, start, bounded

@@ -16,12 +16,7 @@ from mcp.types import ToolAnnotations
 
 from ... import __version__
 from ...app import Context
-from ...services.ingestion import (
-    DEFAULT_DOCUMENT_PAGE,
-    DEFAULT_PASSAGE_PAGE,
-    locations_verdict,
-)
-from ...services.search import DEFAULT_CARRIER_PAGE
+from ...services.ingestion import DEFAULT_LISTING_PAGE, locations_verdict
 from ...storage.port import (
     Casefile,
     Document,
@@ -33,6 +28,9 @@ from ...storage.port import (
 from ...services.casefiles import (
     COVERAGE_COMPLETE,
     COVERAGE_INCOMPLETE,
+    GROUND_CONTINUITY_BREAK,
+    GROUND_DOCUMENTS_PREDATE,
+    GROUND_NO_RUNS,
 )
 from .annotations import stamp_for
 from .errors import returns_error_payload
@@ -241,8 +239,14 @@ def _nothing_listed(page: DocumentPage) -> str:
     this casefile" said of a container's empty contents, or of a page past the
     end, is the same class of false negative as an empty result standing in for
     an unknown facet kind.
+
+    The decision is `page.beyond_the_end`, the page's own, exactly as it is at
+    `_no_carriers` below: this helper re-derived it from `offset` and
+    `total_matching` while its two siblings read the property, which is two
+    definitions of one question with only a convention keeping them agreed.
+    Only the wording is this adapter's.
     """
-    if page.offset and page.total_matching:
+    if page.beyond_the_end:
         return (
             f"No documents at offset {page.offset}; "
             f"{page.total_matching} in this selection."
@@ -354,6 +358,12 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         # per-document record. A casefile whose record cannot answer is the
         # case an agent most needs told, because it is the one where an empty
         # search result is least safe to read as absence.
+        #
+        # Which sentence an `unknown` verdict gets is `coverage.ground`'s to
+        # decide, never this ladder's. The counts are still printed here, but
+        # reading them to *choose* a sentence put a second precedence over the
+        # same numbers in an adapter, where nothing keeps it in step with the
+        # service's own — and the copy an agent reads is this one.
         if coverage.verdict == COVERAGE_COMPLETE:
             coverage_line = (
                 f"coverage: complete — {recorded.runs} recorded ingest runs, "
@@ -365,25 +375,42 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
                 f"{recorded.runs} recorded ingest runs reported a limitation; "
                 "an empty search may mean missing evidence rather than absence"
             )
-        elif recorded.runs == 0:
+        elif coverage.ground == GROUND_NO_RUNS:
             coverage_line = (
                 "coverage: unknown — no ingest run is recorded for this casefile, "
                 "so nothing about it can be claimed as complete; an empty search "
                 "may mean missing evidence rather than absence"
             )
-        elif recorded.continuity_breaks:
+        elif coverage.ground == GROUND_CONTINUITY_BREAK:
             coverage_line = (
                 f"coverage: unknown — {recorded.continuity_breaks} times the record "
                 "stops accounting for what the casefile holds, so a run happened "
                 "that was never recorded; an empty search may mean missing "
                 "evidence rather than absence"
             )
-        else:
+        elif coverage.ground == GROUND_DOCUMENTS_PREDATE:
             coverage_line = (
                 f"coverage: unknown — {recorded.documents_before_first_run} documents "
                 "predate the first recorded ingest run, so how they arrived is "
                 "unrecorded; an empty search may mean missing evidence rather than "
                 "absence"
+            )
+        else:
+            # Unreachable while the service names one of the three grounds the
+            # spec fixes, and named rather than reached by exhaustion for that
+            # reason: as the tail of the ladder, this branch used to print the
+            # documents-predate sentence for anything left over. Each sentence
+            # above asserts a specific fact with a number in it, and a coverage
+            # sentence is what an agent repeats as a coverage claim, so a
+            # fourth ground arriving here would have been disclosed as a
+            # confident wrong answer — the one thing this capability exists to
+            # prevent. Saying less is the only safe failure at this point; the
+            # verdict is still true, and the clause every non-complete verdict
+            # owes is still there.
+            coverage_line = (
+                "coverage: unknown — the record cannot account for what this "
+                "casefile holds; an empty search may mean missing evidence rather "
+                "than absence"
             )
         formatted = (
             f"{one_line(resolved.title, 80)} ({one_line(resolved.slug, 40)})\n"
@@ -454,7 +481,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         parent: str = "",
         expanded: bool = False,
         offset: int = 0,
-        limit: int = DEFAULT_DOCUMENT_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> dict[str, Any]:
         # Positional, and that is load-bearing for the same reason `case_search`
         # states at its own call: `anyio.to_thread.run_sync` forwards only
@@ -523,7 +550,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         casefile: str,
         document: str,
         offset: int = 0,
-        limit: int = DEFAULT_PASSAGE_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> dict[str, Any]:
         # Positional, and load-bearing for the reason `case_search` states at
         # its own call: `anyio.to_thread.run_sync` forwards no keywords, so a
@@ -635,7 +662,7 @@ def build_mcp_server(context: Context, profile: str | None = None) -> MCPServer:
         casefile: str,
         mention: str,
         offset: int = 0,
-        limit: int = DEFAULT_CARRIER_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> dict[str, Any]:
         # Positional, and load-bearing for the reason `case_search` states at
         # its own call: `anyio.to_thread.run_sync` forwards no keywords, so a

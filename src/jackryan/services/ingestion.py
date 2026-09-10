@@ -43,18 +43,25 @@ from .casefiles import CasefileService
 
 MAX_FILE_BYTES = 512 * 1024 * 1024
 
-# One definition each, imported by both adapters. Deliberately unlike
-# `MAX_SEARCH_RESULTS`, which the agent surface sets below the service's own
-# bound: a search result carries prose, a listing row carries metadata, so
-# there is nothing for a second, tighter adapter bound to protect.
-DEFAULT_DOCUMENT_PAGE = 50
-MAX_DOCUMENT_PAGE = 200
-
-# A passage listing row is metadata of the same weight as a document listing
-# row — identifiers, a position and two integers — so it takes the same bounds
-# for the same reason: there is nothing for a tighter adapter bound to protect.
-DEFAULT_PASSAGE_PAGE = 50
-MAX_PASSAGE_PAGE = 200
+# One bound for every paged listing on every surface: the casefile's documents,
+# one document's passages, and the documents carrying one identifier. Every such
+# row is metadata of the same weight — identifiers, a position, a couple of
+# integers — so one rule serves all three, and three hand-written pairs asserting
+# in comments that they were one rule is how two spellings drift apart in
+# silence.
+#
+# Deliberately unlike `MAX_SEARCH_RESULTS`, which the agent surface sets below
+# the service's own bound: a search result carries prose, a listing row carries
+# metadata, so there is nothing for a second, tighter adapter bound to protect.
+# Folding that constant in here would move the clamped search maximum from 50 to
+# 200, which is a change in what an agent gets rather than a change in where a
+# rule lives.
+#
+# They live in this module because the document listing is here and the carrier
+# enumeration in `services/search.py` already imports `MAX_DOCUMENT_OFFSET` from
+# it, so the dependency direction is the one the service layer already has.
+DEFAULT_LISTING_PAGE = 50
+MAX_LISTING_PAGE = 200
 
 # The largest value SQLite accepts as an INTEGER bind. An offset is floored at
 # zero and capped here rather than left unbounded: anything larger reaches the
@@ -742,9 +749,8 @@ class IngestionService:
             # before this write changes it: nothing may be called a discovery
             # for a document whose earlier history is missing.
             existing_record_was_whole = existing is not None and existing.locations_are_whole
-            stored, location_is_new = self._store.store_document(
-                document, observed_at_path, now
-            )
+            written = self._store.store_document(document, observed_at_path, now)
+            stored = written.document
             # Mentions travel with the chunks rather than in a later call:
             # `replace_chunks` mints every chunk id afresh, so a separate write
             # afterwards would attach them to rows that had just been replaced.
@@ -758,7 +764,7 @@ class IngestionService:
                 # at, so calling it a discovery would be a finding this instance
                 # cannot support.
                 location = LOCATION_UNKNOWN
-            elif location_is_new:
+            elif written.location_is_new:
                 location = LOCATION_NEW
             else:
                 location = LOCATION_KNOWN
@@ -987,7 +993,7 @@ class IngestionService:
         parent_reference: str = "",
         include_expanded: bool = False,
         offset: int = 0,
-        limit: int = DEFAULT_DOCUMENT_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> DocumentPage:
         """A bounded page of a casefile's documents, or of one container's contents.
 
@@ -999,7 +1005,7 @@ class IngestionService:
         an agent to infer it.
 
         **Both bounds are clamped, not just the limit**, and both ends of each:
-        `limit` to between 1 and `MAX_DOCUMENT_PAGE`, `offset` to between 0 and
+        `limit` to between 1 and `MAX_LISTING_PAGE`, `offset` to between 0 and
         `MAX_DOCUMENT_OFFSET`. Clamped rather than refused, as every other bound
         on this surface is — the agent surface has no request-validation layer
         above it and an over-large argument is a harmless mistake. The offset's
@@ -1018,7 +1024,7 @@ class IngestionService:
         translations. Pass `include_expanded=` by keyword.
         """
         casefile = self._casefiles.resolve(casefile_reference)
-        bounded = max(1, min(int(limit), MAX_DOCUMENT_PAGE))
+        bounded = max(1, min(int(limit), MAX_LISTING_PAGE))
         start = min(max(0, int(offset)), MAX_DOCUMENT_OFFSET)
 
         # Checked before resolving, because `resolve_document` refuses an empty
@@ -1049,7 +1055,7 @@ class IngestionService:
         casefile_reference: str,
         reference: str,
         offset: int = 0,
-        limit: int = DEFAULT_PASSAGE_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> DocumentPassagePage:
         """A bounded page of one document's stored passages, in reading order.
 
@@ -1077,7 +1083,7 @@ class IngestionService:
         service layer is arranged to prevent.
 
         Both bounds are clamped at both ends, as every bound on this surface is:
-        `limit` to between 1 and `MAX_PASSAGE_PAGE`, `offset` to between 0 and
+        `limit` to between 1 and `MAX_LISTING_PAGE`, `offset` to between 0 and
         `MAX_DOCUMENT_OFFSET`. The offset's upper bound is the one that looks
         unnecessary and is not — a value above SQLite's integer range reaches
         the driver and raises `OverflowError`, which is not a `JackRyanError`,
@@ -1088,7 +1094,7 @@ class IngestionService:
         resolving the reference a second time.
         """
         document = self.resolve_document(casefile_reference, reference)
-        bounded = max(1, min(int(limit), MAX_PASSAGE_PAGE))
+        bounded = max(1, min(int(limit), MAX_LISTING_PAGE))
         start = min(max(0, int(offset)), MAX_DOCUMENT_OFFSET)
         page = self._store.list_document_passage_page(document.id, start, bounded)
         return replace(page, document=document)

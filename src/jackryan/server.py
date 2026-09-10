@@ -19,9 +19,15 @@ from . import __version__
 from .ingestion.containers import rar_status
 from .ingestion.legacy_office import converter_status
 from .app import Context, build_context
-from .services.ingestion import DEFAULT_DOCUMENT_PAGE, DEFAULT_PASSAGE_PAGE
-from .services.search import DEFAULT_CARRIER_PAGE
-from .rendering import render_casefile, render_document, render_hit, render_report
+from .services.ingestion import DEFAULT_LISTING_PAGE
+from .rendering import (
+    render_carrier_page,
+    render_casefile,
+    render_document,
+    render_hit,
+    render_location_record,
+    render_report,
+)
 from .errors import (
     AmbiguousReferenceError,
     ConflictError,
@@ -207,7 +213,7 @@ def create_app(context: Context | None = None) -> FastAPI:
         parent: str = "",
         expanded: bool = False,
         offset: int = 0,
-        limit: int = DEFAULT_DOCUMENT_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> dict[str, Any]:
         ctx: Context = request.app.state.context
         # Off the event loop, like the search and mention routes beside it: this
@@ -245,13 +251,11 @@ def create_app(context: Context | None = None) -> FastAPI:
             # route reports neither this nor the child marking, which is the
             # existing asymmetry `rendering.render_document` documents.
             "found_at": record.document.containment_path,
-            "locations_recorded": record.verdict,
-            "locations": record.recorded.total,
-            "observed_at": [
-                location.path for location in record.observed_at
-            ],
-            "locations_truncated": record.truncated,
-            "locations_note": record.note,
+            # The caveat included whether or not there is one, for the reason
+            # the summary is: a JSON consumer branching on a missing key is
+            # worse served than one branching on an empty string. Dropping it
+            # is the CLI's choice, not this surface's.
+            **render_location_record(record, drop_empty_note=False),
         }
 
     @app.get("/api/casefiles/{reference}/documents/{document_reference}/passages")
@@ -260,7 +264,7 @@ def create_app(context: Context | None = None) -> FastAPI:
         reference: str,
         document_reference: str,
         offset: int = 0,
-        limit: int = DEFAULT_PASSAGE_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> dict[str, Any]:
         """One document's stored passages, a bounded page at a time.
 
@@ -356,7 +360,7 @@ def create_app(context: Context | None = None) -> FastAPI:
         reference: str,
         mention: str,
         offset: int = 0,
-        limit: int = DEFAULT_CARRIER_PAGE,
+        limit: int = DEFAULT_LISTING_PAGE,
     ) -> dict[str, Any]:
         """Every document carrying one identifier, a bounded page at a time."""
         ctx: Context = request.app.state.context
@@ -367,23 +371,6 @@ def create_app(context: Context | None = None) -> FastAPI:
             offset=offset,
             limit=limit,
         )
-        return {
-            "mention": mention,
-            "kind": page.kind,
-            "value": page.value,
-            "total": len(page.carriers),
-            "offset": page.offset,
-            "total_matching": page.total_matching,
-            "truncated": page.truncated,
-            "continue_from": page.continue_from,
-            "documents": [
-                {
-                    **serialize_document(carrier.document),
-                    "mentions": carrier.mentions,
-                    "chunk_id": carrier.chunk_id,
-                }
-                for carrier in page.carriers
-            ],
-        }
+        return render_carrier_page(page, mention, render_row=serialize_document)
 
     return app

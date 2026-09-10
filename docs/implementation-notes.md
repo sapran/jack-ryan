@@ -6,6 +6,17 @@ and why it was parked.
 
 ## Parked
 
+- **A fourth hand-spelled listing-style bound survives, one module over.**
+  `guard-the-rules-that-had-only-prose` collapsed the three 50/200 page bounds
+  into `DEFAULT_LISTING_PAGE`/`MAX_LISTING_PAGE`, and left the facet inventory
+  alone: `services/search.py` declares `DEFAULT_FACET_LIMIT = 50` while both
+  `server.py` and `interfaces/mcp/server.py` restate the bare literal `50` in
+  their parameter defaults instead of importing it. Pre-existing on `develop`
+  and outside that change's stated boundary, so recorded rather than fixed —
+  but the proposal's own argument applies to it unchanged: equality maintained
+  by a hand-written copy is the shape `one-owner-for-a-file-signature` removed,
+  because two spellings drifting apart is silent. Surfaced by both reviewers.
+
 - **Two mention extractors under-count a value that recurs in one document, and the facet cannot show it.** Surfaced by PM verification of the live mention-offset repair (2026-09-09) against a text-slicing oracle, and **pre-existing**: the affected rows are byte-identical in the pre-repair copy, so the repair neither caused nor fixed them. Of 16 groups where distinct `document_offset` was fewer than the document's standalone occurrences, 12 were the oracle's fault — a stored value that is a suffix of a longer token, which a naive `str.count` over-counts. The remaining four are real, in two shapes: a registration-style digit run occurring twice while carrying the required keyword only once, which is correct under the precision-over-coverage rule in `CLAUDE.md` and is recorded so it is not rediscovered as a bug; and an address whose local part begins mid-token, meaning the extractor started matching after a character its local-part class rejects, so the recorded value is a fragment of the real address. The second shape is the one worth a change: a fragment resolves and cites correctly, so nothing downstream can tell it from a whole address. Parked because it belongs to the extractors, not to the offset repair. No corpus values are recorded here; the affected rows are reachable by re-running the oracle.
 
 - **~~Schema-10 migration and live ingestion spell location paths differently.~~** Fixed by `migration-safe-location-identity` on 2026-09-09. Reproduced first from genuine old code (`85c24a4`) and again after the fix: rung 10 concatenated the old root and the path within it while every live observation is spelled by `join_location`, so a migrated tar entry held `bundle.tar/./note.txt` and gained `bundle.tar/note.txt` on a reingest of the unchanged archive — one place, two rows, outcome `new`, real MCP reporting `total = 2`. Fixed above rung 10 rather than in it: a rung already applied cannot be corrected by editing it, and editing it would only change what a not-yet-migrated store receives. Rung 11 adds `document_places`, spelled by the runtime's own `join_location` registered on the migrating connection, copying this build's own observations across as they are and re-deriving everything rung 10 built from the raw `document_locations` pairs — the only representation that still says what was meant, because a `/` root concatenates to `//lease.md`, which is already its own normal form. Both older tables are retained, unwritten and unread.
@@ -187,8 +198,11 @@ and why it was parked.
   aliases it — the `child_count` precedent — plus both renderers reading it
   instead of `len(...)`. That touches the port's domain object and every surface
   that shows a document, which is a change that should be argued on its own
-  rather than folded into a paging change. The interim `MAX_DOCUMENT_PAGE` is
-  200 and is a row bound, not a byte bound. Note the in-code comment at the
+  rather than folded into a paging change. The interim `MAX_LISTING_PAGE` is
+  200 and is a row bound, not a byte bound — and since
+  `guard-the-rules-that-had-only-prose` it is the one bound shared by the
+  document, passage and carrier listings, so the ceiling is now reachable
+  through three surfaces rather than one. Note the in-code comment at the
   query claims only that the narrow id subquery keeps `extracted_text` out of
   the *sorter*, which is true and a different claim.
 

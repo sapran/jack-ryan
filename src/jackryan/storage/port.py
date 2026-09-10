@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Protocol
+from typing import Protocol, Sequence
 
 
 @dataclass(frozen=True)
@@ -124,6 +124,32 @@ def join_location(source_root: str, containment_path: str) -> str:
     however each was reached.
     """
     return str(PurePosixPath(source_root) / containment_path)
+
+
+@dataclass(frozen=True)
+class StoredDocument:
+    """A stored document, and whether the observation stored with it was new.
+
+    The pair is named here, at the seam, rather than at the call site that
+    unpacks it. A value offered without its field names is a value a caller can
+    misread: nothing about `(Document, bool)` says which way the boolean runs,
+    so every reader has to go and read the implementation to find out, and each
+    of them may read it once and remember it wrongly.
+
+    Reordering is the sharper reason. A tuple's positions carry no names, so
+    swapping two elements of the same type changes what every call site is
+    asserting while nothing fails — not an import, not a type checker, not a
+    test, not a run. Attribute access cannot be reordered silently, because the
+    name travels with the value.
+    """
+
+    document: Document
+    # Whether the observation written beside this document recorded a place its
+    # bytes had not been seen at before. False on an ordinary reingest of a
+    # known location. It is the caller's only way to tell a discovery from a
+    # reingest: the first sighting's timestamp is the one kept, so nothing else
+    # about the stored row distinguishes them.
+    location_is_new: bool
 
 
 @dataclass(frozen=True)
@@ -398,8 +424,62 @@ class MentionCarrier:
     chunk_id: str
 
 
+class BoundedPage:
+    """The continuation rule every bounded page answers identically.
+
+    Three listings on this port are paged, and every surface has to ask each
+    of them the same three questions: were entries left unreturned, from what
+    offset does a caller resume, and is this page empty because it began past
+    the end. Held per page, that arithmetic was written out three times and
+    the third question was not asked at all of a document listing:
+    `MentionDocumentPage` and `DocumentPassagePage` each carried their own
+    `beyond_the_end` while `DocumentPage` carried none, so the agent surface
+    re-derived it inline from `offset` and `total_matching`. What follows
+    from that is not hypothetical — on the carrier listing the agent surface
+    guarded the past-the-end case and the CLI did not, and "no document
+    carries this" said of a page past the end is a false claim of absence,
+    which is the failure the exhaustive enumeration exists to remove. The
+    question therefore belongs to the page, which every surface already
+    holds, rather than to any surface that renders one: every surface has to
+    answer it, and none may answer it differently.
+
+    A plain class, deliberately never a dataclass base. `@dataclass` collects
+    fields from its own annotations plus the `__dataclass_fields__` of
+    dataclass bases only, so a plain base contributes none: each page below
+    still declares `total_matching`, `offset` and `limit` itself, in its own
+    order, and no constructor signature moves. A frozen dataclass base would
+    instead put its own fields first in all three `__init__`s, reordering
+    every construction site at once for nothing gained. The two annotations
+    below say what a page must supply for these properties to hold; they are
+    documentation, not fields.
+    """
+
+    total_matching: int
+    offset: int
+
+    @property
+    def entries(self) -> Sequence[object]:
+        """Whatever this page is a page of, in the order it will be shown."""
+        raise NotImplementedError
+
+    @property
+    def truncated(self) -> bool:
+        """Whether entries matching this selection were left unreturned."""
+        return self.offset + len(self.entries) < self.total_matching
+
+    @property
+    def continue_from(self) -> int | None:
+        """The offset that resumes this listing, or `None` when it ended."""
+        return self.offset + len(self.entries) if self.truncated else None
+
+    @property
+    def beyond_the_end(self) -> bool:
+        """Whether this page is empty because it began past the last entry."""
+        return not self.entries and bool(self.offset) and bool(self.total_matching)
+
+
 @dataclass(frozen=True)
-class MentionDocumentPage:
+class MentionDocumentPage(BoundedPage):
     """One bounded page of the documents carrying one identifier.
 
     A domain object rather than a dict, for the reason `CasefileStatistics`
@@ -429,27 +509,8 @@ class MentionDocumentPage:
     value: str
 
     @property
-    def truncated(self) -> bool:
-        """Whether documents carrying the identifier were left unreturned."""
-        return self.offset + len(self.carriers) < self.total_matching
-
-    @property
-    def continue_from(self) -> int | None:
-        """The offset that resumes this listing, or `None` when it ended."""
-        return self.offset + len(self.carriers) if self.truncated else None
-
-    @property
-    def beyond_the_end(self) -> bool:
-        """Whether this page is empty because it began past the carrier set.
-
-        A property of the page rather than of any surface, because every
-        surface has to answer the same question and must not answer it
-        differently: "no document carries this" said of a page past the end is
-        a false claim of absence, which is the failure the exhaustive
-        enumeration exists to remove. The agent surface guarded it and the CLI
-        did not, which is exactly the divergence one definition prevents.
-        """
-        return not self.carriers and bool(self.offset) and bool(self.total_matching)
+    def entries(self) -> Sequence[MentionCarrier]:
+        return self.carriers
 
 
 @dataclass(frozen=True)
@@ -537,7 +598,7 @@ class IngestionCoverage:
 
 
 @dataclass(frozen=True)
-class DocumentPage:
+class DocumentPage(BoundedPage):
     """One bounded page of a casefile's documents, and what it is a page of.
 
     A domain object rather than a tuple or a dict, for the reason
@@ -567,18 +628,12 @@ class DocumentPage:
     parent: Document | None = None
 
     @property
-    def truncated(self) -> bool:
-        """Whether documents matching this selection were left unreturned."""
-        return self.offset + len(self.documents) < self.total_matching
-
-    @property
-    def continue_from(self) -> int | None:
-        """The offset that resumes this listing, or `None` when it ended."""
-        return self.offset + len(self.documents) if self.truncated else None
+    def entries(self) -> Sequence[Document]:
+        return self.documents
 
 
 @dataclass(frozen=True)
-class DocumentPassagePage:
+class DocumentPassagePage(BoundedPage):
     """One bounded page of a document's stored passages, in reading order.
 
     A domain object rather than a tuple or a dict, for the reason
@@ -589,7 +644,9 @@ class DocumentPassagePage:
     deliberately. This is the third paged listing on the surface, and
     `mcp-tool-surface` asks for one continuation contract rather than a new
     spelling per listing — an agent that has learned to follow `truncated` and
-    `continue_from` must not have to learn a third.
+    `continue_from` must not have to learn a third. `BoundedPage` is what now
+    holds those two to one definition; the field names stay declared on each
+    page, for the reason that base gives.
     """
 
     passages: list[PassageReference]
@@ -607,27 +664,8 @@ class DocumentPassagePage:
     document: Document | None = None
 
     @property
-    def truncated(self) -> bool:
-        """Whether passages of this document were left unreturned."""
-        return self.offset + len(self.passages) < self.total_matching
-
-    @property
-    def continue_from(self) -> int | None:
-        """The offset that resumes this listing, or `None` when it ended."""
-        return self.offset + len(self.passages) if self.truncated else None
-
-    @property
-    def beyond_the_end(self) -> bool:
-        """Whether this page is empty because it began past the last passage.
-
-        A property of the page rather than of any surface, for the reason
-        `MentionDocumentPage.beyond_the_end` gives: every surface has to answer
-        the same question and must not answer it differently. "This document has
-        no passages to cite" said of a page past the end is a false claim of
-        absence, and this is the capability that exists to remove exactly that
-        class of false negative.
-        """
-        return not self.passages and bool(self.offset) and bool(self.total_matching)
+    def entries(self) -> Sequence[PassageReference]:
+        return self.passages
 
 
 class StorePort(Protocol):
@@ -660,10 +698,12 @@ class StorePort(Protocol):
 
     def store_document(
         self, document: Document, location_path: str, observed_at: datetime
-    ) -> tuple[Document, bool]:
+    ) -> StoredDocument:
         """Store a document and where its bytes were observed, in one write.
 
-        Returns the stored document and whether that location was new to it.
+        Returns the stored document and whether that location was new to it, as
+        a named pair rather than a positional one — the reason is
+        `StoredDocument`'s own.
 
         The location is a required parameter rather than a second call or an
         optional argument, because whether this document's record may be read as

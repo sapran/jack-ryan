@@ -24,10 +24,27 @@ possible: a `Context` exposing the concrete store rather than the port permits
 the reach without even a type error. The port therefore SHALL be what the
 composition root declares, and the absence of such a reach SHALL be asserted.
 
-A port method returning an untyped mapping SHALL be treated as a row rather than
-a domain object. The field names then live in strings at every call site, where
-a rename is silent and a typo surfaces as a lookup failure at whichever surface
-happens to read it first.
+A port method returning a value without its field names SHALL be treated as a
+row rather than a domain object. One reason covers every shape this takes, and it
+is the whole reason: a value offered without its field names is a value a caller
+can misread, and a rename or a reordering of it is silent.
+
+An untyped mapping is one such shape. The field names then live in strings at
+every call site, where a rename is silent and a typo surfaces as a lookup failure
+at whichever surface happens to read it first.
+
+An unnamed tuple is the other, and SHALL be refused on the same ground rather
+than tolerated as merely terse. It carries no field names at all, so each caller
+supplies its own: a value that means one thing where it is returned acquires its
+name only where it is unpacked, and two call sites are free to name it
+differently. Reordering two fields of the same type then changes what every
+caller reads while changing nothing a caller could be asked to update, and no
+lookup fails to mark the moment it happened.
+
+This SHALL be checkable too, rather than left to review, for the reason the two
+halves above are: the port's own declared return types SHALL be asserted to name
+their fields, so that the next method to return a nameless pair is refused when
+it is written rather than when a caller misreads it.
 
 #### Scenario: The service layer holds no SQL
 
@@ -43,6 +60,11 @@ happens to read it first.
 
 - **WHEN** a port method reports counts or sizes describing stored data
 - **THEN** it returns a typed domain object whose fields are named, rather than a mapping keyed by strings
+
+#### Scenario: The port hands back no unnamed tuple
+
+- **WHEN** the port's declared return types are inspected
+- **THEN** none of them is a tuple, so no value the port returns is named for the first time at a call site
 
 ### Requirement: One file holds everything an instance persists
 

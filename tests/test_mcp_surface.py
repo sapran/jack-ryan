@@ -11,6 +11,15 @@ from jackryan.interfaces.mcp import build_mcp_server
 from jackryan.interfaces.mcp.errors import TRANSLATES_ERRORS
 from jackryan.interfaces.mcp.annotations import ANNOTATIONS, UnstampedToolError, stamp_for
 from jackryan.interfaces.mcp.profiles import READONLY_TOOLS, tools_for_profile
+from jackryan.services.casefiles import (
+    CasefileCoverage,
+    COVERAGE_UNKNOWN,
+    GROUND_CONTINUITY_BREAK,
+    GROUND_DOCUMENTS_PREDATE,
+    GROUND_NONE,
+    GROUND_NO_RUNS,
+)
+from jackryan.storage.port import IngestionCoverage
 
 
 @pytest.fixture
@@ -326,6 +335,9 @@ async def test_a_casefile_with_no_recorded_run_reports_unknown_coverage(server, 
     assert body["ingestion"]["coverage"] == "unknown"
     assert body["ingestion"]["runs_recorded"] == 0
     assert "no ingest run is recorded" in body["formatted"]
+    # The sentence above is selected from the ground the service names, not
+    # from the counts printed beside it.
+    assert context.casefiles.coverage(empty.short_id).ground == GROUND_NO_RUNS
     # The spec requires this clause of *every* non-complete verdict, and
     # `unknown` is the state the design calls least safe to read as absence —
     # it is also the state every casefile predating this capability will read.
@@ -375,6 +387,7 @@ async def test_documents_predating_the_record_keep_the_verdict_unknown(
     assert body["ingestion"]["runs_recorded"] == 1
     assert body["ingestion"]["documents_predating_the_record"] == before
     assert "predate the first recorded ingest run" in body["formatted"]
+    assert context.casefiles.coverage(casefile.short_id).ground == GROUND_DOCUMENTS_PREDATE
     assert "an empty search may mean missing evidence" in body["formatted"]
 
 
@@ -396,6 +409,9 @@ async def test_a_recorded_limitation_makes_the_casefile_incomplete(server, loade
     assert body["ingestion"]["coverage"] == "incomplete"
     assert body["ingestion"]["runs_with_limitations"] == 1
     assert body["ingestion"]["files_without_extractor"] == 1
+    # A limitation outranks an unaccounted-for corpus in the verdict, so there
+    # is no ground to name: `ground` answers only for an `unknown` verdict.
+    assert context.casefiles.coverage(partial.short_id).ground == GROUND_NONE
     assert "an empty search may mean missing evidence" in body["formatted"]
 
 
@@ -420,6 +436,7 @@ async def test_a_casefile_filled_only_by_clean_runs_reports_complete(server, loa
     assert body["ingestion"]["coverage"] == "complete"
     assert body["ingestion"]["runs_recorded"] == 1
     assert body["ingestion"]["documents_predating_the_record"] == 0
+    assert context.casefiles.coverage(fresh.short_id).ground == GROUND_NONE
     assert "coverage: complete" in body["formatted"]
     assert "unknown" not in body["formatted"]
     assert "incomplete" not in body["formatted"]
@@ -490,6 +507,227 @@ async def test_a_run_that_raised_part_way_keeps_the_verdict_unknown(
     assert body["ingestion"]["record_stops_accounting"] == 1
     assert body["ingestion"]["documents_predating_the_record"] == 0
     assert "stops accounting for what the casefile holds" in body["formatted"]
+    assert context.casefiles.coverage(case.short_id).ground == GROUND_CONTINUITY_BREAK
+    assert "an empty search may mean missing evidence" in body["formatted"]
+
+
+# -- which ground an `unknown` verdict is spoken on -------------------------
+
+
+def _recorded(**counts) -> IngestionCoverage:
+    """Counts handed to the service directly, every one zero unless named.
+
+    Two of the states below cannot be reached by ingesting anything: the store
+    derives `documents_before_first_run` from the earliest recorded run, so with
+    no runs it reports zero, and it counts a break between consecutive recorded
+    runs, so with no runs it finds none. The service is still handed three
+    independent integers and owes an order over them — a precedence exercised
+    only where the counts happen to be mutually exclusive is a precedence
+    nobody has tested, and the store is not the only thing that can supply
+    them.
+    """
+    zeroed = {
+        "runs": 0,
+        "runs_with_limitations": 0,
+        "items_ingested": 0,
+        "items_failed": 0,
+        "entries_refused": 0,
+        "files_without_extractor": 0,
+        "continuity_breaks": 0,
+        "bounds_reached": (),
+        "documents_before_first_run": 0,
+    }
+    return IngestionCoverage(**{**zeroed, **counts})
+
+
+@pytest.mark.anyio
+async def test_a_continuity_break_outranks_documents_that_predate_the_record(
+    server, loaded, tmp_path
+):
+    """Two grounds at once, both real, and one sentence to print.
+
+    A corpus that predates the record *and* a run missing from the middle of it
+    is the pair a store actually produces, and nothing covered it: each ground
+    had a test in which it was the only one, so the order between them was
+    never observed. The break is spoken because it is the sharper fact — it
+    says a run happened and left no trace of itself, where documents at the
+    start say only that the record began late.
+    """
+    context, casefile = loaded
+
+    # Stand in for a pre-change corpus, as the predating test above does: the
+    # documents stay, the record goes.
+    context.store._db.execute("DELETE FROM ingest_runs")
+    context.store._db.commit()
+    predating = context.casefiles.statistics(casefile.short_id).documents
+    assert predating > 0, "the fixture must leave documents behind"
+
+    first = tmp_path / "first"
+    first.mkdir()
+    (first / "one.md").write_text("# One\n\nThe first recorded document.\n", "utf-8")
+    assert context.ingestion.ingest(casefile.short_id, first).complete
+
+    # Raise after the first of the two is stored, so this run leaves evidence
+    # and no record of itself — the abort the test above builds, here on top of
+    # a corpus that already predates the record.
+    doomed = tmp_path / "doomed"
+    doomed.mkdir()
+    for name in ("two", "three"):
+        (doomed / f"{name}.md").write_text(f"# {name}\n\nDocument {name}.\n", "utf-8")
+
+    real = context.ingestion._ingest_work
+    seen = {"n": 0}
+
+    def raising(casefile_id, work):
+        seen["n"] += 1
+        if seen["n"] > 1:
+            raise KeyError("something went wrong mid-ingest")
+        return real(casefile_id, work)
+
+    context.ingestion._ingest_work = raising
+    with pytest.raises(KeyError):
+        context.ingestion.ingest(casefile.short_id, doomed)
+    context.ingestion._ingest_work = real
+
+    last = tmp_path / "last"
+    last.mkdir()
+    (last / "four.md").write_text("# Four\n\nThe last document.\n", "utf-8")
+    assert context.ingestion.ingest(casefile.short_id, last).complete
+
+    coverage = context.casefiles.coverage(casefile.short_id)
+    assert coverage.recorded.documents_before_first_run == predating, (
+        "the first ground must really be present, or this proves no precedence"
+    )
+    assert coverage.recorded.continuity_breaks == 1, "and so must the second"
+    assert coverage.ground == GROUND_CONTINUITY_BREAK
+
+    body = await call(server, "case_casefile_overview", {"casefile": casefile.short_id})
+    assert body["ingestion"]["coverage"] == "unknown"
+    assert "stops accounting for what the casefile holds" in body["formatted"]
+    assert "predate the first recorded ingest run" not in body["formatted"]
+    assert "an empty search may mean missing evidence" in body["formatted"]
+
+
+@pytest.mark.anyio
+async def test_no_recorded_run_outranks_the_other_two_grounds(server, loaded, monkeypatch):
+    """The head of the precedence, against counts that name all three.
+
+    Asked first because it makes the other two unsayable: with no recorded run
+    there is no first run for documents to predate and no pair of runs to break
+    between, so counts arriving beside it describe runs the record does not
+    have. Naming one of them would tell an agent the record says something
+    about a casefile it says nothing about.
+    """
+    context, casefile = loaded
+    monkeypatch.setattr(
+        context.store,
+        "ingestion_coverage",
+        lambda casefile_id: _recorded(
+            runs=0, continuity_breaks=2, documents_before_first_run=7
+        ),
+    )
+
+    assert context.casefiles.coverage(casefile.short_id).ground == GROUND_NO_RUNS
+
+    body = await call(server, "case_casefile_overview", {"casefile": casefile.short_id})
+    assert body["ingestion"]["coverage"] == "unknown"
+    assert "no ingest run is recorded" in body["formatted"]
+    assert "stops accounting for what the casefile holds" not in body["formatted"]
+    assert "predate the first recorded ingest run" not in body["formatted"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "ground, counts, says, instead_of",
+    [
+        (
+            GROUND_NO_RUNS,
+            {"runs": 3, "documents_before_first_run": 4},
+            "no ingest run is recorded",
+            "predate the first recorded ingest run",
+        ),
+        (
+            GROUND_CONTINUITY_BREAK,
+            {"runs": 0, "continuity_breaks": 1},
+            "stops accounting for what the casefile holds",
+            "no ingest run is recorded",
+        ),
+        (
+            GROUND_DOCUMENTS_PREDATE,
+            {"runs": 0, "documents_before_first_run": 2},
+            "predate the first recorded ingest run",
+            "no ingest run is recorded",
+        ),
+    ],
+)
+async def test_the_sentence_follows_the_ground_and_never_the_counts(
+    server, loaded, monkeypatch, ground, counts, says, instead_of
+):
+    """Each unknown branch is selected by the ground, one branch per case.
+
+    The counts here contradict the ground deliberately, and that is the only
+    way this is observable at all: in every state a store can produce the two
+    agree, so a surface reading the counts and a surface reading the ground
+    print the same sentence and no scenario tells them apart. `instead_of`
+    names what the counts would have chosen, so a branch quietly returned to
+    reading them fails here rather than years later on a ground that did not
+    exist yet.
+    """
+    context, casefile = loaded
+    monkeypatch.setattr(
+        context.casefiles,
+        "coverage",
+        lambda reference: CasefileCoverage(
+            verdict=COVERAGE_UNKNOWN, ground=ground, recorded=_recorded(**counts)
+        ),
+    )
+
+    body = await call(server, "case_casefile_overview", {"casefile": casefile.short_id})
+    assert says in body["formatted"]
+    assert instead_of not in body["formatted"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "ground",
+    ["a-ground-added-after-this-surface-was-written", GROUND_NONE],
+    ids=["a fourth ground", "no ground at all"],
+)
+async def test_a_ground_this_surface_cannot_name_says_less_rather_than_the_wrong_thing(
+    server, loaded, monkeypatch, ground
+):
+    """A fourth ground must not inherit the third one's sentence.
+
+    The published spec fixes the grounds at three, so both states here are
+    defects rather than cases — but the ladder's last branch used to be reached
+    by exhaustion, which meant anything the service could not name was
+    disclosed as documents predating the record, with a count taken from a
+    casefile nobody had checked. A coverage sentence is what an agent repeats
+    as a coverage claim, so that is the confident wrong answer this whole
+    capability exists to prevent. The verdict is still true and the clause
+    every non-complete verdict owes is still there; only the specific claim is
+    gone.
+
+    The second case is the other half of the same defect: the service names no
+    ground because a fourth disjunct was added to the verdict without one, and
+    an empty ground must be treated as unnamed rather than fall through.
+    """
+    context, casefile = loaded
+    monkeypatch.setattr(
+        context.casefiles,
+        "coverage",
+        lambda reference: CasefileCoverage(
+            verdict=COVERAGE_UNKNOWN,
+            ground=ground,
+            recorded=_recorded(runs=2, documents_before_first_run=5),
+        ),
+    )
+
+    body = await call(server, "case_casefile_overview", {"casefile": casefile.short_id})
+    assert body["ingestion"]["coverage"] == "unknown"
+    assert "the record cannot account for what this casefile holds" in body["formatted"]
+    assert "predate the first recorded ingest run" not in body["formatted"]
+    assert "5 documents" not in body["formatted"], "no count from an unnamed ground"
     assert "an empty search may mean missing evidence" in body["formatted"]
 
 

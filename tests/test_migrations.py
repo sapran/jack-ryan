@@ -233,12 +233,12 @@ def test_a_document_carried_forward_reports_its_locations_as_unknown(tmp_path):
         # which on a reingest keeps the row it already has.
         later = datetime.now(timezone.utc)
         assert later > document.created_at
-        stored, was_new = store.store_document(document, "/dumps/alpha/lease.md", later)
-        assert was_new is True
+        written = store.store_document(document, "/dumps/alpha/lease.md", later)
+        assert written.location_is_new is True
 
         recorded = store.document_locations("d1", 20)
         assert recorded.total == 1
-        assert recorded.locations[0].first_seen_at > stored.created_at, (
+        assert recorded.locations[0].first_seen_at > written.document.created_at, (
             "an observation recorded after the document was created must stay later "
             "than it, or the record would read as whole"
         )
