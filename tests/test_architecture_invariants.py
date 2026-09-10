@@ -510,3 +510,62 @@ def test_the_agent_surface_does_not_import_the_shared_renderers():
         "its payloads differ from theirs on purpose and those differences are "
         "a contract an agent parses: " + "; ".join(offences)
     )
+
+
+# -- the agent surface's search bound is its own, tighter rule ----------------
+
+_AGENT_SURFACE = "interfaces/mcp/server.py"
+_SEARCH_CLAMP = "MAX_SEARCH_RESULTS"
+
+
+def test_the_agent_search_bound_is_not_the_listing_bound():
+    """The agent surface clamps a search below the service's own limit, by a literal.
+
+    Declared at the listing-bound comment in `services/ingestion.py` and in the
+    `guard-the-rules-that-had-only-prose` proposal: a search result carries
+    prose while a listing row carries metadata, so the agent surface sets a
+    tighter bound of its own. Folding it into the listing pair would raise the
+    clamped maximum from 50 to 200 — four times the prose an agent asked for,
+    with nothing in the payload saying so.
+
+    Two assertions, because either alone is passable. The numeric one catches a
+    value raised past the service limit. The literal one catches the coupling
+    itself: `MAX_SEARCH_RESULTS = DEFAULT_LISTING_PAGE` is 50 today and would
+    satisfy every numeric check, while making the search clamp move silently the
+    next time a listing bound is retuned.
+
+    This guard exists because the mutation proved it was needed: raising the
+    constant to 200 left the entire suite green.
+    """
+    from jackryan.interfaces.mcp.server import MAX_SEARCH_RESULTS
+    from jackryan.services.search import MAX_LIMIT
+
+    module = _package() / _AGENT_SURFACE
+    assignments = [
+        node
+        for node in ast.walk(_parsed(module))
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == _SEARCH_CLAMP
+            for target in node.targets
+        )
+    ]
+    # Without this the guard passes on a renamed or relocated constant, which is
+    # the state it exists to notice.
+    assert len(assignments) == 1, (
+        f"expected exactly one {_SEARCH_CLAMP} assignment in {_where(module)}, "
+        f"found {len(assignments)}; the bound moved and this guard is blind"
+    )
+
+    assert MAX_SEARCH_RESULTS < MAX_LIMIT, (
+        f"{_SEARCH_CLAMP} is {MAX_SEARCH_RESULTS}, not below the service's own "
+        f"MAX_LIMIT of {MAX_LIMIT}: the agent surface's bound is deliberately "
+        "the tighter of the two, because a search result carries prose"
+    )
+    assert isinstance(assignments[0].value, ast.Constant) and isinstance(
+        assignments[0].value.value, int
+    ), (
+        f"{_where(module)}:{assignments[0].lineno} sets {_SEARCH_CLAMP} from an "
+        "expression rather than a literal, which couples the search clamp to "
+        "whatever it names; a listing bound retuned later would move it too"
+    )
