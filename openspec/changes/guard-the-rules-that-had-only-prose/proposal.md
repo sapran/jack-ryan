@@ -104,6 +104,15 @@ Classified and owing nothing, each checked against all five units:
   no default page size, no continuation field; its only bound is
   `MAX_DOCUMENT_LOCATIONS`, which this change does not touch.
 
+Both capabilities' published `Purpose` blocks were checked, because a delta
+cannot reach one. `storage-seam`'s stays true as written. `service-adapter-boundary`'s
+described a world of a service layer and three translating adapters, with no
+shared presentation layer — an incompleteness rather than a falsehood, since
+rendering is presentation and not a domain rule, but the ADDED requirement
+legislates that layer. One sentence was therefore appended to the published
+`openspec/specs/service-adapter-boundary/spec.md` in this change, which is the
+only way a `Purpose` can be reached.
+
 Data and migrations: none. No schema change, no corpus identity component, no
 reingest. The store is untouched apart from `store_document`'s return type,
 which is internal to the seam.

@@ -83,9 +83,10 @@ A fourth ground is now a change to the service, the published requirement that
 fixes the count at three, and the sentence that words it — together, in one
 change, instead of a false sentence appearing on its own.
 
-### The two shared renderers (`rendering.py`)
+### The shared renderers (`rendering.py`)
 
 ```python
+def location_paths(record: DocumentLocationRecord) -> list[str]
 def render_location_record(record: DocumentLocationRecord, *, drop_empty_note: bool) -> dict[str, Any]
 def render_carrier_page(page: MentionDocumentPage, mention: str, *, render_row: Callable[[Document], dict[str, Any]]) -> dict[str, Any]
 ```
@@ -153,8 +154,11 @@ here parses a declaration rather than calling the thing it protects:
   strings, where a typo is a `KeyError` at the surface and a rename is silent.
   `dict[str, str]` and `dict[str, Any]` still fail. The permitted value types are
   derived from the module's own top-level class definitions rather than from a
-  list in the test, so adding a domain type does not require editing the guard
-  and cannot quietly widen it either.
+  list in the test, so adding a domain type does not require editing the guard.
+  It is restricted to classes carrying a `dataclass` decorator, which every
+  domain type in `port.py` has: review proved that deriving from every class
+  admitted a `TypedDict`, which is a row with its field names in strings and so
+  exactly what the rule refuses.
 - **The absence guards** (`MAX_RESPONSE_CHARS` re-export, `CorpusIdentity.parse`,
   `from .migrations import`, `rendering` imported by `interfaces/`) — parse the
   module and assert the name is absent. Each must be mutation-proved by adding

@@ -5,6 +5,9 @@
 Defines where business logic lives and what an adapter may do. Every rule is
 written once in the service layer; REST, CLI, and the agent surface translate
 and nothing more, so no surface can enforce a different version of the domain.
+Where the two human surfaces present the same value they also share one
+rendering of it; the agent surface renders its own, because its payloads are
+fenced and shaped for a model rather than for a person.
 
 ## Requirements
 

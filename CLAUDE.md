@@ -133,6 +133,15 @@ and sharing code with what it checks would defeat that.
 
 ## Pitfalls
 
+Several of the rules below are no longer review-only. `tests/test_architecture_invariants.py`
+parses the package and fails on the declaration itself for six of them — a
+`MAX_RESPONSE_CHARS` re-export in `services/search.py`, a `parse` on
+`CorpusIdentity`, a `from`-import of `migrations` inside `sqlite.py`, a file
+signature spelled twice, `interfaces/` importing `rendering`, and the agent
+surface's search bound drifting into the listing bound — while
+`tests/test_store.py` guards the port's return shapes and the adapter/store
+seam. Breaking one of those is a red test, not a review comment.
+
 - **Schema changes go through the `_STEPS` ladder, never `_SCHEMA`** — both
   live in `src/jackryan/storage/migrations.py`, and the rules, with why each
   matters, are in `src/jackryan/storage/CLAUDE.md`.
