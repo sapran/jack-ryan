@@ -742,9 +742,8 @@ class IngestionService:
             # before this write changes it: nothing may be called a discovery
             # for a document whose earlier history is missing.
             existing_record_was_whole = existing is not None and existing.locations_are_whole
-            stored, location_is_new = self._store.store_document(
-                document, observed_at_path, now
-            )
+            written = self._store.store_document(document, observed_at_path, now)
+            stored = written.document
             # Mentions travel with the chunks rather than in a later call:
             # `replace_chunks` mints every chunk id afresh, so a separate write
             # afterwards would attach them to rows that had just been replaced.
@@ -758,7 +757,7 @@ class IngestionService:
                 # at, so calling it a discovery would be a finding this instance
                 # cannot support.
                 location = LOCATION_UNKNOWN
-            elif location_is_new:
+            elif written.location_is_new:
                 location = LOCATION_NEW
             else:
                 location = LOCATION_KNOWN

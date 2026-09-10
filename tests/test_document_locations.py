@@ -893,16 +893,16 @@ def test_the_document_handed_back_by_the_store_does_not_misreport_itself(
 
     # Reingest the same bytes at the same place, through the port directly, so
     # the value under test is the one `store_document` hands back.
-    stored, was_new = context.store.store_document(
+    written = context.store.store_document(
         document, f"{root.resolve()}/ledger.txt", document.created_at
     )
-    assert was_new is False, "the place was already recorded"
-    assert stored.locations_are_whole is True, (
+    assert written.location_is_new is False, "the place was already recorded"
+    assert written.document.locations_are_whole is True, (
         "the document handed back by the store reported its own record as not "
         "whole, which would mislead any caller that asked it"
     )
-    assert stored.location_count == 1
-    assert stored.additional_locations == 0
+    assert written.document.location_count == 1
+    assert written.document.additional_locations == 0
 
 
 # -- carried forward from an older schema ----------------------------------

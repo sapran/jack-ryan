@@ -127,6 +127,32 @@ def join_location(source_root: str, containment_path: str) -> str:
 
 
 @dataclass(frozen=True)
+class StoredDocument:
+    """A stored document, and whether the observation stored with it was new.
+
+    The pair is named here, at the seam, rather than at the call site that
+    unpacks it. A value offered without its field names is a value a caller can
+    misread: nothing about `(Document, bool)` says which way the boolean runs,
+    so every reader has to go and read the implementation to find out, and each
+    of them may read it once and remember it wrongly.
+
+    Reordering is the sharper reason. A tuple's positions carry no names, so
+    swapping two elements of the same type changes what every call site is
+    asserting while nothing fails — not an import, not a type checker, not a
+    test, not a run. Attribute access cannot be reordered silently, because the
+    name travels with the value.
+    """
+
+    document: Document
+    # Whether the observation written beside this document recorded a place its
+    # bytes had not been seen at before. False on an ordinary reingest of a
+    # known location. It is the caller's only way to tell a discovery from a
+    # reingest: the first sighting's timestamp is the one kept, so nothing else
+    # about the stored row distinguishes them.
+    location_is_new: bool
+
+
+@dataclass(frozen=True)
 class DocumentLocation:
     """One place a document's bytes were observed.
 
@@ -672,10 +698,12 @@ class StorePort(Protocol):
 
     def store_document(
         self, document: Document, location_path: str, observed_at: datetime
-    ) -> tuple[Document, bool]:
+    ) -> StoredDocument:
         """Store a document and where its bytes were observed, in one write.
 
-        Returns the stored document and whether that location was new to it.
+        Returns the stored document and whether that location was new to it, as
+        a named pair rather than a positional one — the reason is
+        `StoredDocument`'s own.
 
         The location is a required parameter rather than a second call or an
         optional argument, because whether this document's record may be read as

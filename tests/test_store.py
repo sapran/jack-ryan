@@ -77,7 +77,7 @@ def make_document(store, casefile, content_hash="hash-1", location="/dump/a.txt"
     without one would not be the state an ingest produces.
     """
     now = datetime.now(timezone.utc)
-    stored, _ = store.store_document(
+    return store.store_document(
         Document(
             id=uuid.uuid4().hex, casefile_id=casefile.id, content_hash=content_hash,
             filename="a.txt", media_type="text/plain", byte_size=10,
@@ -86,8 +86,7 @@ def make_document(store, casefile, content_hash="hash-1", location="/dump/a.txt"
         ),
         location,
         now,
-    )
-    return stored
+    ).document
 
 
 def make_chunk(document, casefile, ordinal=0, text="chunk text"):
@@ -323,4 +322,143 @@ def test_no_adapter_reaches_the_store():
         "a module outside the service layer reaches a store directly, which "
         "`storage-seam` forbids: " + ", ".join(sorted(set(offences)))
         + ". The rule belongs in the service layer so every adapter inherits it."
+    )
+
+
+# -- the seam's vocabulary: what a port method may hand back --------------
+
+
+#: Containers with no field names of their own. A `tuple` is refused in every
+#: form; a `dict` is refused unless it is a keyed batch of domain objects, for
+#: which see below.
+_UNNAMED_CONTAINERS = {"dict", "tuple"}
+
+#: A floor, not the exact count, so removing a method does not fail this for
+#: the wrong reason. It exists only to catch a walk that found nothing: 34
+#: methods are declared today, and a scan that inspects fewer than this has
+#: stopped reading the protocol rather than found it clean.
+_FEWEST_PLAUSIBLE_PORT_METHODS = 25
+
+
+def test_the_port_hands_back_named_values_never_tuples_or_rows():
+    """The port speaks in domain objects: no method SHALL return a bare pair.
+
+    `store_document` was the last one that did. It returned
+    `tuple[Document, bool]`, and the boolean acquired its name — and therefore
+    its meaning — only at the call site that unpacked it. A tuple's positions
+    carry no names, so a same-type reordering changes what every caller is
+    asserting while nothing fails; and `dict` returns are the same defect
+    spelled differently, with the field names moved into strings where a typo
+    is a runtime `KeyError` at best and a silently absent key at worst. Both
+    are what `port.py`'s own opening paragraph means by "the port speaks in
+    domain objects, never in rows".
+
+    **A mapping of domain objects is not a row.** `get_chunks` returns
+    `dict[str, Chunk]` — chunks keyed by their identifier, which is how a batch
+    lookup answers, and every value is still a domain object with named fields.
+    So `dict[K, V]` passes exactly when `V` is one of this module's own
+    declared classes; `dict[str, str]` or `dict[str, Any]` does not. The
+    allowed set is derived from `port.py`'s top-level classes rather than
+    written out here, so a domain type added tomorrow needs no edit to this
+    test.
+
+    **The oracle is the declaration, not a call.** This parses the annotation
+    in the source; it never constructs a store and never asks one what it
+    returns. An implementation change therefore cannot move both sides of the
+    assertion together, which is the failure that makes a guard agree with
+    whatever the code now does. It also fails on a *new* method carrying the
+    old shape, rather than only on the one this change fixed.
+
+    **The walk asserts it was non-empty.** A guard that inspected nothing
+    passes, and passing is exactly how it goes blind instead of red — renaming
+    `StorePort`, or moving it to another module, would otherwise leave this
+    reporting success over an empty list forever. So the protocol must be
+    found, `store_document` must be among what was read, and the count must
+    reach a plausible floor.
+
+    What this does not catch, stated so nobody trusts it further than it goes.
+    A method returning a `TypedDict` passes: the annotation is a class name and
+    this reads names, not their definitions. A method returning a domain object
+    that itself wraps an unnamed tuple passes — `IngestionCoverage` already
+    holds a `tuple[str, ...]` field, legitimately, and nothing here inspects a
+    returned type's own fields. So does an alias (`Pair = tuple[Document,
+    bool]`) and the `typing.Tuple`/`typing.Dict` spellings, which this
+    repository does not use. It catches the shape written at the seam, which is
+    the shape a reader copies when adding the next method.
+    """
+    import ast
+    from pathlib import Path
+
+    port = Path(__file__).resolve().parents[1] / "src" / "jackryan" / "storage" / "port.py"
+    assert port.is_file(), "port.py moved; this guard now checks nothing"
+
+    module = ast.parse(port.read_text(encoding="utf-8"))
+    protocol = next(
+        (
+            node
+            for node in module.body
+            if isinstance(node, ast.ClassDef) and node.name == "StorePort"
+        ),
+        None,
+    )
+    assert protocol is not None, (
+        "StorePort was renamed or moved out of port.py; this guard inspected "
+        "nothing, which is how it goes blind rather than red"
+    )
+
+    domain_types = {
+        node.name
+        for node in module.body
+        if isinstance(node, ast.ClassDef) and node.name != protocol.name
+    }
+
+    def what_is_wrong_with(annotation) -> str:
+        """Why this return annotation is unnamed, or empty if it is fine."""
+        if isinstance(annotation, ast.Name) and annotation.id in _UNNAMED_CONTAINERS:
+            return f"a bare `{annotation.id}`, which carries no field names at all"
+        if isinstance(annotation, ast.Subscript) and isinstance(annotation.value, ast.Name):
+            if annotation.value.id == "tuple":
+                return "a tuple, whose positions are named only where they are unpacked"
+            if annotation.value.id == "dict":
+                # `dict[K, V]` parses its subscript as a tuple of two nodes; the
+                # value is the last, so a one-argument `dict[...]` is read as
+                # its own value and still judged.
+                inner = annotation.slice
+                value = inner.elts[-1] if isinstance(inner, ast.Tuple) else inner
+                if not (isinstance(value, ast.Name) and value.id in domain_types):
+                    return (
+                        "a mapping of something other than a domain object, which "
+                        "puts the field names into strings"
+                    )
+        return ""
+
+    inspected, offences = [], []
+    for node in protocol.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        inspected.append(node.name)
+        assert node.returns is not None, (
+            f"StorePort.{node.name} declares no return type, so this guard cannot "
+            "read what the seam hands back"
+        )
+        wrong = what_is_wrong_with(node.returns)
+        if wrong:
+            offences.append(
+                f"StorePort.{node.name} -> {ast.unparse(node.returns)}: {wrong}"
+            )
+
+    assert "store_document" in inspected, (
+        "the method this rule was written for was not inspected; the walk found "
+        "the protocol but not its methods"
+    )
+    assert len(inspected) >= _FEWEST_PLAUSIBLE_PORT_METHODS, (
+        f"only {len(inspected)} StorePort methods were inspected, fewer than the "
+        f"{_FEWEST_PLAUSIBLE_PORT_METHODS} this protocol plausibly declares; the "
+        "walk is reading almost nothing and would pass whatever the port did"
+    )
+    assert not offences, (
+        "a port method hands back an unnamed value, which `port.py` forbids: "
+        + "; ".join(offences)
+        + ". Return a named domain object instead, so the fields cannot be "
+        "reordered or misspelled without something failing."
     )
